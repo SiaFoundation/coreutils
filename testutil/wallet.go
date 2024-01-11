@@ -23,6 +23,7 @@ type EphemeralWalletStore struct {
 	transactions               []wallet.Transaction
 }
 
+// ProcessChainRevertUpdate implements chain.Subscriber
 func (es *EphemeralWalletStore) ProcessChainRevertUpdate(cru *chain.RevertUpdate) error {
 	es.mu.Lock()
 	defer es.mu.Unlock()
@@ -65,6 +66,7 @@ func (es *EphemeralWalletStore) ProcessChainRevertUpdate(cru *chain.RevertUpdate
 	return nil
 }
 
+// ProcessChainApplyUpdate implements chain.Subscriber
 func (es *EphemeralWalletStore) ProcessChainApplyUpdate(cau *chain.ApplyUpdate, commit bool) error {
 	es.mu.Lock()
 	defer es.mu.Unlock()
@@ -190,6 +192,7 @@ func (es *EphemeralWalletStore) ProcessChainApplyUpdate(cau *chain.ApplyUpdate, 
 	return nil
 }
 
+// Transactions returns the wallet's transactions.
 func (es *EphemeralWalletStore) Transactions(limit, offset int) ([]wallet.Transaction, error) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
@@ -205,12 +208,14 @@ func (es *EphemeralWalletStore) Transactions(limit, offset int) ([]wallet.Transa
 	return es.transactions[offset:end], nil
 }
 
+// TransactionCount returns the number of transactions in the wallet.
 func (es *EphemeralWalletStore) TransactionCount() (uint64, error) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
 	return uint64(len(es.transactions)), nil
 }
 
+// UnspentSiacoinElements returns the wallet's unspent siacoin outputs.
 func (es *EphemeralWalletStore) UnspentSiacoinElements() (utxos []types.SiacoinElement, _ error) {
 	es.mu.Lock()
 	defer es.mu.Unlock()

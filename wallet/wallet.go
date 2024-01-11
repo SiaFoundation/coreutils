@@ -390,7 +390,7 @@ func (sw *SingleAddressWallet) SignTransaction(cs consensus.State, txn *types.Tr
 	return nil
 }
 
-// ScanHeight returns the block height the wallet has scanned to.
+// Tip returns the block height the wallet has scanned to.
 func (sw *SingleAddressWallet) Tip() types.ChainIndex {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
