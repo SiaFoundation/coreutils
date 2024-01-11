@@ -1,9 +1,9 @@
 package testutil
 
 import (
-	"go.sia.tech/core/chain"
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils/chain"
 )
 
 // Network returns a test network and genesis block.

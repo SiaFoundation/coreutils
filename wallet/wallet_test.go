@@ -3,8 +3,8 @@ package wallet_test
 import (
 	"testing"
 
-	"go.sia.tech/core/chain"
 	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils/chain"
 	"go.sia.tech/coreutils/testutil"
 	"go.sia.tech/coreutils/wallet"
 	"go.uber.org/zap/zaptest"

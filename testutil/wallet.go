@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sync"
 
-	"go.sia.tech/core/chain"
 	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils/chain"
 	"go.sia.tech/coreutils/wallet"
 )
 

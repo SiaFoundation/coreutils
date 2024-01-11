@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"go.sia.tech/core/chain"
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils/chain"
 	"go.uber.org/zap"
 )
 
