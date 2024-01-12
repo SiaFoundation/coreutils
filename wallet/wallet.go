@@ -48,6 +48,7 @@ type (
 
 	// A ChainManager manages the current state of the blockchain.
 	ChainManager interface {
+		TipState() consensus.State
 		BestIndex(height uint64) (types.ChainIndex, bool)
 
 		PoolTransactions() []types.Transaction
@@ -152,6 +153,10 @@ func (sw *SingleAddressWallet) Balance() (spendable, confirmed, unconfirmed type
 			delete(tpoolUtxos, types.Hash256(sci.ParentID))
 		}
 		for i, sco := range txn.SiacoinOutputs {
+			if sco.Address != sw.addr {
+				continue
+			}
+
 			tpoolUtxos[types.Hash256(txn.SiacoinOutputID(i))] = types.SiacoinElement{
 				StateElement: types.StateElement{
 					ID: types.Hash256(types.SiacoinOutputID(txn.SiacoinOutputID(i))),
@@ -192,7 +197,7 @@ func (sw *SingleAddressWallet) TransactionCount() (uint64, error) {
 // transaction. If necessary, a change output will also be added. The inputs
 // will not be available to future calls to FundTransaction unless ReleaseInputs
 // is called.
-func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount types.Currency) ([]types.Hash256, func(), error) {
+func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount types.Currency, useUnconfirmed bool) ([]types.Hash256, func(), error) {
 	if amount.IsZero() {
 		return nil, func() {}, nil
 	}
@@ -223,41 +228,70 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 	}
 
 	// remove locked and spent outputs
-	usableUTXOs := utxos[:0]
+	filtered := utxos[:0]
 	for _, sce := range utxos {
 		if time.Now().Before(sw.locked[sce.ID]) || tpoolSpent[sce.ID] {
 			continue
 		}
-		usableUTXOs = append(usableUTXOs, sce)
+		filtered = append(filtered, sce)
 	}
+	utxos = filtered
 
 	// sort by value, descending
-	sort.Slice(usableUTXOs, func(i, j int) bool {
-		return usableUTXOs[i].SiacoinOutput.Value.Cmp(usableUTXOs[j].SiacoinOutput.Value) > 0
+	sort.Slice(utxos, func(i, j int) bool {
+		return utxos[i].SiacoinOutput.Value.Cmp(utxos[j].SiacoinOutput.Value) > 0
 	})
+
+	var unconfirmedUTXOs []types.SiacoinElement
+	if useUnconfirmed {
+		for _, sce := range tpoolUtxos {
+			if sce.SiacoinOutput.Address != sw.addr || time.Now().Before(sw.locked[sce.ID]) {
+				continue
+			}
+			unconfirmedUTXOs = append(unconfirmedUTXOs, sce)
+		}
+
+		// sort by value, descending
+		sort.Slice(unconfirmedUTXOs, func(i, j int) bool {
+			return unconfirmedUTXOs[i].SiacoinOutput.Value.Cmp(unconfirmedUTXOs[j].SiacoinOutput.Value) > 0
+		})
+	}
 
 	// fund the transaction using the largest utxos first
 	var selected []types.SiacoinElement
 	var inputSum types.Currency
-	for i, sce := range usableUTXOs {
+	for i, sce := range utxos {
 		if inputSum.Cmp(amount) >= 0 {
-			usableUTXOs = usableUTXOs[i:]
+			utxos = utxos[i:]
 			break
 		}
 		selected = append(selected, sce)
 		inputSum = inputSum.Add(sce.SiacoinOutput.Value)
 	}
 
-	// if the transaction can't be funded, return an error
-	if inputSum.Cmp(amount) < 0 {
+	if inputSum.Cmp(amount) < 0 && useUnconfirmed {
+		// try adding unconfirmed utxos.
+		for _, sce := range unconfirmedUTXOs {
+			if inputSum.Cmp(amount) >= 0 {
+				break
+			}
+			selected = append(selected, sce)
+			inputSum = inputSum.Add(sce.SiacoinOutput.Value)
+		}
+
+		if inputSum.Cmp(amount) < 0 {
+			// still not enough funds
+			return nil, nil, ErrNotEnoughFunds
+		}
+	} else if inputSum.Cmp(amount) < 0 {
 		return nil, nil, ErrNotEnoughFunds
 	}
 
 	// check if remaining utxos should be defragged
 	txnInputs := len(txn.SiacoinInputs) + len(selected)
-	if len(usableUTXOs) > sw.cfg.DefragThreshold && txnInputs < sw.cfg.MaxInputsForDefrag {
+	if len(utxos) > sw.cfg.DefragThreshold && txnInputs < sw.cfg.MaxInputsForDefrag {
 		// add the smallest utxos to the transaction
-		defraggable := usableUTXOs
+		defraggable := utxos
 		if len(defraggable) > sw.cfg.MaxDefragUTXOs {
 			defraggable = defraggable[len(defraggable)-sw.cfg.MaxDefragUTXOs:]
 		}
@@ -302,13 +336,15 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 }
 
 // SignTransaction adds a signature to each of the specified inputs.
-func (sw *SingleAddressWallet) SignTransaction(cs consensus.State, txn *types.Transaction, toSign []types.Hash256, cf types.CoveredFields) error {
+func (sw *SingleAddressWallet) SignTransaction(txn *types.Transaction, toSign []types.Hash256, cf types.CoveredFields) {
+	state := sw.cm.TipState()
+
 	for _, id := range toSign {
 		var h types.Hash256
 		if cf.WholeTransaction {
-			h = cs.WholeSigHash(*txn, id, 0, 0, cf.Signatures)
+			h = state.WholeSigHash(*txn, id, 0, 0, cf.Signatures)
 		} else {
-			h = cs.PartialSigHash(*txn, cf)
+			h = state.PartialSigHash(*txn, cf)
 		}
 		sig := sw.priv.SignHash(h)
 		txn.Signatures = append(txn.Signatures, types.TransactionSignature{
@@ -318,7 +354,6 @@ func (sw *SingleAddressWallet) SignTransaction(cs consensus.State, txn *types.Tr
 			Signature:      sig[:],
 		})
 	}
-	return nil
 }
 
 // Tip returns the block height the wallet has scanned to.

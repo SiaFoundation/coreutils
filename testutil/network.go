@@ -23,15 +23,16 @@ func Network() (*consensus.Network, types.Block) {
 }
 
 // MineBlock mines a block with the given transactions.
-func MineBlock(cs consensus.State, transactions []types.Transaction, minerAddress types.Address) types.Block {
+func MineBlock(cm *chain.Manager, minerAddress types.Address) types.Block {
+	state := cm.TipState()
 	b := types.Block{
-		ParentID:     cs.Index.ID,
+		ParentID:     state.Index.ID,
 		Timestamp:    types.CurrentTimestamp(),
-		Transactions: transactions,
-		MinerPayouts: []types.SiacoinOutput{{Address: minerAddress, Value: cs.BlockReward()}},
+		Transactions: cm.PoolTransactions(),
+		MinerPayouts: []types.SiacoinOutput{{Address: minerAddress, Value: state.BlockReward()}},
 	}
-	for b.ID().CmpWork(cs.ChildTarget) < 0 {
-		b.Nonce += cs.NonceFactor()
+	for b.ID().CmpWork(state.ChildTarget) < 0 {
+		b.Nonce += state.NonceFactor()
 	}
 	return b
 }

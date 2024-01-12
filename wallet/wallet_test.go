@@ -1,6 +1,7 @@
 package wallet_test
 
 import (
+	"errors"
 	"testing"
 
 	"go.sia.tech/core/types"
@@ -47,22 +48,20 @@ func TestWallet(t *testing.T) {
 	}
 
 	initialReward := cm.TipState().BlockReward()
-	tip := cm.TipState()
 	// mine a block to fund the wallet
-	b := testutil.MineBlock(tip, nil, w.Address())
+	b := testutil.MineBlock(cm, w.Address())
 	if err := cm.AddBlocks([]types.Block{b}); err != nil {
 		t.Fatal(err)
 	}
-	tip = cm.TipState()
 
 	// mine until the payout matures
+	tip := cm.TipState()
 	target := tip.MaturityHeight() + 1
 	for i := tip.Index.Height; i < target; i++ {
-		b := testutil.MineBlock(tip, nil, types.VoidAddress)
+		b := testutil.MineBlock(cm, types.VoidAddress)
 		if err := cm.AddBlocks([]types.Block{b}); err != nil {
 			t.Fatal(err)
 		}
-		tip = cm.TipState()
 	}
 
 	// check that one payout has matured
@@ -107,15 +106,12 @@ func TestWallet(t *testing.T) {
 	}
 
 	// fund and sign the transaction
-	toSign, release, err := w.FundTransaction(&txn, initialReward)
+	toSign, release, err := w.FundTransaction(&txn, initialReward, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
-
-	if err := w.SignTransaction(tip, &txn, toSign, types.CoveredFields{WholeTransaction: true}); err != nil {
-		t.Fatal(err)
-	}
+	w.SignTransaction(&txn, toSign, types.CoveredFields{WholeTransaction: true})
 
 	// check that wallet now has no spendable balance
 	spendable, confirmed, unconfirmed, err = w.Balance()
@@ -172,8 +168,7 @@ func TestWallet(t *testing.T) {
 	}
 
 	// mine a block to confirm the transaction
-	tip = cm.TipState()
-	b = testutil.MineBlock(tip, []types.Transaction{txn}, types.VoidAddress)
+	b = testutil.MineBlock(cm, types.VoidAddress)
 	if err := cm.AddBlocks([]types.Block{b}); err != nil {
 		t.Fatal(err)
 	}
@@ -216,19 +211,20 @@ func TestWallet(t *testing.T) {
 			{Address: types.VoidAddress, Value: sendAmount},
 		}
 
-		toSign, release, err := w.FundTransaction(&sent[i], sendAmount)
+		toSign, release, err := w.FundTransaction(&sent[i], sendAmount, false)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer release()
-
-		if err := w.SignTransaction(tip, &sent[i], toSign, types.CoveredFields{WholeTransaction: true}); err != nil {
-			t.Fatal(err)
-		}
+		w.SignTransaction(&sent[i], toSign, types.CoveredFields{WholeTransaction: true})
 	}
 
-	tip = cm.TipState()
-	b = testutil.MineBlock(tip, sent, types.VoidAddress)
+	// add the transactions to the pool
+	if _, err := cm.AddPoolTransactions(sent); err != nil {
+		t.Fatal(err)
+	}
+
+	b = testutil.MineBlock(cm, types.VoidAddress)
 	if err := cm.AddBlocks([]types.Block{b}); err != nil {
 		t.Fatal(err)
 	}
@@ -267,5 +263,135 @@ func TestWallet(t *testing.T) {
 		if txns[j].ID != sent[i].ID() {
 			t.Fatalf("expected transaction %v, got %v", sent[i].ID(), txns[i].ID)
 		}
+	}
+}
+
+func TestWalletUnconfirmed(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	network, genesis := testutil.Network()
+
+	cs, tipState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cm := chain.NewManager(cs, tipState)
+
+	pk := types.GeneratePrivateKey()
+	ws := testutil.NewEphemeralWalletStore(pk)
+
+	if err := cm.AddSubscriber(ws, types.ChainIndex{}); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(log.Named("wallet")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	spendable, confirmed, unconfirmed, err := w.Balance()
+	if err != nil {
+		t.Fatal(err)
+	} else if !confirmed.Equals(types.ZeroCurrency) {
+		t.Fatalf("expected zero confirmed balance, got %v", confirmed)
+	} else if !spendable.Equals(types.ZeroCurrency) {
+		t.Fatalf("expected zero spendable balance, got %v", spendable)
+	} else if !unconfirmed.Equals(types.ZeroCurrency) {
+		t.Fatalf("expected zero unconfirmed balance, got %v", unconfirmed)
+	}
+
+	initialReward := cm.TipState().BlockReward()
+	// mine a block to fund the wallet
+	b := testutil.MineBlock(cm, w.Address())
+	if err := cm.AddBlocks([]types.Block{b}); err != nil {
+		t.Fatal(err)
+	}
+
+	// mine until the payout matures
+	tip := cm.TipState()
+	target := tip.MaturityHeight() + 1
+	for i := tip.Index.Height; i < target; i++ {
+		b := testutil.MineBlock(cm, types.VoidAddress)
+		if err := cm.AddBlocks([]types.Block{b}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// check that one payout has matured
+	spendable, confirmed, unconfirmed, err = w.Balance()
+	if err != nil {
+		t.Fatal(err)
+	} else if !confirmed.Equals(initialReward) {
+		t.Fatalf("expected %v confirmed balance, got %v", initialReward, confirmed)
+	} else if !spendable.Equals(initialReward) {
+		t.Fatalf("expected %v spendable balance, got %v", initialReward, spendable)
+	} else if !unconfirmed.Equals(types.ZeroCurrency) {
+		t.Fatalf("expected %v unconfirmed balance, got %v", types.ZeroCurrency, unconfirmed)
+	}
+
+	// fund and sign a transaction sending half the balance to the burn address
+	txn := types.Transaction{
+		SiacoinOutputs: []types.SiacoinOutput{
+			{Address: types.VoidAddress, Value: initialReward.Div64(2)},
+			{Address: w.Address(), Value: initialReward.Div64(2)},
+		},
+	}
+
+	toSign, release, err := w.FundTransaction(&txn, initialReward, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	w.SignTransaction(&txn, toSign, types.CoveredFields{WholeTransaction: true})
+
+	// check that wallet now has no spendable balance
+	spendable, confirmed, unconfirmed, err = w.Balance()
+	if err != nil {
+		t.Fatal(err)
+	} else if !confirmed.Equals(initialReward) {
+		t.Fatalf("expected %v confirmed balance, got %v", initialReward, confirmed)
+	} else if !spendable.Equals(types.ZeroCurrency) {
+		t.Fatalf("expected %v spendable balance, got %v", types.ZeroCurrency, spendable)
+	} else if !unconfirmed.Equals(types.ZeroCurrency) {
+		t.Fatalf("expected %v unconfirmed balance, got %v", types.ZeroCurrency, unconfirmed)
+	}
+
+	// add the transaction to the pool
+	if _, err := cm.AddPoolTransactions([]types.Transaction{txn}); err != nil {
+		t.Fatal(err)
+	}
+
+	// check that the wallet has one unconfirmed transaction
+	poolTxns, err := w.UnconfirmedTransactions()
+	if err != nil {
+		t.Fatal(err)
+	} else if len(poolTxns) != 1 {
+		t.Fatal("expected 1 unconfirmed transaction")
+	}
+
+	txn2 := types.Transaction{
+		SiacoinOutputs: []types.SiacoinOutput{
+			{Address: types.VoidAddress, Value: initialReward.Div64(2)},
+		},
+	}
+
+	// try to send a new transaction without using the unconfirmed output
+	_, _, err = w.FundTransaction(&txn2, initialReward.Div64(2), false)
+	if !errors.Is(err, wallet.ErrNotEnoughFunds) {
+		t.Fatalf("expected funding error with no usable utxos, got %v", err)
+	}
+
+	toSign, release, err = w.FundTransaction(&txn2, initialReward.Div64(2), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	w.SignTransaction(&txn2, toSign, types.CoveredFields{WholeTransaction: true})
+
+	// broadcast the transaction
+	if _, err := cm.AddPoolTransactions([]types.Transaction{txn, txn2}); err != nil {
+		t.Fatal(err)
 	}
 }
