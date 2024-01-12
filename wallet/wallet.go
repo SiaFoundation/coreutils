@@ -13,18 +13,6 @@ import (
 	"go.uber.org/zap"
 )
 
-const (
-	// transactionDefragThreshold is the number of utxos at which the wallet
-	// will attempt to defrag itself by including small utxos in transactions.
-	transactionDefragThreshold = 30
-	// maxInputsForDefrag is the maximum number of inputs a transaction can
-	// have before the wallet will stop adding inputs
-	maxInputsForDefrag = 30
-	// maxDefragUTXOs is the maximum number of utxos that will be added to a
-	// transaction when defragging
-	maxDefragUTXOs = 10
-)
-
 // transaction sources indicate the source of a transaction. Transactions can
 // either be created by sending Siacoins between unlock hashes or they can be
 // created by consensus (e.g. a miner payout, a siafund claim, or a contract).
@@ -73,9 +61,9 @@ type (
 	SingleAddressStore interface {
 		chain.Subscriber
 
-		// LastIndexedTip returns the consensus change ID and block height of
+		// Tip returns the consensus change ID and block height of
 		// the last wallet change.
-		LastIndexedTip() (types.ChainIndex, error)
+		Tip() (types.ChainIndex, error)
 		// UnspentSiacoinElements returns a list of all unspent siacoin outputs
 		UnspentSiacoinElements() ([]types.SiacoinElement, error)
 		// Transactions returns a paginated list of transactions ordered by
@@ -85,13 +73,6 @@ type (
 		// TransactionCount returns the total number of transactions in the
 		// wallet.
 		TransactionCount() (uint64, error)
-		// ResetWallet resets the wallet to its initial state. This is used when a
-		// consensus subscription error occurs.
-		ResetWallet(seedHash types.Hash256) error
-		// VerifyWalletKey checks that the wallet seed matches the existing seed
-		// hash. This detects if the user's recovery phrase has changed and the
-		// wallet needs to rescan.
-		VerifyWalletKey(seedHash types.Hash256) error
 	}
 
 	// A SingleAddressWallet is a hot wallet that manages the outputs controlled by
@@ -104,12 +85,13 @@ type (
 		store SingleAddressStore
 		log   *zap.Logger
 
-		mu  sync.Mutex // protects the following fields
-		tip types.ChainIndex
+		cfg config
+
+		mu sync.Mutex // protects the following fields
 		// locked is a set of siacoin output IDs locked by FundTransaction. They
 		// will be released either by calling Release for unused transactions or
 		// being confirmed in a block.
-		locked map[types.Hash256]bool
+		locked map[types.Hash256]time.Time
 	}
 )
 
@@ -137,57 +119,6 @@ func (t *Transaction) DecodeFrom(d *types.Decoder) {
 	t.Outflow.DecodeFrom(d)
 	t.Source = TransactionSource(d.ReadString())
 	t.Timestamp = d.ReadTime()
-}
-
-func transactionIsRelevant(txn types.Transaction, addr types.Address) bool {
-	for i := range txn.SiacoinInputs {
-		if txn.SiacoinInputs[i].UnlockConditions.UnlockHash() == addr {
-			return true
-		}
-	}
-	for i := range txn.SiacoinOutputs {
-		if txn.SiacoinOutputs[i].Address == addr {
-			return true
-		}
-	}
-	for i := range txn.SiafundInputs {
-		if txn.SiafundInputs[i].UnlockConditions.UnlockHash() == addr {
-			return true
-		}
-		if txn.SiafundInputs[i].ClaimAddress == addr {
-			return true
-		}
-	}
-	for i := range txn.SiafundOutputs {
-		if txn.SiafundOutputs[i].Address == addr {
-			return true
-		}
-	}
-	for i := range txn.FileContracts {
-		for _, sco := range txn.FileContracts[i].ValidProofOutputs {
-			if sco.Address == addr {
-				return true
-			}
-		}
-		for _, sco := range txn.FileContracts[i].MissedProofOutputs {
-			if sco.Address == addr {
-				return true
-			}
-		}
-	}
-	for i := range txn.FileContractRevisions {
-		for _, sco := range txn.FileContractRevisions[i].ValidProofOutputs {
-			if sco.Address == addr {
-				return true
-			}
-		}
-		for _, sco := range txn.FileContractRevisions[i].MissedProofOutputs {
-			if sco.Address == addr {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // Close closes the wallet
@@ -234,7 +165,7 @@ func (sw *SingleAddressWallet) Balance() (spendable, confirmed, unconfirmed type
 	defer sw.mu.Unlock()
 	for _, sco := range outputs {
 		confirmed = confirmed.Add(sco.SiacoinOutput.Value)
-		if !sw.locked[sco.ID] && !tpoolSpent[sco.ID] {
+		if time.Now().After(sw.locked[sco.ID]) && !tpoolSpent[sco.ID] {
 			spendable = spendable.Add(sco.SiacoinOutput.Value)
 		}
 	}
@@ -294,7 +225,7 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 	// remove locked and spent outputs
 	usableUTXOs := utxos[:0]
 	for _, sce := range utxos {
-		if sw.locked[sce.ID] || tpoolSpent[sce.ID] {
+		if time.Now().Before(sw.locked[sce.ID]) || tpoolSpent[sce.ID] {
 			continue
 		}
 		usableUTXOs = append(usableUTXOs, sce)
@@ -324,14 +255,14 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 
 	// check if remaining utxos should be defragged
 	txnInputs := len(txn.SiacoinInputs) + len(selected)
-	if len(usableUTXOs) > transactionDefragThreshold && txnInputs < maxInputsForDefrag {
+	if len(usableUTXOs) > sw.cfg.DefragThreshold && txnInputs < sw.cfg.MaxInputsForDefrag {
 		// add the smallest utxos to the transaction
 		defraggable := usableUTXOs
-		if len(defraggable) > maxDefragUTXOs {
-			defraggable = defraggable[len(defraggable)-maxDefragUTXOs:]
+		if len(defraggable) > sw.cfg.MaxDefragUTXOs {
+			defraggable = defraggable[len(defraggable)-sw.cfg.MaxDefragUTXOs:]
 		}
 		for i := len(defraggable) - 1; i >= 0; i-- {
-			if txnInputs >= maxInputsForDefrag {
+			if txnInputs >= sw.cfg.MaxInputsForDefrag {
 				break
 			}
 
@@ -357,7 +288,7 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 			UnlockConditions: types.StandardUnlockConditions(sw.priv.PublicKey()),
 		})
 		toSign[i] = types.Hash256(sce.ID)
-		sw.locked[sce.ID] = true
+		sw.locked[sce.ID] = time.Now().Add(sw.cfg.ReservationDuration)
 	}
 
 	release := func() {
@@ -391,10 +322,8 @@ func (sw *SingleAddressWallet) SignTransaction(cs consensus.State, txn *types.Tr
 }
 
 // Tip returns the block height the wallet has scanned to.
-func (sw *SingleAddressWallet) Tip() types.ChainIndex {
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
-	return sw.tip
+func (sw *SingleAddressWallet) Tip() (types.ChainIndex, error) {
+	return sw.store.Tip()
 }
 
 // UnconfirmedTransactions returns all unconfirmed transactions relevant to the
@@ -476,47 +405,30 @@ func IsRelevantTransaction(txn types.Transaction, addr types.Address) bool {
 }
 
 // NewSingleAddressWallet returns a new SingleAddressWallet using the provided private key and store.
-func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store SingleAddressStore, log *zap.Logger) (*SingleAddressWallet, error) {
-	tip, err := store.LastIndexedTip()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get last wallet change: %w", err)
+func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store SingleAddressStore, opts ...Option) (*SingleAddressWallet, error) {
+	cfg := config{
+		DefragThreshold:     30,
+		MaxInputsForDefrag:  30,
+		MaxDefragUTXOs:      10,
+		ReservationDuration: 15 * time.Minute,
+		Log:                 zap.NewNop(),
 	}
 
-	seedHash := types.HashBytes(priv[:])
-	if err := store.VerifyWalletKey(seedHash); errors.Is(err, ErrDifferentSeed) {
-		tip = types.ChainIndex{}
-		if err := store.ResetWallet(seedHash); err != nil {
-			return nil, fmt.Errorf("failed to reset wallet: %w", err)
-		}
-		log.Info("wallet reset due to seed change")
-	} else if err != nil {
-		return nil, fmt.Errorf("failed to verify wallet key: %w", err)
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 
 	sw := &SingleAddressWallet{
 		priv: priv,
-		tip:  tip,
 
 		store: store,
 		cm:    cm,
-		log:   log,
+
+		cfg: cfg,
+		log: cfg.Log,
 
 		addr:   types.StandardUnlockHash(priv.PublicKey()),
-		locked: make(map[types.Hash256]bool),
+		locked: make(map[types.Hash256]time.Time),
 	}
-
-	go func() {
-		// note: start in goroutine to avoid blocking startup
-		err := cm.AddSubscriber(store, tip)
-		if err != nil { // no way to check for specific reorg error, so reset everything
-			sw.log.Warn("rescanning blockchain due to unknown consensus change ID")
-			// reset change ID and subscribe again
-			if err := store.ResetWallet(seedHash); err != nil {
-				sw.log.Fatal("failed to reset wallet", zap.Error(err))
-			} else if err = cm.AddSubscriber(store, types.ChainIndex{}); err != nil {
-				sw.log.Fatal("failed to reset consensus change subscription", zap.Error(err))
-			}
-		}
-	}()
 	return sw, nil
 }

@@ -76,22 +76,19 @@ func (es *EphemeralWalletStore) ProcessChainApplyUpdate(cau *chain.ApplyUpdate, 
 		return nil
 	}
 
-	walletAddress := types.StandardAddress(es.privateKey.PublicKey())
+	walletAddress := types.StandardUnlockHash(es.privateKey.PublicKey())
 
 	for _, update := range es.uncommitted {
-		// add matured transactions
-		for _, txn := range es.immaturePayoutTransactions[update.State.Index.Height] {
-			txn.Index = update.State.Index
-			txn.Timestamp = update.Block.Timestamp
-			es.transactions = append(es.transactions, txn)
+		// cache the source of new immature outputs to show payout transactions
+		siacoinOutputSources := map[types.SiacoinOutputID]wallet.TransactionSource{
+			update.Block.ID().FoundationOutputID(): wallet.TxnSourceFoundationPayout,
 		}
-
-		// determine the source of new immature outputs
-		siacoinOutputSources := make(map[types.SiacoinOutputID]wallet.TransactionSource)
+		// add the miner payouts
 		for i := range update.Block.MinerPayouts {
-			siacoinOutputSources[update.Block.ParentID.MinerOutputID(i)] = wallet.TxnSourceMinerPayout
+			siacoinOutputSources[update.Block.ID().MinerOutputID(i)] = wallet.TxnSourceMinerPayout
 		}
 
+		// add the file contract outputs
 		update.ForEachFileContractElement(func(fce types.FileContractElement, rev *types.FileContractElement, resolved bool, valid bool) {
 			if !resolved {
 				return
@@ -108,42 +105,13 @@ func (es *EphemeralWalletStore) ProcessChainApplyUpdate(cau *chain.ApplyUpdate, 
 			}
 		})
 
-		for _, txn := range update.Block.Transactions {
-			for i := range txn.SiafundInputs {
-				siacoinOutputSources[txn.SiafundInputs[i].ParentID.ClaimOutputID()] = wallet.TxnSourceSiafundClaim
-			}
+		// add matured transactions first since
+		for _, txn := range es.immaturePayoutTransactions[update.State.Index.Height] {
+			txn.Index = update.State.Index
+			txn.Timestamp = update.Block.Timestamp
+			// prepend the transaction to the wallet
+			es.transactions = append([]wallet.Transaction{txn}, es.transactions...)
 		}
-
-		update.ForEachSiacoinElement(func(se types.SiacoinElement, spent bool) {
-			if se.SiacoinOutput.Address != walletAddress {
-				return
-			}
-
-			// update the utxo set
-			if spent {
-				delete(es.utxos, se.ID)
-			} else {
-				es.utxos[se.ID] = se
-			}
-
-			// create an immature payout transaction for any immature siacoin outputs
-			if se.MaturityHeight == 0 || spent {
-				return
-			}
-
-			source, ok := siacoinOutputSources[types.SiacoinOutputID(se.ID)]
-			if !ok {
-				source = wallet.TxnSourceFoundationPayout
-			}
-
-			es.immaturePayoutTransactions[se.MaturityHeight] = append(es.immaturePayoutTransactions[se.MaturityHeight], wallet.Transaction{
-				ID:          types.TransactionID(se.ID),
-				Transaction: types.Transaction{SiacoinOutputs: []types.SiacoinOutput{se.SiacoinOutput}},
-				Inflow:      se.SiacoinOutput.Value,
-				Source:      source,
-				// Index and Timestamp will be filled in later
-			})
-		})
 
 		// add the block transactions
 		for _, txn := range update.Block.Transactions {
@@ -178,7 +146,47 @@ func (es *EphemeralWalletStore) ProcessChainApplyUpdate(cau *chain.ApplyUpdate, 
 
 				wt.Inflow = wt.Inflow.Add(sco.Value)
 			}
+
+			// prepend the transaction to the wallet
+			es.transactions = append([]wallet.Transaction{wt}, es.transactions...)
+
+			// add the siafund claim output IDs
+			for i := range txn.SiafundInputs {
+				siacoinOutputSources[txn.SiafundInputs[i].ParentID.ClaimOutputID()] = wallet.TxnSourceSiafundClaim
+			}
 		}
+
+		// update the utxo set
+		update.ForEachSiacoinElement(func(se types.SiacoinElement, spent bool) {
+			if se.SiacoinOutput.Address != walletAddress {
+				return
+			}
+
+			// update the utxo set
+			if spent {
+				delete(es.utxos, se.ID)
+			} else {
+				es.utxos[se.ID] = se
+			}
+
+			// create an immature payout transaction for any immature siacoin outputs
+			if se.MaturityHeight == 0 || spent {
+				return
+			}
+
+			source, ok := siacoinOutputSources[types.SiacoinOutputID(se.ID)]
+			if !ok {
+				panic("missing siacoin source")
+			}
+
+			es.immaturePayoutTransactions[se.MaturityHeight] = append(es.immaturePayoutTransactions[se.MaturityHeight], wallet.Transaction{
+				ID:          types.TransactionID(se.ID),
+				Transaction: types.Transaction{SiacoinOutputs: []types.SiacoinOutput{se.SiacoinOutput}},
+				Inflow:      se.SiacoinOutput.Value,
+				Source:      source,
+				// Index and Timestamp will be filled in later
+			})
+		})
 
 		// update the element proofs
 		for id, se := range es.utxos {
@@ -226,32 +234,11 @@ func (es *EphemeralWalletStore) UnspentSiacoinElements() (utxos []types.SiacoinE
 	return utxos, nil
 }
 
-// LastIndexedTip returns the last indexed tip of the wallet.
-func (es *EphemeralWalletStore) LastIndexedTip() (types.ChainIndex, error) {
+// Tip returns the last indexed tip of the wallet.
+func (es *EphemeralWalletStore) Tip() (types.ChainIndex, error) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
 	return es.tip, nil
-}
-
-// VerifyWalletKey checks that the wallet seed matches the existing seed
-// hash. This detects if the user's recovery phrase has changed and the
-// wallet needs to rescan.
-func (es *EphemeralWalletStore) VerifyWalletKey(seedHash types.Hash256) error {
-	return nil
-}
-
-// ResetWallet resets the wallet to its initial state. This is used when a
-// consensus subscription error occurs.
-func (es *EphemeralWalletStore) ResetWallet(seedHash types.Hash256) error {
-	es.mu.Lock()
-	defer es.mu.Unlock()
-
-	es.uncommitted = es.uncommitted[:0]
-	es.tip = types.ChainIndex{}
-	es.utxos = make(map[types.Hash256]types.SiacoinElement)
-	es.immaturePayoutTransactions = make(map[uint64][]wallet.Transaction)
-	es.transactions = nil
-	return nil
 }
 
 // NewEphemeralWalletStore returns a new EphemeralWalletStore.

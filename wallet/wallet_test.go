@@ -25,7 +25,11 @@ func TestWallet(t *testing.T) {
 	pk := types.GeneratePrivateKey()
 	ws := testutil.NewEphemeralWalletStore(pk)
 
-	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, log.Named("wallet"))
+	if err := cm.AddSubscriber(ws, types.ChainIndex{}); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(log.Named("wallet")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +58,7 @@ func TestWallet(t *testing.T) {
 	// mine until the payout matures
 	target := tip.MaturityHeight() + 1
 	for i := tip.Index.Height; i < target; i++ {
-		b := testutil.MineBlock(tip, nil, w.Address())
+		b := testutil.MineBlock(tip, nil, types.VoidAddress)
 		if err := cm.AddBlocks([]types.Block{b}); err != nil {
 			t.Fatal(err)
 		}
@@ -102,6 +106,7 @@ func TestWallet(t *testing.T) {
 		}
 	}
 
+	// fund and sign the transaction
 	toSign, release, err := w.FundTransaction(&txn, initialReward)
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +121,49 @@ func TestWallet(t *testing.T) {
 	spendable, confirmed, unconfirmed, err = w.Balance()
 	if err != nil {
 		t.Fatal(err)
-	} else if !confirmed.Equals(types.ZeroCurrency) {
+	} else if !confirmed.Equals(initialReward) {
+		t.Fatalf("expected %v confirmed balance, got %v", types.ZeroCurrency, confirmed)
+	} else if !spendable.Equals(types.ZeroCurrency) {
+		t.Fatalf("expected %v spendable balance, got %v", types.ZeroCurrency, spendable)
+	} else if !unconfirmed.Equals(types.ZeroCurrency) {
+		t.Fatalf("expected %v unconfirmed balance, got %v", types.ZeroCurrency, unconfirmed)
+	}
+
+	// check the wallet has no unconfirmed transactions
+	poolTxns, err := w.UnconfirmedTransactions()
+	if err != nil {
+		t.Fatal(err)
+	} else if len(poolTxns) != 0 {
+		t.Fatalf("expected 0 unconfirmed transaction, got %v", len(poolTxns))
+	}
+
+	// add the transaction to the pool
+	if _, err := cm.AddPoolTransactions([]types.Transaction{txn}); err != nil {
+		t.Fatal(err)
+	}
+
+	// check that the wallet has one unconfirmed transaction
+	poolTxns, err = w.UnconfirmedTransactions()
+	if err != nil {
+		t.Fatal(err)
+	} else if len(poolTxns) != 1 {
+		t.Fatalf("expected 1 unconfirmed transaction, got %v", len(poolTxns))
+	} else if poolTxns[0].Transaction.ID() != txn.ID() {
+		t.Fatalf("expected transaction %v, got %v", txn.ID(), poolTxns[0].Transaction.ID())
+	} else if poolTxns[0].Source != wallet.TxnSourceTransaction {
+		t.Fatalf("expected wallet source, got %v", poolTxns[0].Source)
+	} else if !poolTxns[0].Inflow.Equals(initialReward) {
+		t.Fatalf("expected %v inflow, got %v", initialReward, poolTxns[0].Inflow)
+	} else if !poolTxns[0].Outflow.Equals(initialReward) {
+		t.Fatalf("expected %v outflow, got %v", types.ZeroCurrency, poolTxns[0].Outflow)
+	}
+
+	// check that the wallet has an unconfirmed balance
+	// check that wallet now has no spendable balance
+	spendable, confirmed, unconfirmed, err = w.Balance()
+	if err != nil {
+		t.Fatal(err)
+	} else if !confirmed.Equals(initialReward) {
 		t.Fatalf("expected %v confirmed balance, got %v", types.ZeroCurrency, confirmed)
 	} else if !spendable.Equals(types.ZeroCurrency) {
 		t.Fatalf("expected %v spendable balance, got %v", types.ZeroCurrency, spendable)
@@ -124,17 +171,8 @@ func TestWallet(t *testing.T) {
 		t.Fatalf("expected %v unconfirmed balance, got %v", initialReward, unconfirmed)
 	}
 
-	// check the wallet's unconfirmed transactions
-	poolTxns, err := w.UnconfirmedTransactions()
-	if err != nil {
-		t.Fatal(err)
-	} else if len(poolTxns) != 1 {
-		t.Fatalf("expected 1 unconfirmed transaction, got %v", len(poolTxns))
-	} else if poolTxns[0].Transaction.ID() != txn.ID() {
-		t.Fatalf("expected transaction %v, got %v", txn.ID(), poolTxns[0].Transaction.ID())
-	}
-
 	// mine a block to confirm the transaction
+	tip = cm.TipState()
 	b = testutil.MineBlock(tip, []types.Transaction{txn}, types.VoidAddress)
 	if err := cm.AddBlocks([]types.Block{b}); err != nil {
 		t.Fatal(err)
@@ -172,12 +210,13 @@ func TestWallet(t *testing.T) {
 
 	// send all the outputs to the burn address individually
 	sent := make([]types.Transaction, 20)
-	for i := range txns {
+	sendAmount := initialReward.Div64(20)
+	for i := range sent {
 		sent[i].SiacoinOutputs = []types.SiacoinOutput{
-			{Address: types.VoidAddress, Value: initialReward.Div64(20)},
+			{Address: types.VoidAddress, Value: sendAmount},
 		}
 
-		toSign, release, err := w.FundTransaction(&sent[i], initialReward)
+		toSign, release, err := w.FundTransaction(&sent[i], sendAmount)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -188,6 +227,7 @@ func TestWallet(t *testing.T) {
 		}
 	}
 
+	tip = cm.TipState()
 	b = testutil.MineBlock(tip, sent, types.VoidAddress)
 	if err := cm.AddBlocks([]types.Block{b}); err != nil {
 		t.Fatal(err)
@@ -211,8 +251,8 @@ func TestWallet(t *testing.T) {
 		t.Fatalf("expected %v confirmed balance, got %v", types.ZeroCurrency, confirmed)
 	} else if !spendable.Equals(types.ZeroCurrency) {
 		t.Fatalf("expected %v spendable balance, got %v", types.ZeroCurrency, spendable)
-	} else if !unconfirmed.Equals(initialReward) {
-		t.Fatalf("expected %v unconfirmed balance, got %v", initialReward, unconfirmed)
+	} else if !unconfirmed.Equals(types.ZeroCurrency) {
+		t.Fatalf("expected %v unconfirmed balance, got %v", types.ZeroCurrency, unconfirmed)
 	}
 
 	// check that the paginated transactions are in the proper order
@@ -223,7 +263,8 @@ func TestWallet(t *testing.T) {
 		t.Fatalf("expected 20 transactions, got %v", len(txns))
 	}
 	for i := range sent {
-		if txns[i].ID != sent[i].ID() {
+		j := len(txns) - i - 1 // transactions are received in reverse order
+		if txns[j].ID != sent[i].ID() {
 			t.Fatalf("expected transaction %v, got %v", sent[i].ID(), txns[i].ID)
 		}
 	}
