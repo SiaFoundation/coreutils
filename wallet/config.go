@@ -16,6 +16,7 @@ type (
 		Log *zap.Logger
 	}
 
+	// An Option is a configuration option for a wallet.
 	Option func(*config)
 )
 
