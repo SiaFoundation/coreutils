@@ -4,7 +4,7 @@ go 1.21
 
 require (
 	go.etcd.io/bbolt v1.3.8
-	go.sia.tech/core v0.1.12
+	go.sia.tech/core v0.2.0
 	golang.org/x/crypto v0.0.0-20220507011949-2cf3adece122
 	lukechampine.com/frand v1.4.2
 )
