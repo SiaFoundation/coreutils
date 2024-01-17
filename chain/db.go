@@ -296,32 +296,6 @@ func (db *DBStore) getBlock(id types.BlockID) (b types.Block, bs *consensus.V1Bl
 	return sb.Block, sb.Supplement, ok
 }
 
-func (db *DBStore) ancestorTimestamp(id types.BlockID) (time.Time, bool) {
-	getBestID := func(height uint64) (id types.BlockID) {
-		db.bucket(bMainChain).get(db.encHeight(height), &id)
-		return
-	}
-	cs, _ := db.State(id)
-	if cs.Index.Height > db.n.HardforkOak.Height {
-		return time.Time{}, true
-	}
-	ancestorID := id
-	for i := uint64(0); i < cs.AncestorDepth() && i < cs.Index.Height; i++ {
-		// if we're on the best path, we can jump to the n'th block directly
-		if ancestorID == getBestID(cs.Index.Height-i) {
-			ancestorID = getBestID(cs.Index.Height - cs.AncestorDepth())
-			if cs.Index.Height < cs.AncestorDepth() {
-				ancestorID = getBestID(0)
-			}
-			break
-		}
-		b, _, _ := db.Block(ancestorID)
-		ancestorID = b.ParentID
-	}
-	b, _, ok := db.Block(ancestorID)
-	return b.Timestamp, ok
-}
-
 func (db *DBStore) putBlock(b types.Block, bs *consensus.V1BlockSupplement) {
 	id := b.ID()
 	db.bucket(bBlocks).put(id[:], supplementedBlock{b, bs})
@@ -589,11 +563,40 @@ func (db *DBStore) SupplementTipBlock(b types.Block) (bs consensus.V1BlockSupple
 
 // AncestorTimestamp implements Store.
 func (db *DBStore) AncestorTimestamp(id types.BlockID) (t time.Time, ok bool) {
+	cs, _ := db.State(id)
+	if cs.Index.Height > db.n.HardforkOak.Height {
+		// the Oak difficulty adjustment algorithm is continuous, so ancestor
+		// timestamps are not needed
+		return time.Time{}, true
+	}
+
+	getBestID := func(height uint64) (id types.BlockID) {
+		db.bucket(bMainChain).get(db.encHeight(height), &id)
+		return
+	}
+	computeTimestamp := func(id types.BlockID) (time.Time, bool) {
+		ancestorID := id
+		for i := uint64(0); i < cs.AncestorDepth() && i < cs.Index.Height; i++ {
+			// if we're on the best path, we can jump to the n'th block directly
+			if ancestorID == getBestID(cs.Index.Height-i) {
+				ancestorID = getBestID(cs.Index.Height - cs.AncestorDepth())
+				if cs.Index.Height < cs.AncestorDepth() {
+					ancestorID = getBestID(0)
+				}
+				break
+			}
+			b, _, _ := db.Block(ancestorID)
+			ancestorID = b.ParentID
+		}
+		b, _, ok := db.Block(ancestorID)
+		return b.Timestamp, ok
+	}
+
 	ok = db.bucket(bAncestorTimestamps).get(id[:], types.DecoderFunc(func(d *types.Decoder) {
 		t = d.ReadTime()
 	}))
 	if !ok {
-		t, ok = db.ancestorTimestamp(id)
+		t, ok = computeTimestamp(id)
 		if ok {
 			db.bucket(bAncestorTimestamps).put(id[:], types.EncoderFunc(func(e *types.Encoder) {
 				e.WriteTime(t)
