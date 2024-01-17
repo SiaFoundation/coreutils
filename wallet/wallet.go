@@ -76,8 +76,8 @@ type (
 		TransactionCount() (uint64, error)
 	}
 
-	// A SingleAddressWallet is a hot wallet that manages the outputs controlled by
-	// a single address.
+	// A SingleAddressWallet is a hot wallet that manages the outputs controlled
+	// by a single address.
 	SingleAddressWallet struct {
 		priv types.PrivateKey
 		addr types.Address

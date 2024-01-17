@@ -1,4 +1,4 @@
-package coreutils
+package wallet
 
 import (
 	"crypto/sha256"
