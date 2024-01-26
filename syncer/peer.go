@@ -22,6 +22,7 @@ type Peer struct {
 	ConnAddr string
 	Inbound  bool
 	mu       sync.Mutex
+	synced   bool
 	err      error
 }
 
@@ -54,6 +55,19 @@ func (p *Peer) setErr(err error) error {
 func (p *Peer) Close() error {
 	p.setErr(errors.New("closing"))
 	return nil
+}
+
+// Synced returns the peer's sync status.
+func (p *Peer) Synced() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.synced
+}
+
+func (p *Peer) setSynced(synced bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.synced = synced
 }
 
 func (p *Peer) callRPC(r gateway.Object, timeout time.Duration) error {
