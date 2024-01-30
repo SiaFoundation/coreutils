@@ -34,6 +34,15 @@ func (p *Peer) String() string {
 	return "->" + p.ConnAddr
 }
 
+// Addr returns the peer's reported dialback address.
+func (p *Peer) Addr() string { return p.t.Addr }
+
+// Version returns the peer's reported version.
+func (p *Peer) Version() string { return p.t.Version }
+
+// UniqueID returns the peer's reported UniqueID.
+func (p *Peer) UniqueID() gateway.UniqueID { return p.t.UniqueID }
+
 // Err returns the error that caused the peer to disconnect, if any.
 func (p *Peer) Err() error {
 	p.mu.Lock()
@@ -51,12 +60,6 @@ func (p *Peer) setErr(err error) error {
 	return p.err
 }
 
-// Close closes the peer's connection.
-func (p *Peer) Close() error {
-	p.setErr(errors.New("closing"))
-	return nil
-}
-
 // Synced returns the peer's sync status.
 func (p *Peer) Synced() bool {
 	p.mu.Lock()
@@ -68,6 +71,12 @@ func (p *Peer) setSynced(synced bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.synced = synced
+}
+
+// Close closes the peer's connection.
+func (p *Peer) Close() error {
+	p.setErr(errors.New("closing"))
+	return nil
 }
 
 func (p *Peer) callRPC(r gateway.Object, timeout time.Duration) error {

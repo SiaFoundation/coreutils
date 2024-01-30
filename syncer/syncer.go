@@ -188,9 +188,8 @@ type Syncer struct {
 }
 
 func (s *Syncer) resync(p *Peer, reason string) {
-	alreadyResyncing := !p.Synced()
-	p.setSynced(false)
-	if !alreadyResyncing {
+	if p.Synced() {
+		p.setSynced(false)
 		s.log.Debug("resync triggered", zap.String("peer", p.t.Addr), zap.String("reason", reason))
 	}
 }
