@@ -25,13 +25,13 @@ const (
 )
 
 const (
-	// BytesPerInput is the encoded size of a SiacoinInput and corresponding
+	// bytesPerInput is the encoded size of a SiacoinInput and corresponding
 	// TransactionSignature, assuming standard UnlockConditions.
-	BytesPerInput = 241
+	bytesPerInput = 241
 
-	// RedistributeBatchSize is the number of outputs to redistribute per txn to
+	// redistributeBatchSize is the number of outputs to redistribute per txn to
 	// avoid creating a txn that is too large.
-	RedistributeBatchSize = 10
+	redistributeBatchSize = 10
 )
 
 var (
@@ -513,7 +513,7 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 	// prepare defrag transactions
 	for outputs > 0 {
 		var txn types.Transaction
-		for i := 0; i < outputs && i < RedistributeBatchSize; i++ {
+		for i := 0; i < outputs && i < redistributeBatchSize; i++ {
 			txn.SiacoinOutputs = append(txn.SiacoinOutputs, types.SiacoinOutput{
 				Value:   amount,
 				Address: sw.addr,
@@ -523,7 +523,7 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 
 		// estimate the fees
 		outputFees := feePerByte.Mul64(state.TransactionWeight(txn))
-		feePerInput := feePerByte.Mul64(BytesPerInput)
+		feePerInput := feePerByte.Mul64(bytesPerInput)
 
 		// collect outputs that cover the total amount
 		var inputs []types.SiacoinElement
