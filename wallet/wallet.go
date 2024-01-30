@@ -24,6 +24,16 @@ const (
 	TxnSourceFoundationPayout TransactionSource = "foundation"
 )
 
+const (
+	// BytesPerInput is the encoded size of a SiacoinInput and corresponding
+	// TransactionSignature, assuming standard UnlockConditions.
+	BytesPerInput = 241
+
+	// RedistributeBatchSize is the number of outputs to redistribute per txn to
+	// avoid creating a txn that is too large.
+	RedistributeBatchSize = 10
+)
+
 var (
 	// ErrNotEnoughFunds is returned when there are not enough unspent outputs
 	// to fund a transaction.
@@ -193,21 +203,54 @@ func (sw *SingleAddressWallet) TransactionCount() (uint64, error) {
 	return sw.store.TransactionCount()
 }
 
-// FundTransaction adds siacoin inputs worth at least amount to the provided
-// transaction. If necessary, a change output will also be added. The inputs
-// will not be available to future calls to FundTransaction unless ReleaseInputs
-// is called.
-func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount types.Currency, useUnconfirmed bool) ([]types.Hash256, func(), error) {
-	if amount.IsZero() {
-		return nil, func() {}, nil
+// SpendableOutputs returns a list of spendable siacoin outputs, a spendable
+// output is an unspent output that's not locked, not currently in the
+// transaction pool and that has matured.
+func (sw *SingleAddressWallet) SpendableOutputs() ([]types.SiacoinElement, error) {
+	// fetch outputs from the store
+	utxos, err := sw.store.UnspentSiacoinElements()
+	if err != nil {
+		return nil, err
 	}
+
+	// fetch outputs currently in the pool
+	inPool := make(map[types.Hash256]bool)
+	for _, txn := range sw.cm.PoolTransactions() {
+		for _, sci := range txn.SiacoinInputs {
+			inPool[types.Hash256(sci.ParentID)] = true
+		}
+	}
+
+	// grab current height
+	state := sw.cm.TipState()
+	bh := state.Index.Height
 
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
+	// filter outputs that are either locked, in the pool or have not yet matured
+	unspent := utxos[:0]
+	for _, sce := range utxos {
+		if time.Now().Before(sw.locked[sce.ID]) || inPool[sce.ID] || bh < sce.MaturityHeight {
+			continue
+		}
+		unspent = append(unspent, sce)
+	}
+	return unspent, nil
+}
+
+// FundTransaction adds siacoin inputs worth at least amount to the provided
+// transaction. If necessary, a change output will also be added. The inputs
+// will not be available to future calls to FundTransaction unless ReleaseInputs
+// is called.
+func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount types.Currency, useUnconfirmed bool) ([]types.Hash256, error) {
+	if amount.IsZero() {
+		return nil, nil
+	}
+
 	utxos, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	tpoolSpent := make(map[types.Hash256]bool)
@@ -226,6 +269,9 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 			}
 		}
 	}
+
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
 
 	// remove locked and spent outputs
 	filtered := utxos[:0]
@@ -281,10 +327,10 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 
 		if inputSum.Cmp(amount) < 0 {
 			// still not enough funds
-			return nil, nil, ErrNotEnoughFunds
+			return nil, ErrNotEnoughFunds
 		}
 	} else if inputSum.Cmp(amount) < 0 {
-		return nil, nil, ErrNotEnoughFunds
+		return nil, ErrNotEnoughFunds
 	}
 
 	// check if remaining utxos should be defragged
@@ -325,14 +371,7 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 		sw.locked[sce.ID] = time.Now().Add(sw.cfg.ReservationDuration)
 	}
 
-	release := func() {
-		sw.mu.Lock()
-		defer sw.mu.Unlock()
-		for _, id := range toSign {
-			delete(sw.locked, id)
-		}
-	}
-	return toSign, release, nil
+	return toSign, nil
 }
 
 // SignTransaction adds a signature to each of the specified inputs.
@@ -364,9 +403,6 @@ func (sw *SingleAddressWallet) Tip() (types.ChainIndex, error) {
 // UnconfirmedTransactions returns all unconfirmed transactions relevant to the
 // wallet.
 func (sw *SingleAddressWallet) UnconfirmedTransactions() ([]Transaction, error) {
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
-
 	confirmed, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get unspent outputs: %w", err)
@@ -410,6 +446,142 @@ func (sw *SingleAddressWallet) UnconfirmedTransactions() ([]Transaction, error) 
 	return annotated, nil
 }
 
+// Redistribute returns a transaction that redistributes money in the wallet by
+// selecting a minimal set of inputs to cover the creation of the requested
+// outputs. It also returns a list of output IDs that need to be signed.
+func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte types.Currency) (txns []types.Transaction, toSign []types.Hash256, err error) {
+	// fetch outputs from the store
+	utxos, err := sw.store.UnspentSiacoinElements()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// fetch outputs currently in the pool
+	inPool := make(map[types.Hash256]bool)
+	for _, txn := range sw.cm.PoolTransactions() {
+		for _, sci := range txn.SiacoinInputs {
+			inPool[types.Hash256(sci.ParentID)] = true
+		}
+	}
+
+	// grab current height
+	state := sw.cm.TipState()
+	bh := state.Index.Height
+
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+
+	// adjust the number of desired outputs for any output we encounter that is
+	// unused, matured and has the same value
+	usable := utxos[:0]
+	for _, sce := range utxos {
+		inUse := time.Now().After(sw.locked[sce.ID]) || inPool[sce.ID]
+		matured := bh >= sce.MaturityHeight
+		sameValue := sce.SiacoinOutput.Value.Equals(amount)
+
+		// adjust number of desired outputs
+		if !inUse && matured && sameValue {
+			outputs--
+		}
+
+		// collect usable outputs for defragging
+		if !inUse && matured && !sameValue {
+			usable = append(usable, sce)
+		}
+	}
+	utxos = usable
+
+	// return early if we don't have to defrag at all
+	if outputs <= 0 {
+		return nil, nil, nil
+	}
+
+	// in case of an error we need to free all inputs
+	defer func() {
+		if err != nil {
+			for _, id := range toSign {
+				delete(sw.locked, id)
+			}
+		}
+	}()
+
+	// desc sort
+	sort.Slice(utxos, func(i, j int) bool {
+		return utxos[i].SiacoinOutput.Value.Cmp(utxos[j].SiacoinOutput.Value) > 0
+	})
+
+	// prepare defrag transactions
+	for outputs > 0 {
+		var txn types.Transaction
+		for i := 0; i < outputs && i < RedistributeBatchSize; i++ {
+			txn.SiacoinOutputs = append(txn.SiacoinOutputs, types.SiacoinOutput{
+				Value:   amount,
+				Address: sw.addr,
+			})
+		}
+		outputs -= len(txn.SiacoinOutputs)
+
+		// estimate the fees
+		outputFees := feePerByte.Mul64(state.TransactionWeight(txn))
+		feePerInput := feePerByte.Mul64(BytesPerInput)
+
+		// collect outputs that cover the total amount
+		var inputs []types.SiacoinElement
+		want := amount.Mul64(uint64(len(txn.SiacoinOutputs)))
+		for _, sce := range utxos {
+			inputs = append(inputs, sce)
+			fee := feePerInput.Mul64(uint64(len(inputs))).Add(outputFees)
+			if SumOutputs(inputs).Cmp(want.Add(fee)) > 0 {
+				break
+			}
+		}
+
+		// not enough outputs found
+		fee := feePerInput.Mul64(uint64(len(inputs))).Add(outputFees)
+		if sumOut := SumOutputs(inputs); sumOut.Cmp(want.Add(fee)) < 0 {
+			return nil, nil, fmt.Errorf("%w: inputs %v < needed %v + txnFee %v", ErrNotEnoughFunds, sumOut.String(), want.String(), fee.String())
+		}
+
+		// set the miner fee
+		txn.MinerFees = []types.Currency{fee}
+
+		// add the change output
+		change := SumOutputs(inputs).Sub(want.Add(fee))
+		if !change.IsZero() {
+			txn.SiacoinOutputs = append(txn.SiacoinOutputs, types.SiacoinOutput{
+				Value:   change,
+				Address: sw.addr,
+			})
+		}
+
+		// add the inputs
+		for _, sce := range inputs {
+			txn.SiacoinInputs = append(txn.SiacoinInputs, types.SiacoinInput{
+				ParentID:         types.SiacoinOutputID(sce.ID),
+				UnlockConditions: types.StandardUnlockConditions(sw.priv.PublicKey()),
+			})
+			toSign = append(toSign, sce.ID)
+			sw.locked[sce.ID] = time.Now().Add(sw.cfg.ReservationDuration)
+		}
+		txns = append(txns, txn)
+	}
+
+	return
+}
+
+// ReleaseInputs is a helper function that releases the inputs of txn for use in
+// other transactions. It should only be called on transactions that are invalid
+// or will never be broadcast.
+func (sw *SingleAddressWallet) ReleaseInputs(txns ...types.Transaction) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	for _, txn := range txns {
+		for _, in := range txn.SiacoinInputs {
+			delete(sw.locked, types.Hash256(in.ParentID))
+		}
+	}
+}
+
 // IsRelevantTransaction returns true if the v1 transaction is relevant to the
 // address
 func IsRelevantTransaction(txn types.Transaction, addr types.Address) bool {
@@ -437,6 +609,14 @@ func IsRelevantTransaction(txn types.Transaction, addr types.Address) bool {
 		}
 	}
 	return false
+}
+
+// SumOutputs returns the total value of the supplied outputs.
+func SumOutputs(outputs []types.SiacoinElement) (sum types.Currency) {
+	for _, o := range outputs {
+		sum = sum.Add(o.SiacoinOutput.Value)
+	}
+	return
 }
 
 // NewSingleAddressWallet returns a new SingleAddressWallet using the provided private key and store.

@@ -106,11 +106,10 @@ func TestWallet(t *testing.T) {
 	}
 
 	// fund and sign the transaction
-	toSign, release, err := w.FundTransaction(&txn, initialReward, false)
+	toSign, err := w.FundTransaction(&txn, initialReward, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer release()
 	w.SignTransaction(&txn, toSign, types.CoveredFields{WholeTransaction: true})
 
 	// check that wallet now has no spendable balance
@@ -211,11 +210,10 @@ func TestWallet(t *testing.T) {
 			{Address: types.VoidAddress, Value: sendAmount},
 		}
 
-		toSign, release, err := w.FundTransaction(&sent[i], sendAmount, false)
+		toSign, err := w.FundTransaction(&sent[i], sendAmount, false)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer release()
 		w.SignTransaction(&sent[i], toSign, types.CoveredFields{WholeTransaction: true})
 	}
 
@@ -339,11 +337,10 @@ func TestWalletUnconfirmed(t *testing.T) {
 		},
 	}
 
-	toSign, release, err := w.FundTransaction(&txn, initialReward, false)
+	toSign, err := w.FundTransaction(&txn, initialReward, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer release()
 	w.SignTransaction(&txn, toSign, types.CoveredFields{WholeTransaction: true})
 
 	// check that wallet now has no spendable balance
@@ -378,16 +375,15 @@ func TestWalletUnconfirmed(t *testing.T) {
 	}
 
 	// try to send a new transaction without using the unconfirmed output
-	_, _, err = w.FundTransaction(&txn2, initialReward.Div64(2), false)
+	_, err = w.FundTransaction(&txn2, initialReward.Div64(2), false)
 	if !errors.Is(err, wallet.ErrNotEnoughFunds) {
 		t.Fatalf("expected funding error with no usable utxos, got %v", err)
 	}
 
-	toSign, release, err = w.FundTransaction(&txn2, initialReward.Div64(2), true)
+	toSign, err = w.FundTransaction(&txn2, initialReward.Div64(2), true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer release()
 	w.SignTransaction(&txn2, toSign, types.CoveredFields{WholeTransaction: true})
 
 	// broadcast the transaction
