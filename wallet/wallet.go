@@ -105,8 +105,8 @@ func (t Transaction) EncodeTo(e *types.Encoder) {
 	t.ID.EncodeTo(e)
 	t.Index.EncodeTo(e)
 	t.Transaction.EncodeTo(e)
-	t.Inflow.EncodeTo(e)
-	t.Outflow.EncodeTo(e)
+	types.V2Currency(t.Inflow).EncodeTo(e)
+	types.V2Currency(t.Outflow).EncodeTo(e)
 	e.WriteString(string(t.Source))
 	e.WriteTime(t.Timestamp)
 }
@@ -116,8 +116,8 @@ func (t *Transaction) DecodeFrom(d *types.Decoder) {
 	t.ID.DecodeFrom(d)
 	t.Index.DecodeFrom(d)
 	t.Transaction.DecodeFrom(d)
-	t.Inflow.DecodeFrom(d)
-	t.Outflow.DecodeFrom(d)
+	(*types.V2Currency)(&t.Inflow).DecodeFrom(d)
+	(*types.V2Currency)(&t.Outflow).DecodeFrom(d)
 	t.Source = TransactionSource(d.ReadString())
 	t.Timestamp = d.ReadTime()
 }
