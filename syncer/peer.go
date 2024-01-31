@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"reflect"
 	"sync"
 	"time"
 
@@ -224,10 +223,17 @@ func (p *Peer) acceptRPC() (types.Specifier, *gateway.Stream, error) {
 func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *Peer) error {
 	switch r := gateway.ObjectForID(id).(type) {
 	case *gateway.RPCShareNodes:
-		r.Peers = s.pm.Peers()
-		if len(r.Peers) > 10 {
-			frand.Shuffle(len(r.Peers), reflect.Swapper(r.Peers))
-			r.Peers = r.Peers[:10]
+		peers, err := s.pm.Peers()
+		if err != nil {
+			return fmt.Errorf("failed to fetch peers: %w", err)
+		} else if n := len(peers); n > 10 {
+			frand.Shuffle(n, func(i, j int) {
+				peers[i], peers[j] = peers[j], peers[i]
+			})
+			peers = peers[:10]
+		}
+		for _, p := range peers {
+			r.Peers = append(r.Peers, p.Address)
 		}
 		if err := stream.WriteResponse(r); err != nil {
 			return err
@@ -254,8 +260,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		if _, ok := s.cm.State(bid); ok {
 			return nil // already seen
 		} else if bid.CmpWork(cs.ChildTarget) < 0 {
-			s.ban(origin, errors.New("peer sent header with insufficient work"))
-			return nil
+			return s.ban(origin, errors.New("peer sent header with insufficient work"))
 		} else if r.Header.ParentID != s.cm.Tip().ID {
 			// block extends a sidechain, which peer (if honest) believes to be the
 			// heaviest chain
@@ -268,8 +273,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 			s.log.Warn("couldn't retrieve new block after header relay", zap.Stringer("header", r.Header.ID()), zap.Stringer("origin", origin), zap.Error(err))
 			return nil
 		} else if err := s.cm.AddBlocks([]types.Block{b}); err != nil {
-			s.ban(origin, err)
-			return nil
+			return s.ban(origin, err)
 		}
 		s.relayHeader(r.Header, origin) // non-blocking
 		return nil
@@ -279,7 +283,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 			return err
 		}
 		if len(r.Transactions) == 0 {
-			s.ban(origin, errors.New("peer sent an empty transaction set"))
+			return s.ban(origin, errors.New("peer sent an empty transaction set"))
 		} else if known, err := s.cm.AddPoolTransactions(r.Transactions); !known {
 			if err != nil {
 				// too risky to ban here (txns are probably just outdated), but at least
@@ -386,8 +390,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		if _, ok := s.cm.State(bid); ok {
 			return nil // already seen
 		} else if bid.CmpWork(cs.ChildTarget) < 0 {
-			s.ban(origin, errors.New("peer sent v2 header with insufficient work"))
-			return nil
+			return s.ban(origin, errors.New("peer sent v2 header with insufficient work"))
 		} else if r.Header.Parent != s.cm.Tip() {
 			// block extends a sidechain, which peer (if honest) believes to be the
 			// heaviest chain
@@ -416,8 +419,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		if _, ok := s.cm.State(bid); ok {
 			return nil // already seen
 		} else if bid.CmpWork(cs.ChildTarget) < 0 {
-			s.ban(origin, errors.New("peer sent v2 outline with insufficient work"))
-			return nil
+			return s.ban(origin, errors.New("peer sent v2 outline with insufficient work"))
 		} else if r.Block.ParentID != s.cm.Tip().ID {
 			// block extends a sidechain, which peer (if honest) believes to be the
 			// heaviest chain
@@ -440,13 +442,11 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 			b, missing = r.Block.Complete(cs, txns, v2txns)
 			if len(missing) > 0 {
 				// inexcusable
-				s.ban(origin, errors.New("peer sent wrong missing transactions for a block it relayed"))
-				return nil
+				return s.ban(origin, errors.New("peer sent wrong missing transactions for a block it relayed"))
 			}
 		}
 		if err := s.cm.AddBlocks([]types.Block{b}); err != nil {
-			s.ban(origin, err)
-			return nil
+			return s.ban(origin, err)
 		}
 		// when we forward the block, exclude any txns that were in our txpool,
 		// since they're probably present in our peers' txpools as well
@@ -464,7 +464,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		if _, ok := s.cm.Block(r.Index.ID); !ok {
 			s.resync(origin, fmt.Sprintf("peer %v relayed a v2 transaction set with unknown basis (%v)", origin, r.Index))
 		} else if len(r.Transactions) == 0 {
-			s.ban(origin, errors.New("peer sent an empty transaction set"))
+			return s.ban(origin, errors.New("peer sent an empty transaction set"))
 		} else if known, err := s.cm.AddV2PoolTransactions(r.Index, r.Transactions); !known {
 			if err != nil {
 				s.log.Debug("received invalid transaction set", zap.Stringer("origin", origin), zap.Error(err))

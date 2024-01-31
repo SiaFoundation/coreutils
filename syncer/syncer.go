@@ -3,8 +3,8 @@ package syncer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
-	"reflect"
 	"sync"
 	"time"
 
@@ -34,6 +34,7 @@ type ChainManager interface {
 
 // PeerInfo contains metadata about a peer.
 type PeerInfo struct {
+	Address      string        `json:"address"`
 	FirstSeen    time.Time     `json:"firstSeen"`
 	LastConnect  time.Time     `json:"lastConnect,omitempty"`
 	SyncedBlocks uint64        `json:"syncedBlocks,omitempty"`
@@ -42,16 +43,26 @@ type PeerInfo struct {
 
 // A PeerStore stores peers and bans.
 type PeerStore interface {
-	AddPeer(peer string)
-	Peers() []string
-	UpdatePeerInfo(peer string, fn func(*PeerInfo))
-	PeerInfo(peer string) (PeerInfo, bool)
-
+	// AddPeer adds a peer to the store. If the peer already exists, nil should
+	// be returned.
+	AddPeer(addr string) error
+	// Peers returns the set of known peers.
+	Peers() ([]PeerInfo, error)
+	// UpdatePeerInfo updates the metadata for the specified peer. If the peer
+	// is not found, the error should be ErrPeerNotFound.
+	UpdatePeerInfo(addr string, fn func(*PeerInfo)) error
 	// Ban temporarily bans one or more IPs. The addr should either be a single
 	// IP with port (e.g. 1.2.3.4:5678) or a CIDR subnet (e.g. 1.2.3.4/16).
-	Ban(addr string, duration time.Duration, reason string)
-	Banned(peer string) bool
+	Ban(addr string, duration time.Duration, reason string) error
+
+	// Banned returns true, nil if the peer is banned.
+	Banned(addr string) (bool, error)
 }
+
+var (
+	// ErrPeerBanned is returned when a peer is banned.
+	ErrPeerBanned = errors.New("peer is banned")
+)
 
 // Subnet normalizes the provided CIDR subnet string.
 func Subnet(addr, mask string) string {
@@ -77,6 +88,7 @@ type config struct {
 	MaxSendBlocks              uint64
 	PeerDiscoveryInterval      time.Duration
 	SyncInterval               time.Duration
+	BanDuration                time.Duration
 	Logger                     *zap.Logger
 }
 
@@ -167,6 +179,12 @@ func WithSyncInterval(d time.Duration) Option {
 	return func(c *config) { c.SyncInterval = d }
 }
 
+// WithBanDuration sets the duration for which a peer is banned when
+// misbehaving.
+func WithBanDuration(d time.Duration) Option {
+	return func(c *config) { c.BanDuration = d }
+}
+
 // WithLogger sets the logger used by a Syncer. The default is a logger that
 // outputs to io.Discard.
 func WithLogger(l *zap.Logger) Option {
@@ -194,14 +212,16 @@ func (s *Syncer) resync(p *Peer, reason string) {
 	}
 }
 
-func (s *Syncer) ban(p *Peer, err error) {
+func (s *Syncer) ban(p *Peer, err error) error {
 	s.log.Debug("banning peer", zap.Stringer("peer", p), zap.Error(err))
-	p.setErr(errors.New("banned"))
-	s.pm.Ban(p.ConnAddr, 24*time.Hour, err.Error())
+	p.setErr(ErrPeerBanned)
+	if err := s.pm.Ban(p.ConnAddr, s.config.BanDuration, err.Error()); err != nil {
+		return fmt.Errorf("failed to ban peer: %w", err)
+	}
 
 	host, _, err := net.SplitHostPort(p.ConnAddr)
 	if err != nil {
-		return // shouldn't happen
+		return err
 	}
 	// add a strike to each subnet
 	for subnet, maxStrikes := range map[string]int{
@@ -218,17 +238,25 @@ func (s *Syncer) ban(p *Peer, err error) {
 			s.strikes[subnet]++
 		}
 		s.mu.Unlock()
-		if ban {
-			s.pm.Ban(subnet, 24*time.Hour, "too many strikes")
+		if !ban {
+			continue
+		} else if err := s.pm.Ban(subnet, s.config.BanDuration, "too many strikes"); err != nil {
+			return fmt.Errorf("failed to ban subnet %q: %w", subnet, err)
 		}
 	}
+	return nil
 }
 
-func (s *Syncer) runPeer(p *Peer) {
-	s.pm.AddPeer(p.t.Addr)
-	s.pm.UpdatePeerInfo(p.t.Addr, func(info *PeerInfo) {
+func (s *Syncer) runPeer(p *Peer) error {
+	if err := s.pm.AddPeer(p.t.Addr); err != nil {
+		return fmt.Errorf("failed to add peer: %w", err)
+	}
+	err := s.pm.UpdatePeerInfo(p.t.Addr, func(info *PeerInfo) {
 		info.LastConnect = time.Now()
 	})
+	if err != nil {
+		return fmt.Errorf("failed to update peer info: %w", err)
+	}
 	s.mu.Lock()
 	s.peers[p.t.Addr] = p
 	s.mu.Unlock()
@@ -241,12 +269,12 @@ func (s *Syncer) runPeer(p *Peer) {
 	inflight := make(chan struct{}, s.config.MaxInflightRPCs)
 	for {
 		if p.Err() != nil {
-			return
+			return fmt.Errorf("peer error: %w", p.Err())
 		}
 		id, stream, err := p.acceptRPC()
 		if err != nil {
 			p.setErr(err)
-			return
+			return fmt.Errorf("failed to accept rpc: %w", err)
 		}
 		inflight <- struct{}{}
 		go func() {
@@ -323,8 +351,10 @@ func (s *Syncer) allowConnect(peer string, inbound bool) error {
 	if s.l == nil {
 		return errors.New("syncer is shutting down")
 	}
-	if s.pm.Banned(peer) {
-		return errors.New("banned")
+	if banned, err := s.pm.Banned(peer); err != nil {
+		return err
+	} else if banned {
+		return ErrPeerBanned
 	}
 	var in, out int
 	for _, p := range s.peers {
@@ -380,6 +410,7 @@ func (s *Syncer) acceptLoop() error {
 }
 
 func (s *Syncer) peerLoop(closeChan <-chan struct{}) error {
+	log := s.log.Named("peerLoop")
 	numOutbound := func() (n int) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -393,16 +424,24 @@ func (s *Syncer) peerLoop(closeChan <-chan struct{}) error {
 
 	lastTried := make(map[string]time.Time)
 	peersForConnect := func() (peers []string) {
+		p, err := s.pm.Peers()
+		if err != nil {
+			log.Error("failed to fetch peers", zap.Error(err))
+			return
+		}
+
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		for _, p := range s.pm.Peers() {
+		for _, p := range p {
 			// TODO: don't include port in comparison
-			if _, ok := s.peers[p]; !ok && time.Since(lastTried[p]) > 5*time.Minute {
-				peers = append(peers, p)
+			if _, ok := s.peers[p.Address]; !ok && time.Since(lastTried[p.Address]) > 5*time.Minute {
+				peers = append(peers, p.Address)
 			}
 		}
 		// TODO: weighted random selection?
-		frand.Shuffle(len(peers), reflect.Swapper(peers))
+		frand.Shuffle(len(peers), func(i, j int) {
+			peers[i], peers[j] = peers[j], peers[i]
+		})
 		return peers
 	}
 	discoverPeers := func() {
@@ -421,7 +460,9 @@ func (s *Syncer) peerLoop(closeChan <-chan struct{}) error {
 				continue
 			}
 			for _, n := range nodes {
-				s.pm.AddPeer(n)
+				if err := s.pm.AddPeer(n); err != nil {
+					log.Debug("failed to add peer", zap.String("peer", n), zap.Error(err))
+				}
 			}
 		}
 	}
@@ -671,14 +712,6 @@ func (s *Syncer) Peers() []*Peer {
 	return peers
 }
 
-// PeerInfo returns metadata about the specified peer.
-func (s *Syncer) PeerInfo(peer string) (PeerInfo, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	info, ok := s.pm.PeerInfo(peer)
-	return info, ok
-}
-
 // Addr returns the address of the Syncer.
 func (s *Syncer) Addr() string {
 	return s.l.Addr().String()
@@ -701,6 +734,7 @@ func New(l net.Listener, cm ChainManager, pm PeerStore, header gateway.Header, o
 		MaxSendBlocks:              10,
 		PeerDiscoveryInterval:      5 * time.Second,
 		SyncInterval:               5 * time.Second,
+		BanDuration:                24 * time.Hour,
 		Logger:                     zap.NewNop(),
 	}
 	for _, opt := range opts {
