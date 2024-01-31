@@ -734,6 +734,7 @@ func New(l net.Listener, cm ChainManager, pm PeerStore, header gateway.Header, o
 		MaxSendBlocks:              10,
 		PeerDiscoveryInterval:      5 * time.Second,
 		SyncInterval:               5 * time.Second,
+		BanDuration:                24 * time.Hour,
 		Logger:                     zap.NewNop(),
 	}
 	for _, opt := range opts {
