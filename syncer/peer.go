@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"reflect"
 	"sync"
 	"time"
 
@@ -228,7 +227,9 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		if err != nil {
 			return fmt.Errorf("failed to fetch peers: %w", err)
 		} else if n := len(peers); n > 10 {
-			frand.Shuffle(n, reflect.Swapper(peers))
+			frand.Shuffle(n, func(i, j int) {
+				peers[i], peers[j] = peers[j], peers[i]
+			})
 			peers = peers[:10]
 		}
 		for _, p := range peers {
