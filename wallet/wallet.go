@@ -20,7 +20,8 @@ const (
 	TxnSourceTransaction      TransactionSource = "transaction"
 	TxnSourceMinerPayout      TransactionSource = "miner"
 	TxnSourceSiafundClaim     TransactionSource = "siafundClaim"
-	TxnSourceContract         TransactionSource = "contract"
+	TxnSourceValidContract    TransactionSource = "validContract"
+	TxnSourceMissedContract   TransactionSource = "missedContract"
 	TxnSourceFoundationPayout TransactionSource = "foundation"
 )
 
@@ -47,13 +48,20 @@ type (
 	// A Transaction is a transaction relevant to a particular wallet, paired
 	// with useful metadata.
 	Transaction struct {
-		ID          types.TransactionID `json:"id"`
-		Index       types.ChainIndex    `json:"index"`
-		Transaction types.Transaction   `json:"transaction"`
-		Inflow      types.Currency      `json:"inflow"`
-		Outflow     types.Currency      `json:"outflow"`
-		Source      TransactionSource   `json:"source"`
-		Timestamp   time.Time           `json:"timestamp"`
+		ID             types.TransactionID `json:"id"`
+		Index          types.ChainIndex    `json:"index"`
+		Transaction    types.Transaction   `json:"transaction"`
+		Inflow         types.Currency      `json:"inflow"`
+		Outflow        types.Currency      `json:"outflow"`
+		Source         TransactionSource   `json:"source"`
+		MaturityHeight uint64              `json:"maturityHeight"`
+		Timestamp      time.Time           `json:"timestamp"`
+	}
+
+	// A SiacoinElement is a siacoin output paired with its chain index
+	SiacoinElement struct {
+		types.SiacoinElement
+		Index types.ChainIndex `json:"index"`
 	}
 
 	// A ChainManager manages the current state of the blockchain.
@@ -76,7 +84,7 @@ type (
 		// the last wallet change.
 		Tip() (types.ChainIndex, error)
 		// UnspentSiacoinElements returns a list of all unspent siacoin outputs
-		UnspentSiacoinElements() ([]types.SiacoinElement, error)
+		UnspentSiacoinElements() ([]SiacoinElement, error)
 		// Transactions returns a paginated list of transactions ordered by
 		// maturity height, descending. If no more transactions are available,
 		// (nil, nil) should be returned.
@@ -311,7 +319,7 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 			utxos = utxos[i:]
 			break
 		}
-		selected = append(selected, sce)
+		selected = append(selected, sce.SiacoinElement)
 		inputSum = inputSum.Add(sce.SiacoinOutput.Value)
 	}
 
@@ -347,7 +355,7 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 			}
 
 			sce := defraggable[i]
-			selected = append(selected, sce)
+			selected = append(selected, sce.SiacoinElement)
 			inputSum = inputSum.Add(sce.SiacoinOutput.Value)
 			txnInputs++
 		}
