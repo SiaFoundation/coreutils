@@ -13,14 +13,14 @@ const AnnouncementSpecifier = "HostAnnouncement"
 
 type (
 	// Announcement represents a v1 or v2 host announcement after it has been
-	// validated
+	// validated.
 	Announcement struct {
 		NetAddress string
 		PublicKey  types.PublicKey
 	}
 
 	// V1Announcement represents a host announcement in v1 as stored in the
-	// arbitrary data section of a transaction
+	// arbitrary data section of a transaction.
 	V1Announcement struct {
 		Specifier  types.Specifier
 		NetAddress string
@@ -29,7 +29,7 @@ type (
 	}
 )
 
-// DecodeFrom decodes a signed announcement
+// DecodeFrom decodes a signed announcement.
 func (a *V1Announcement) DecodeFrom(d *types.Decoder) {
 	a.Specifier.DecodeFrom(d)
 	a.NetAddress = d.ReadString()
@@ -37,7 +37,7 @@ func (a *V1Announcement) DecodeFrom(d *types.Decoder) {
 	a.Signature.DecodeFrom(d)
 }
 
-// EncodeTo encodes a signed announcement
+// EncodeTo encodes a signed announcement.
 func (a V1Announcement) EncodeTo(e *types.Encoder) {
 	a.Specifier.EncodeTo(e)
 	e.WriteString(a.NetAddress)
@@ -48,16 +48,27 @@ func (a V1Announcement) EncodeTo(e *types.Encoder) {
 // VerifySignature verifies the signature of the announcement using its public
 // key. This can only succeed if the PublicKey is a valid ed25519 public key.
 func (a V1Announcement) VerifySignature() bool {
+	sigHash := a.sigHash()
+	var pk types.PublicKey
+	copy(pk[:], a.PublicKey.Key)
+	return pk.VerifyHash(sigHash, a.Signature)
+}
+
+// Sign signs the announcement using the given private key.
+func (a *V1Announcement) Sign(sk types.PrivateKey) {
+	sigHash := a.sigHash()
+	a.Signature = sk.SignHash(sigHash)
+}
+
+// sigHash returns the hash that is signed by the announcement's signature.
+func (a V1Announcement) sigHash() types.Hash256 {
 	buf := new(bytes.Buffer)
 	e := types.NewEncoder(buf)
 	a.Specifier.EncodeTo(e)
 	e.WriteString(a.NetAddress)
 	a.PublicKey.EncodeTo(e)
 	e.Flush()
-	annHash := types.HashBytes(buf.Bytes())
-	var pk types.PublicKey
-	copy(pk[:], a.PublicKey.Key)
-	return pk.VerifyHash(annHash, a.Signature)
+	return types.HashBytes(buf.Bytes())
 }
 
 // ForEachAnnouncement calls fn on each host announcement in a block.
@@ -72,9 +83,7 @@ func ForEachAnnouncement(b types.Block, fn func(Announcement)) {
 				continue
 			} else if ha.Specifier != types.NewSpecifier(AnnouncementSpecifier) {
 				continue
-			}
-			// verify signature
-			if !ha.VerifySignature() {
+			} else if !ha.VerifySignature() {
 				continue
 			}
 			var pk types.PublicKey
