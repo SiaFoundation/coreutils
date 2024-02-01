@@ -188,7 +188,7 @@ func (c *Client) FormContract(ctx context.Context, hp rhpv4.HostPrices, contract
 }
 
 // RenewContract renews a contract with the host, immediately unlocking
-func (c *Client) RenewContract(ctx context.Context, finalRevision, initialRevision types.V2FileContract) (types.V2FileContractRenewal, error) {
+func (c *Client) RenewContract(ctx context.Context, hp rhpv4.HostPrices, finalRevision, initialRevision types.V2FileContract) (types.V2FileContractRenewal, error) {
 	panic("incomplete rpc -- missing inputs and outputs")
 }
 
@@ -199,15 +199,15 @@ func (c *Client) RenewContract(ctx context.Context, finalRevision, initialRevisi
 // gaps were filled. PinSectors fails if more roots than gaps are provided since
 // it sorts the gaps to find duplicates which makes it hard for the caller to
 // know which gaps got filled.
-func (c *Client) PinSectors(ctx context.Context, roots []types.Hash256, gaps []uint64) error {
+func (c *Client) PinSectors(ctx context.Context, contract types.V2FileContract, hp rhpv4.HostPrices, roots []types.Hash256, gaps []uint64) (types.V2FileContract, error) {
 	// sanity check input - no duplicate gaps, at most one gap per root
 	if len(gaps) > len(roots) {
-		return fmt.Errorf("more gaps than roots provided")
+		return types.V2FileContract{}, fmt.Errorf("more gaps than roots provided")
 	}
 	slices.Sort(gaps)
 	for i := 1; i < len(gaps); i++ {
 		if gaps[i] == gaps[i-1] {
-			return fmt.Errorf("gap %v is duplicated", gaps[i])
+			return types.V2FileContract{}, fmt.Errorf("gap %v is duplicated", gaps[i])
 		}
 	}
 
@@ -224,32 +224,43 @@ func (c *Client) PinSectors(ctx context.Context, roots []types.Hash256, gaps []u
 			}
 		}
 	}
-	rpc := rhpv4.RPCModifySectors{
+	rpcModify := rhpv4.RPCModifySectors{
 		Actions: actions,
 	}
-	if err := c.do(ctx, &rpc); err != nil {
-		return fmt.Errorf("RPCModifySectors failed: %w", err)
+	if err := c.do(ctx, &rpcModify); err != nil {
+		return types.V2FileContract{}, fmt.Errorf("RPCModifySectors failed: %w", err)
 	}
-	return nil
+
+	// TODO: verify proof & build new revision
+	var rev types.V2FileContract
+
+	rpcRevise := rhpv4.RPCReviseContract{
+		Prices:   hp,
+		Revision: rev,
+	}
+	if err := c.do(ctx, &rpcRevise); err != nil {
+		return types.V2FileContract{}, fmt.Errorf("RPCReviseSectors failed: %w", err)
+	}
+	return rpcRevise.Revision, nil
 }
 
 // PruneContract prunes the sectors with the given indices from a contract.
-func (c *Client) PruneContract(ctx context.Context, nSectors uint64, sectorIndices []uint64) error {
+func (c *Client) PruneContract(ctx context.Context, contract types.V2FileContract, hp rhpv4.HostPrices, nSectors uint64, sectorIndices []uint64) (types.V2FileContract, error) {
 	if len(sectorIndices) == 0 {
-		return nil // nothing to do
+		return types.V2FileContract{}, nil // nothing to do
 	} else if nSectors == 0 {
-		return fmt.Errorf("trying to prune empty contract")
+		return types.V2FileContract{}, fmt.Errorf("trying to prune empty contract")
 	}
 
 	// sanity check input - no out-of-bounds indices, no duplicates
 	lastIndex := nSectors - 1
 	slices.Sort(sectorIndices)
 	if sectorIndices[len(sectorIndices)-1] > lastIndex {
-		return fmt.Errorf("sector index %v is out of bounds for contract with %v sectors", sectorIndices[len(sectorIndices)-1], nSectors)
+		return types.V2FileContract{}, fmt.Errorf("sector index %v is out of bounds for contract with %v sectors", sectorIndices[len(sectorIndices)-1], nSectors)
 	}
 	for i := 1; i < len(sectorIndices); i++ {
 		if sectorIndices[i] == sectorIndices[i-1] {
-			return fmt.Errorf("sector index %v is duplicated", sectorIndices[i])
+			return types.V2FileContract{}, fmt.Errorf("sector index %v is duplicated", sectorIndices[i])
 		}
 	}
 
@@ -268,24 +279,43 @@ func (c *Client) PruneContract(ctx context.Context, nSectors uint64, sectorIndic
 	actions = append(actions, rhpv4.WriteAction{
 		N: uint64(len(actions)),
 	})
-	rpc := rhpv4.RPCModifySectors{
+
+	// modify sector
+	rpcModify := rhpv4.RPCModifySectors{
 		Actions: actions,
 	}
-
-	if err := c.do(ctx, &rpc); err != nil {
-		return fmt.Errorf("RPCModifySectors failed: %w", err)
+	if err := c.do(ctx, &rpcModify); err != nil {
+		return types.V2FileContract{}, fmt.Errorf("RPCModifySectors failed: %w", err)
 	}
-	panic("incomplete rpc - need to check roots in proof")
-	return nil
+
+	// TODO: check proof & build new revision
+	var rev types.V2FileContract
+
+	// revise contract
+	rpcRevise := rhpv4.RPCReviseContract{
+		Prices:   hp,
+		Revision: rev,
+	}
+	if err := c.do(ctx, &rpcRevise); err != nil {
+		return types.V2FileContract{}, fmt.Errorf("RPCReviseSectors failed: %w", err)
+	}
+	return rpcRevise.Revision, nil
 }
 
 // LatestRevision returns the latest revision for a given contract.
-func (c *Client) LatestRevision(ctx context.Context) (types.V2FileContract, error) {
-	panic("implement me")
+func (c *Client) LatestRevision(ctx context.Context, contractID types.FileContractID) (types.V2FileContract, error) {
+	rpc := rhpv4.RPCLatestRevision{
+		ContractID: contractID,
+	}
+	if err := c.do(ctx, &rpc); err != nil {
+		return types.V2FileContract{}, fmt.Errorf("RPCLatestRevision failed: %w", err)
+	}
+	return rpc.Contract, nil
 }
 
 // ReadSector reads a sector from the host.
 func (c *Client) ReadSector(ctx context.Context) ([]byte, error) {
+	rpc := rhpv4.RPCReadSector{}
 	panic("implement me")
 }
 
