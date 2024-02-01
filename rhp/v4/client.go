@@ -314,9 +314,22 @@ func (c *Client) LatestRevision(ctx context.Context, contractID types.FileContra
 }
 
 // ReadSector reads a sector from the host.
-func (c *Client) ReadSector(ctx context.Context) ([]byte, error) {
-	rpc := rhpv4.RPCReadSector{}
-	panic("implement me")
+func (c *Client) ReadSector(ctx context.Context, hp rhpv4.HostPrices, root types.Hash256, offset, length uint64) ([]byte, error) {
+	// sanity check input - offset must be segment-aligned
+	if offset%64 != 0 {
+		return nil, fmt.Errorf("offset %v is not segment-aligned", offset)
+	}
+	rpc := rhpv4.RPCReadSector{
+		Prices: hp,
+		Root:   root,
+		Offset: offset,
+		Length: length,
+	}
+	if err := c.do(ctx, &rpc); err != nil {
+		return nil, fmt.Errorf("RPCReadSector failed: %w", err)
+	}
+	// TODO: validate proof
+	return rpc.Sector, nil
 }
 
 // WriteSector stores a sector in the host's temporary storage. To make it
