@@ -26,9 +26,9 @@ type (
 
 	// Options are used to configure the client during creation.
 	Options struct {
-		DialTimeout time.Duration
-		IdleTimeout time.Duration
-		RPCTimeout  time.Duration
+		DialTimeout time.Duration // timeout for dialing a new connection
+		IdleTimeout time.Duration // timeout for idle connections before recreating them
+		RPCTimeout  time.Duration // timeout for RPCs
 	}
 
 	// Client is a client for the v4 renter-host protocol. After successful
