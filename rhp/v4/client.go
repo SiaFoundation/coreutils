@@ -409,8 +409,22 @@ func (c *Client) AccountBalance(ctx context.Context, account types.PublicKey) (t
 }
 
 // FundAccount adds to the balance to an account and returns the new balance.
-func (c *Client) FundAccount(ctx context.Context) (types.Currency, error) {
-	panic("implement me")
+func (c *Client) FundAccount(ctx context.Context, contract types.V2FileContract, account types.PrivateKey) (types.V2FileContract, types.Currency, error) {
+	// TODO: build new revision and signature
+	var rev types.V2FileContract
+	var sig types.Signature
+
+	rpc := rhpv4.RPCFundAccount{
+		Account:         account.PublicKey(),
+		Revision:        rev,
+		RenterSignature: sig,
+	}
+	if err := c.do(ctx, &rpc); err != nil {
+		return types.V2FileContract{}, types.Currency{}, fmt.Errorf("RPCFundAccount failed: %w", err)
+	}
+
+	// TODO: verify host signature
+	return rpc.Revision, rpc.NewBalance, nil
 }
 
 // ReviseContract is a more generic version of 'PinSectors' and 'PruneContract'.
