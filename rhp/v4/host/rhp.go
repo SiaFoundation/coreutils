@@ -89,27 +89,23 @@ func (s *Server) handleHostStream(stream Stream, log *zap.Logger) {
 	switch rpc := rpc.(type) {
 	case *rhp.RPCSettings:
 		err = s.handleRPCSettings(stream, rpc, log.Named(id.String()))
-	case *rhp.RPCFormContract:
+	case *rhp.RPCReadSector:
 		panic("not implemented")
-	case *rhp.RPCSignatures:
+	case *rhp.RPCWriteSector:
 		panic("not implemented")
 	case *rhp.RPCReviseContract:
+		panic("not implemented")
+	case *rhp.RPCFundAccount:
+		panic("not implemented")
+	case *rhp.RPCFormContract:
 		panic("not implemented")
 	case *rhp.RPCRenewContract:
 		panic("not implemented")
 	case *rhp.RPCLatestRevision:
 		panic("not implemented")
-	case *rhp.RPCReadSector:
-		panic("not implemented")
-	case *rhp.RPCWriteSector:
-		panic("not implemented")
-	case *rhp.RPCModifySectors:
-		panic("not implemented")
 	case *rhp.RPCSectorRoots:
 		panic("not implemented")
 	case *rhp.RPCAccountBalance:
-		panic("not implemented")
-	case *rhp.RPCFundAccount:
 		panic("not implemented")
 	default:
 		log.Debug("unrecognized RPC", zap.Stringer("rpc", id))
