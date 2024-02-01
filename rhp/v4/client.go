@@ -392,9 +392,20 @@ func (c *Client) WriteSector(ctx context.Context, hp rhpv4.HostPrices, data []by
 	return rpc.Root, nil
 }
 
-// SectorRoots returns the roots of a contract.
-func (c *Client) SectorRoots(ctx context.Context) ([]types.Hash256, error) {
-	panic("implement me")
+// SectorRoots returns 'length' roots of a contract starting at the given
+// 'offset'.
+func (c *Client) SectorRoots(ctx context.Context, hp rhpv4.HostPrices, offset, length uint64) ([]types.Hash256, error) {
+	rpc := rhpv4.RPCSectorRoots{
+		Prices: hp,
+		Offset: offset,
+		Length: length,
+	}
+	if err := c.do(ctx, &rpc); err != nil {
+		return nil, fmt.Errorf("RPCSectorRoots failed: %w", err)
+	}
+	// TODO: verify proof
+	panic("unfinished rpc - missing payment")
+	return rpc.Roots, nil
 }
 
 // AccountBalance returns the balance of a given account.
