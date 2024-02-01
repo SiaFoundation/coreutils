@@ -8,6 +8,7 @@ import (
 	"go.sia.tech/core/types"
 )
 
+// A MemSectorStore manages the state of sectors in memory.
 type MemSectorStore struct {
 	maxSectors uint64
 
@@ -15,6 +16,8 @@ type MemSectorStore struct {
 	sectors map[types.Hash256][rhp.SectorSize]byte
 }
 
+// NewMemSectorStore creates a new MemSectorStore with a maximum number of
+// sectors.
 func NewMemSectorStore(maxSectors uint64) *MemSectorStore {
 	return &MemSectorStore{
 		maxSectors: maxSectors,
@@ -22,6 +25,7 @@ func NewMemSectorStore(maxSectors uint64) *MemSectorStore {
 	}
 }
 
+// Read retrieves a sector from the store.
 func (m *MemSectorStore) Read(root types.Hash256) ([rhp.SectorSize]byte, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -29,6 +33,7 @@ func (m *MemSectorStore) Read(root types.Hash256) ([rhp.SectorSize]byte, bool) {
 	return sector, ok
 }
 
+// Write stores a sector in the store.
 func (m *MemSectorStore) Write(root types.Hash256, sector [rhp.SectorSize]byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -39,6 +44,7 @@ func (m *MemSectorStore) Write(root types.Hash256, sector [rhp.SectorSize]byte) 
 	return nil
 }
 
+// Delete removes a sector from the store.
 func (m *MemSectorStore) Delete(root types.Hash256) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

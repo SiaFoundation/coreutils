@@ -142,15 +142,23 @@ func (s *Server) Serve(t Transport, log *zap.Logger) error {
 	}
 }
 
+// UpdateSettings updates the host's internal settings.
 func (s *Server) UpdateSettings(settings Settings) error {
 	s.config.Settings = settings
 	return nil
 }
 
+// SetMaxSectors sets the maximum number of sectors the host can store.
 func (s *Server) SetMaxSectors(n uint64) {
 	s.sectors.maxSectors = n
 }
 
+// NewServer creates a new reference host server with the given private key and chain
+// manager. The server will use the provided options to configure its internal
+// settings.
+//
+// A transport must be set up and then called with the Serve method to start
+// an RHP session.
 func NewServer(privKey types.PrivateKey, cm ChainManager, opts ...Option) *Server {
 	cfg := config{
 		Settings: Settings{

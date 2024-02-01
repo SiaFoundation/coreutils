@@ -14,7 +14,7 @@ import (
 )
 
 var (
-	defaultOptions = Options{
+	defaultOptions = options{
 		DialTimeout: time.Minute,
 		IdleTimeout: 30 * time.Second,
 		RPCTimeout:  5 * time.Minute,
@@ -22,10 +22,11 @@ var (
 )
 
 type (
-	Option func(o *Options)
+	// An Option is used to configure the client during creation.
+	Option func(o *options)
 
-	// Options are used to configure the client during creation.
-	Options struct {
+	// options are used to configure the client during creation.
+	options struct {
 		DialTimeout time.Duration // timeout for dialing a new connection
 		IdleTimeout time.Duration // timeout for idle connections before recreating them
 		RPCTimeout  time.Duration // timeout for RPCs
@@ -52,21 +53,21 @@ type (
 
 // WithDialTimeout overwrites the default dial timeout of 1 minute.
 func WithDialTimeout(d time.Duration) Option {
-	return func(opts *Options) {
+	return func(opts *options) {
 		opts.DialTimeout = d
 	}
 }
 
 // WithIdleTimeout overwrites the default idle timeout of 30 seconds.
 func WithIdleTimeout(d time.Duration) Option {
-	return func(opts *Options) {
+	return func(opts *options) {
 		opts.IdleTimeout = d
 	}
 }
 
 // WithRPCTimeout overwrites the default RPC timeout of 5 minutes.
 func WithRPCTimeout(d time.Duration) Option {
-	return func(opts *Options) {
+	return func(opts *options) {
 		opts.RPCTimeout = d
 	}
 }
@@ -215,7 +216,7 @@ func (c *Client) FormContract(ctx context.Context, hp rhpv4.HostPrices, contract
 	}
 	panic("incomplete rpc - missing outputs")
 	// TODO: verify host signatures
-	return rpc.Contract, nil
+	// return rpc.Contract, nil
 }
 
 // RenewContract renews a contract with the host, immediately unlocking
@@ -247,7 +248,7 @@ func (c *Client) PinSectors(ctx context.Context, contract types.V2FileContract, 
 		if len(gaps) > 0 {
 			actions[i] = rhpv4.WriteAction{}
 			panic("incomplete type")
-			gaps = gaps[1:]
+			// gaps = gaps[1:]
 		} else {
 			actions[i] = rhpv4.WriteAction{
 				Type: rhpv4.ActionAppend,
@@ -389,7 +390,7 @@ func (c *Client) WriteSector(ctx context.Context, hp rhpv4.HostPrices, data []by
 		return types.Hash256{}, fmt.Errorf("root mismatch")
 	}
 	panic("unfinished rpc - missing payment")
-	return rpc.Root, nil
+	// return rpc.Root, nil
 }
 
 // SectorRoots returns 'length' roots of a contract starting at the given
@@ -405,7 +406,7 @@ func (c *Client) SectorRoots(ctx context.Context, hp rhpv4.HostPrices, offset, l
 	}
 	// TODO: verify proof
 	panic("unfinished rpc - missing payment")
-	return rpc.Roots, nil
+	// return rpc.Roots, nil
 }
 
 // AccountBalance returns the balance of a given account.

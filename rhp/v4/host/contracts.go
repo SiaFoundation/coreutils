@@ -22,6 +22,7 @@ type (
 		confirmedRevisionNumber uint64
 	}
 
+	// A MemContractStore manages the state of file contracts in memory.
 	MemContractStore struct {
 		log *zap.Logger
 
@@ -32,6 +33,7 @@ type (
 	}
 )
 
+// ProcessChainApplyUpdate implements the chain.Subscriber interface
 func (ms *MemContractStore) ProcessChainApplyUpdate(cau *chain.ApplyUpdate, mayCommit bool) error {
 	ms.updates = append(ms.updates, cau)
 
@@ -54,6 +56,7 @@ func (ms *MemContractStore) ProcessChainApplyUpdate(cau *chain.ApplyUpdate, mayC
 	return nil
 }
 
+// ProcessChainRevertUpdate implements the chain.Subscriber interface
 func (ms *MemContractStore) ProcessChainRevertUpdate(cru *chain.RevertUpdate) error {
 	if len(ms.updates) != 0 && ms.updates[len(ms.updates)-1].State.Index == cru.State.Index {
 		ms.updates = ms.updates[:len(ms.updates)-1]
@@ -63,6 +66,7 @@ func (ms *MemContractStore) ProcessChainRevertUpdate(cru *chain.RevertUpdate) er
 	panic("implement me")
 }
 
+// Revision returns the current revision of the contract.
 func (ms *MemContractStore) Revision() types.V2FileContractRevision {
 	panic("implement me")
 }
