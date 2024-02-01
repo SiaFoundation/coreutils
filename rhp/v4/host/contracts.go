@@ -28,7 +28,7 @@ type (
 		updates []*chain.ApplyUpdate
 
 		mu        sync.Mutex
-		contracts map[types.Hash256]contract
+		contracts map[types.Hash256]*contract
 	}
 )
 
@@ -76,7 +76,7 @@ func (ms *MemContractStore) AddContract(fe types.V2FileContractElement) error {
 		return ErrContractExists
 	}
 
-	ms.contracts[fe.ID] = contract{
+	ms.contracts[fe.ID] = &contract{
 		revision: types.V2FileContractRevision{
 			Parent:   fe,
 			Revision: fe.V2FileContract,
