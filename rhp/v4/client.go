@@ -193,13 +193,35 @@ func (c *Client) RenewContract(ctx context.Context, finalRevision, initialRevisi
 }
 
 // PinSectors pins sectors to a contract. Commonly used to pin sectors uploaded
-// with 'UploadSector'.
-func (c *Client) PinSectors(ctx context.Context, roots []types.Hash256) error {
+// with 'UploadSector'. PinSectors will first overwrite the provided gaps and
+// then start appending roots to the end of the contract. So if more roots than
+// gaps were provided and the method returns an error, it is safe to assume all
+// gaps were filled. PinSectors fails if more roots than gaps are provided since
+// it sorts the gaps to find duplicates which makes it hard for the caller to
+// know which gaps got filled.
+func (c *Client) PinSectors(ctx context.Context, roots []types.Hash256, gaps []uint64) error {
+	// sanity check input - no duplicate gaps, at most one gap per root
+	if len(gaps) > len(roots) {
+		return fmt.Errorf("more gaps than roots provided")
+	}
+	slices.Sort(gaps)
+	for i := 1; i < len(gaps); i++ {
+		if gaps[i] == gaps[i-1] {
+			return fmt.Errorf("gap %v is duplicated", gaps[i])
+		}
+	}
+
 	actions := make([]rhpv4.WriteAction, len(roots))
 	for i := range roots {
-		actions[i] = rhpv4.WriteAction{
-			Type: rhpv4.ActionAppend,
-			Root: roots[i],
+		if len(gaps) > 0 {
+			actions[i] = rhpv4.WriteAction{}
+			panic("incomplete type")
+			gaps = gaps[1:]
+		} else {
+			actions[i] = rhpv4.WriteAction{
+				Type: rhpv4.ActionAppend,
+				Root: roots[i],
+			}
 		}
 	}
 	rpc := rhpv4.RPCModifySectors{
