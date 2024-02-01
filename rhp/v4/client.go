@@ -93,6 +93,13 @@ func (c *Client) do(ctx context.Context, rpc rhpv4.RPC) error {
 	go func() {
 		defer close(done)
 
+		// defer recover
+		defer func() {
+			if r := recover(); r != nil {
+				doErr = fmt.Errorf("a panic occurred while executing the rpc: %v", r)
+			}
+		}()
+
 		// reset the transport if it hasn't been used in a while
 		c.mu.Lock()
 		if c.t == nil || (c.openStreams == 0 && time.Since(c.lastSuccess) > c.idleTimeout) {
