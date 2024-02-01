@@ -14,18 +14,8 @@ import (
 )
 
 type (
-	Options struct {
-		// DialTimeout is the timeout for dialing a new connection.
-		// Defaults to 1 minute.
-		DialTimeout time.Duration
-
-		// IdleTimeout is the timeout for how long a client can be idle before
-		// the underlying connection is reset.
-		IdleTimeout time.Duration
-
-		// RPCTimeout is the timeout for how long an RPC can run. Defaults to 5 minutes.
-		RPCTimeout time.Duration
-	}
+	// Option is used to configure the client during creation.
+	Option func(c *Client)
 
 	// Client is a client for the v4 renter-host protocol. After successful
 	// creation, a client will try to maintain a connection to the host and
@@ -46,43 +36,42 @@ type (
 	}
 )
 
-func NewClient(ctx context.Context, addr string, hostKey types.PublicKey, opts Options) (*Client, error) {
-	if opts.DialTimeout == 0 {
-		opts.DialTimeout = time.Minute
+// WithDialTimeout overwrites the default dial timeout of 1 minute.
+func WithDialTimeout(d time.Duration) Option {
+	return func(c *Client) {
+		c.dialTimeout = d
 	}
-	if opts.IdleTimeout == 0 {
-		opts.IdleTimeout = 30 * time.Second
+}
+
+// WithIdleTimeout overwrites the default idle timeout of 30 seconds.
+func WithIdleTimeout(d time.Duration) Option {
+	return func(c *Client) {
+		c.idleTimeout = d
 	}
-	if opts.RPCTimeout == 0 {
-		opts.RPCTimeout = 5 * time.Minute
+}
+
+// WithRPCTimeout overwrites the default RPC timeout of 5 minutes.
+func WithRPCTimeout(d time.Duration) Option {
+	return func(c *Client) {
+		c.rpcTimeout = d
 	}
+}
+
+// NewClient creates a new client for the v4 renter-host protocol.
+func NewClient(ctx context.Context, addr string, hostKey types.PublicKey, opts ...Option) (*Client, error) {
 	c := &Client{
 		addr:        addr,
 		hostKey:     hostKey,
 		openStreams: 0,
 		lastSuccess: time.Now(),
-		idleTimeout: opts.IdleTimeout,
-		rpcTimeout:  opts.RPCTimeout,
+		dialTimeout: time.Minute,
+		idleTimeout: 30 * time.Second,
+		rpcTimeout:  5 * time.Minute,
+	}
+	for _, opt := range opts {
+		opt(c)
 	}
 	return c, c.resetTransport(ctx)
-}
-
-func (c *Client) resetTransport(ctx context.Context) error {
-	conn, err := net.DialTimeout("tcp", c.addr, c.dialTimeout)
-	if err != nil {
-		return fmt.Errorf("failed to dial tcp connection: %w", err)
-	} else if conn.(*net.TCPConn).SetKeepAlive(true); err != nil {
-		return fmt.Errorf("failed to set keepalive: %w", err)
-	} else if conn.SetDeadline(time.Now().Add(c.dialTimeout)); err != nil {
-		return fmt.Errorf("failed to set dial deadline on tcp connection: %w", err)
-	} else if t, err := rhpv4.Dial(conn, c.hostKey); err != nil {
-		return fmt.Errorf("failed to dial mux: %w", err)
-	} else if err := conn.SetDeadline(time.Time{}); err != nil {
-		return fmt.Errorf("failed to revoke deadline on tcp connection")
-	} else {
-		c.t = t
-	}
-	return nil
 }
 
 // do performs an RPC with a host in a way that allows the caller to interrupt
@@ -162,6 +151,24 @@ func (c *Client) do(ctx context.Context, rpc rhpv4.RPC) error {
 	case <-done:
 		return doErr
 	}
+}
+
+func (c *Client) resetTransport(ctx context.Context) error {
+	conn, err := net.DialTimeout("tcp", c.addr, c.dialTimeout)
+	if err != nil {
+		return fmt.Errorf("failed to dial tcp connection: %w", err)
+	} else if conn.(*net.TCPConn).SetKeepAlive(true); err != nil {
+		return fmt.Errorf("failed to set keepalive: %w", err)
+	} else if conn.SetDeadline(time.Now().Add(c.dialTimeout)); err != nil {
+		return fmt.Errorf("failed to set dial deadline on tcp connection: %w", err)
+	} else if t, err := rhpv4.Dial(conn, c.hostKey); err != nil {
+		return fmt.Errorf("failed to dial mux: %w", err)
+	} else if err := conn.SetDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("failed to revoke deadline on tcp connection")
+	} else {
+		c.t = t
+	}
+	return nil
 }
 
 // AuditContract probabilistically audits a contract, checking whether the host
