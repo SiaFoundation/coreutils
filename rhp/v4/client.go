@@ -371,8 +371,14 @@ func (c *Client) SectorRoots(ctx context.Context) ([]types.Hash256, error) {
 }
 
 // AccountBalance returns the balance of a given account.
-func (c *Client) AccountBalance(ctx context.Context) (types.Currency, error) {
-	panic("implement me")
+func (c *Client) AccountBalance(ctx context.Context, account types.PublicKey) (types.Currency, error) {
+	rpc := rhpv4.RPCAccountBalance{
+		Account: types.PublicKey{},
+	}
+	if err := c.do(ctx, &rpc); err != nil {
+		return types.Currency{}, fmt.Errorf("RPCAccountBalance failed: %w", err)
+	}
+	return rpc.Balance, nil
 }
 
 // FundAccount adds to the balance to an account and returns the new balance.
