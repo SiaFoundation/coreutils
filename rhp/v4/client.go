@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -167,30 +168,93 @@ func (c *Client) AuditContract(ctx context.Context, n int) ([]interface{}, error
 func (c *Client) Settings(ctx context.Context) (rhpv4.HostSettings, error) {
 	rpc := rhpv4.RPCSettings{}
 	if err := c.do(ctx, &rpc); err != nil {
-		return rhpv4.HostSettings{}, err
+		return rhpv4.HostSettings{}, fmt.Errorf("RPCSettings failed: %w", err)
 	}
 	return rpc.Settings, nil
 }
 
 // FormContract forms a new contract with the host.
-func (c *Client) FormContract(ctx context.Context) (types.V2FileContract, error) {
-	panic("implement me")
+func (c *Client) FormContract(ctx context.Context, hp rhpv4.HostPrices, contract types.V2FileContract, inputs []types.V2SiacoinInput) (types.V2FileContract, error) {
+	rpc := rhpv4.RPCFormContract{
+		Prices:       hp,
+		Contract:     contract,
+		RenterInputs: inputs,
+	}
+	if err := c.do(ctx, &rpc); err != nil {
+		return types.V2FileContract{}, fmt.Errorf("RPCFormContract failed: %w", err)
+	}
+	panic("incomplete rpc - missing outputs")
+	return rpc.Contract, nil
 }
 
 // RenewContract renews a contract with the host, immediately unlocking
-func (c *Client) RenewContract(ctx context.Context) (types.V2FileContractRenewal, error) {
-	panic("implement me")
+func (c *Client) RenewContract(ctx context.Context, finalRevision, initialRevision types.V2FileContract) (types.V2FileContractRenewal, error) {
+	panic("incomplete rpc -- missing inputs and outputs")
 }
 
 // PinSectors pins sectors to a contract. Commonly used to pin sectors uploaded
 // with 'UploadSector'.
 func (c *Client) PinSectors(ctx context.Context, roots []types.Hash256) error {
-	panic("implement me")
+	actions := make([]rhpv4.WriteAction, len(roots))
+	for i := range roots {
+		actions[i] = rhpv4.WriteAction{
+			Type: rhpv4.ActionAppend,
+			Root: roots[i],
+		}
+	}
+	rpc := rhpv4.RPCModifySectors{
+		Actions: actions,
+	}
+	if err := c.do(ctx, &rpc); err != nil {
+		return fmt.Errorf("RPCModifySectors failed: %w", err)
+	}
+	return nil
 }
 
 // PruneContract prunes the sectors with the given indices from a contract.
-func (c *Client) PruneContract(ctx context.Context, sectorIndices []int) error {
-	panic("implement me")
+func (c *Client) PruneContract(ctx context.Context, nSectors uint64, sectorIndices []uint64) error {
+	if len(sectorIndices) == 0 {
+		return nil // nothing to do
+	} else if nSectors == 0 {
+		return fmt.Errorf("trying to prune empty contract")
+	}
+
+	// sanity check input - no out-of-bounds indices, no duplicates
+	lastIndex := nSectors - 1
+	slices.Sort(sectorIndices)
+	if sectorIndices[len(sectorIndices)-1] > lastIndex {
+		return fmt.Errorf("sector index %v is out of bounds for contract with %v sectors", sectorIndices[len(sectorIndices)-1], nSectors)
+	}
+	for i := 1; i < len(sectorIndices); i++ {
+		if sectorIndices[i] == sectorIndices[i-1] {
+			return fmt.Errorf("sector index %v is duplicated", sectorIndices[i])
+		}
+	}
+
+	// swap out sectors to delete
+	actions := make([]rhpv4.WriteAction, len(sectorIndices))
+	for i := range sectorIndices {
+		actions[i] = rhpv4.WriteAction{
+			Type: rhpv4.ActionSwap,
+			A:    uint64(sectorIndices[i]),
+			B:    lastIndex,
+		}
+		lastIndex--
+	}
+
+	// trim the swapped sectors
+	actions = append(actions, rhpv4.WriteAction{
+		N: uint64(len(actions)),
+	})
+	rpc := rhpv4.RPCModifySectors{
+		Actions: actions,
+	}
+
+	if err := c.do(ctx, &rpc); err != nil {
+		return fmt.Errorf("RPCModifySectors failed: %w", err)
+	}
+	panic("incomplete rpc - need to check roots in proof")
+	return nil
 }
 
 // LatestRevision returns the latest revision for a given contract.
