@@ -26,18 +26,13 @@ func (s *Server) handleRPCSettings(stream Stream, rpc *rhp.RPCSettings, _ *zap.L
 		return fmt.Errorf("failed to read RPCSettings: %w", err)
 	}
 
-	state, err := s.chain.TipState()
-	if err != nil {
-		return fmt.Errorf("failed to get tip state: %w", err)
-	}
-
 	pt := rhp.HostPrices{
 		ContractPrice: s.config.Settings.ContractPrice,
 		Collateral:    s.config.Settings.StoragePrice.Mul64(uint64(s.config.Settings.CollateralMultiplier * 1000)).Div64(1000),
 		StoragePrice:  s.config.Settings.StoragePrice,
 		IngressPrice:  s.config.Settings.IngressPrice,
 		EgressPrice:   s.config.Settings.EgressPrice,
-		TipHeight:     state.Index.Height,
+		TipHeight:     s.chain.TipState().Index.Height,
 		ValidUntil:    time.Now().Add(s.config.Settings.PriceTableValidity),
 	}
 

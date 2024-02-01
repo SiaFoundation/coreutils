@@ -27,13 +27,12 @@ type (
 		WriteResponseErr(err error) error
 
 		Close() error
-		SetDeadline(time.Time)
+		SetDeadline(time.Time) error
 	}
 
 	// A Transport is a generic multiplexer interface used to handle incoming
 	// streams.
 	Transport interface {
-		Address() string
 		AcceptStream() (Stream, error)
 		Close() error
 	}
@@ -50,7 +49,7 @@ type (
 
 	// A ChainManager provides access to the current state of the blockchain.
 	ChainManager interface {
-		TipState() (consensus.State, error)
+		TipState() consensus.State
 	}
 
 	// A Wallet funds and signs transactions.
@@ -128,17 +127,17 @@ func (s *Server) Serve(t Transport, log *zap.Logger) error {
 		} else if err != nil {
 			return fmt.Errorf("failed to accept connection: %w", err)
 		}
-
-		log.Debug("stream accepted")
-
+		log := log.With(zap.String("streamID", hex.EncodeToString(frand.Bytes(4))))
+		log.Debug("accepted stream")
 		go func() {
 			defer func() {
-				log.Debug("closing stream")
-				stream.Close()
+				if err := stream.Close(); err != nil {
+					log.Debug("failed to close stream", zap.Error(err))
+				} else {
+					log.Debug("closed stream")
+				}
 			}()
-
-			log := log.With(zap.String("streamID", hex.EncodeToString(frand.Bytes(4))))
-			go s.handleHostStream(stream, log)
+			s.handleHostStream(stream, log)
 		}()
 	}
 }
@@ -163,6 +162,7 @@ func NewServer(privKey types.PrivateKey, cm ChainManager, opts ...Option) *Serve
 			IngressPrice:         types.Siacoins(1).Div64(1e12),
 			EgressPrice:          types.Siacoins(1).Div64(1e12),
 			MaxCollateral:        types.Siacoins(1000),
+			PriceTableValidity:   10 * time.Minute,
 		},
 	}
 	for _, opt := range opts {
@@ -171,7 +171,7 @@ func NewServer(privKey types.PrivateKey, cm ChainManager, opts ...Option) *Serve
 	return &Server{
 		privKey: privKey,
 		config:  cfg,
-
+		chain:   cm,
 		sectors: NewMemSectorStore(100),
 	}
 }

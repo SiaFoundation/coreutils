@@ -63,7 +63,9 @@ func (ms *MemContractStore) ProcessChainRevertUpdate(cru *chain.RevertUpdate) er
 	panic("implement me")
 }
 
-func (ms *MemContractStore) Revision() types.V2FileContractRevision
+func (ms *MemContractStore) Revision() types.V2FileContractRevision {
+	panic("implement me")
+}
 
 // AddContract adds a contract to the store.
 func (ms *MemContractStore) AddContract(fe types.V2FileContractElement) error {
