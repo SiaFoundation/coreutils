@@ -13,9 +13,23 @@ import (
 	"go.sia.tech/core/types"
 )
 
+var (
+	defaultOptions = Options{
+		DialTimeout: time.Minute,
+		IdleTimeout: 30 * time.Second,
+		RPCTimeout:  5 * time.Minute,
+	}
+)
+
 type (
-	// Option is used to configure the client during creation.
-	Option func(c *Client)
+	Option func(o *Options)
+
+	// Options are used to configure the client during creation.
+	Options struct {
+		DialTimeout time.Duration
+		IdleTimeout time.Duration
+		RPCTimeout  time.Duration
+	}
 
 	// Client is a client for the v4 renter-host protocol. After successful
 	// creation, a client will try to maintain a connection to the host and
@@ -38,38 +52,39 @@ type (
 
 // WithDialTimeout overwrites the default dial timeout of 1 minute.
 func WithDialTimeout(d time.Duration) Option {
-	return func(c *Client) {
-		c.dialTimeout = d
+	return func(opts *Options) {
+		opts.DialTimeout = d
 	}
 }
 
 // WithIdleTimeout overwrites the default idle timeout of 30 seconds.
 func WithIdleTimeout(d time.Duration) Option {
-	return func(c *Client) {
-		c.idleTimeout = d
+	return func(opts *Options) {
+		opts.IdleTimeout = d
 	}
 }
 
 // WithRPCTimeout overwrites the default RPC timeout of 5 minutes.
 func WithRPCTimeout(d time.Duration) Option {
-	return func(c *Client) {
-		c.rpcTimeout = d
+	return func(opts *Options) {
+		opts.RPCTimeout = d
 	}
 }
 
 // NewClient creates a new client for the v4 renter-host protocol.
 func NewClient(ctx context.Context, addr string, hostKey types.PublicKey, opts ...Option) (*Client, error) {
+	o := defaultOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	c := &Client{
 		addr:        addr,
 		hostKey:     hostKey,
 		openStreams: 0,
 		lastSuccess: time.Now(),
-		dialTimeout: time.Minute,
-		idleTimeout: 30 * time.Second,
-		rpcTimeout:  5 * time.Minute,
-	}
-	for _, opt := range opts {
-		opt(c)
+		dialTimeout: o.DialTimeout,
+		idleTimeout: o.IdleTimeout,
+		rpcTimeout:  o.RPCTimeout,
 	}
 	return c, c.resetTransport(ctx)
 }
@@ -369,7 +384,7 @@ func (c *Client) WriteSector(ctx context.Context, hp rhpv4.HostPrices, data []by
 		return types.Hash256{}, fmt.Errorf("root mismatch")
 	}
 	panic("unfinished rpc - missing payment")
-	return nil
+	return rpc.Root, nil
 }
 
 // SectorRoots returns the roots of a contract.
