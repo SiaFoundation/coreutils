@@ -44,6 +44,7 @@ type (
 		rpcTimeout  time.Duration
 
 		mu          sync.Mutex
+		wg          sync.WaitGroup
 		openStreams int
 		lastSuccess time.Time
 		t           *rhpv4.Transport
@@ -89,13 +90,28 @@ func NewClient(ctx context.Context, addr string, hostKey types.PublicKey, opts .
 	return c, c.resetTransport(ctx)
 }
 
+// Close closes the client and waits for any spawned goroutines to finish.
+func (c *Client) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var err error
+	if c.t != nil {
+		err = c.t.Close()
+		c.t = nil
+	}
+	c.wg.Wait()
+	return err
+}
+
 // do performs an RPC with a host in a way that allows the caller to interrupt
 // it
 func (c *Client) do(ctx context.Context, rpc rhpv4.RPC) error {
 	done := make(chan struct{})
 	var doErr error
 	var s *rhpv4.Stream
+	c.wg.Add(1)
 	go func() {
+		defer c.wg.Done()
 		defer close(done)
 
 		// defer recover
