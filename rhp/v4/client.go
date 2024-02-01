@@ -214,6 +214,7 @@ func (c *Client) FormContract(ctx context.Context, hp rhpv4.HostPrices, contract
 		return types.V2FileContract{}, fmt.Errorf("RPCFormContract failed: %w", err)
 	}
 	panic("incomplete rpc - missing outputs")
+	// TODO: verify host signatures
 	return rpc.Contract, nil
 }
 
@@ -271,6 +272,8 @@ func (c *Client) PinSectors(ctx context.Context, contract types.V2FileContract, 
 	if err := c.do(ctx, &rpcRevise); err != nil {
 		return types.V2FileContract{}, fmt.Errorf("RPCReviseSectors failed: %w", err)
 	}
+
+	// TODO: verify host signatures
 	return rpcRevise.Revision, nil
 }
 
@@ -329,6 +332,8 @@ func (c *Client) PruneContract(ctx context.Context, contract types.V2FileContrac
 	if err := c.do(ctx, &rpcRevise); err != nil {
 		return types.V2FileContract{}, fmt.Errorf("RPCReviseSectors failed: %w", err)
 	}
+
+	// TODO: verify host signatures
 	return rpcRevise.Revision, nil
 }
 
@@ -406,4 +411,30 @@ func (c *Client) AccountBalance(ctx context.Context, account types.PublicKey) (t
 // FundAccount adds to the balance to an account and returns the new balance.
 func (c *Client) FundAccount(ctx context.Context) (types.Currency, error) {
 	panic("implement me")
+}
+
+// ReviseContract is a more generic version of 'PinSectors' and 'PruneContract'.
+// It's allows for arbitrary actions to be performed. Most users should use
+// 'PinSectors' and 'PruneContract' instead.
+func (c *Client) ReviseContract(ctx context.Context, hp rhpv4.HostPrices, actions []rhpv4.WriteAction) (types.V2FileContract, error) {
+	modifyRPC := rhpv4.RPCModifySectors{
+		Actions: actions,
+	}
+	if err := c.do(ctx, &modifyRPC); err != nil {
+		return types.V2FileContract{}, fmt.Errorf("RPCModifySectors failed: %w", err)
+	}
+
+	// TODO: verify proof & build new revision
+	var rev types.V2FileContract
+
+	reviseRPC := rhpv4.RPCReviseContract{
+		Prices:   hp,
+		Revision: rev,
+	}
+	if err := c.do(ctx, &reviseRPC); err != nil {
+		return types.V2FileContract{}, fmt.Errorf("RPCReviseContract failed: %w", err)
+	}
+
+	// TODO: verify host signatures
+	return reviseRPC.Revision, nil
 }
