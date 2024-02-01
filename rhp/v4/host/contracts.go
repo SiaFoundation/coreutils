@@ -13,15 +13,11 @@ type (
 		mu sync.Mutex
 
 		// the element proof must be updated every block
-		element types.FileContractElement
-		// the revision is updated during the revise contract RPC and broadcast
-		// right before the proof window
-		revision types.V2FileContract
+		revision types.V2FileContractRevision
 		roots    []types.Hash256
 
-		confirmationIndex *types.ChainIndex
-		revisionIndex     *types.ChainIndex
-		proofIndex        *types.ChainIndex
+		revisionIndex *types.ChainIndex
+		proofIndex    *types.ChainIndex
 
 		confirmedRevisionNumber uint64
 	}
@@ -67,7 +63,22 @@ func (ms *MemContractStore) ProcessChainRevertUpdate(cru *chain.RevertUpdate) er
 	panic("implement me")
 }
 
+func (ms *MemContractStore) Revision() types.V2FileContractRevision
+
 // AddContract adds a contract to the store.
-func (ms *MemContractStore) AddContract(fc types.V2FileContract) error {
-	panic("implement me")
+func (ms *MemContractStore) AddContract(fe types.V2FileContractElement) error {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	if _, ok := ms.contracts[fe.ID]; ok {
+		return ErrContractExists
+	}
+
+	ms.contracts[fe.ID] = contract{
+		revision: types.V2FileContractRevision{
+			Parent:   fe,
+			Revision: fe.V2FileContract,
+		},
+	}
+	return nil
 }

@@ -12,4 +12,5 @@ var (
 	ErrSectorNotFound    = errors.New("sector not found")
 	ErrPriceTableExpired = errors.New("price table expired")
 	ErrOffsetOutOfBounds = errors.New("offset out of bounds")
+	ErrContractExists    = errors.New("contract already exists")
 )

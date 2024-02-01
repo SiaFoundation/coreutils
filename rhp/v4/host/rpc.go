@@ -70,7 +70,7 @@ func (s *Server) handleRPCReadSector(stream Stream, rpc *rhp.RPCReadSector, _ *z
 	sector, ok := s.sectors.Read(rpc.Root)
 	if !ok {
 		stream.WriteResponseErr(ErrSectorNotFound)
-		return ErrSectorNotFound
+		return fmt.Errorf("failed to read sector: %w", ErrSectorNotFound)
 	}
 
 	// TODO: response is missing proof
@@ -91,7 +91,7 @@ func (s *Server) handleRPCWriteSector(stream Stream, rpc *rhp.RPCWriteSector, _ 
 
 	if err := s.sectors.Write(rpc.Root, sector); err != nil {
 		stream.WriteResponseErr(err)
-		return err
+		return fmt.Errorf("failed to write sector: %w", err)
 	}
 	// TODO: stream sector root calculation
 	// note: the root will be filled out by the request decoder
