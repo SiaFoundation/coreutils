@@ -71,8 +71,12 @@ func (c *Client) resetTransport(ctx context.Context) error {
 		return fmt.Errorf("failed to dial tcp connection: %w", err)
 	} else if conn.(*net.TCPConn).SetKeepAlive(true); err != nil {
 		return fmt.Errorf("failed to set keepalive: %w", err)
+	} else if conn.SetDeadline(time.Now().Add(c.dialTimeout)); err != nil {
+		return fmt.Errorf("failed to set dial deadline on tcp connection: %w", err)
 	} else if t, err := rhpv4.Dial(conn, c.hostKey); err != nil {
 		return fmt.Errorf("failed to dial mux: %w", err)
+	} else if err := conn.SetDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("failed to revoke deadline on tcp connection")
 	} else {
 		c.t = t
 	}
