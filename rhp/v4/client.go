@@ -1,6 +1,7 @@
 package rhp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -413,22 +414,32 @@ func (c *Client) LatestRevision(ctx context.Context, sv SignerVerifier, contract
 }
 
 // ReadSector reads a sector from the host.
-func (c *Client) ReadSector(ctx context.Context, hp rhpv4.HostPrices, root types.Hash256, offset, length uint64) ([]byte, error) {
+func (c *Client) ReadSector(ctx context.Context, account rhpv4.AccountID, hp rhpv4.HostPrices, root types.Hash256, offset, length uint64) ([]byte, error) {
 	// sanity check input - offset must be segment-aligned
 	if offset%64 != 0 {
 		return nil, fmt.Errorf("offset %v is not segment-aligned", offset)
 	}
-	rpc := rhpv4.RPCReadSector{
-		Prices: hp,
-		Root:   root,
-		Offset: offset,
-		Length: length,
+	req := rhpv4.RPCReadSectorRequest{
+		Prices:    hp,
+		AccountID: account,
+		Root:      root,
+		Offset:    offset,
 	}
-	if err := c.do(ctx, &rpc); err != nil {
+	var resp rhpv4.RPCReadSectorResponse
+	if err := c.performSingleTripRPC(ctx, &req, &resp); err != nil {
 		return nil, fmt.Errorf("RPCReadSector failed: %w", err)
 	}
-	// TODO: validate proof
-	return rpc.Sector, nil
+
+	// verify proof
+	proofStart := offset / rhpv2.LeafSize
+	proofEnd := (offset + length) / rhpv2.LeafSize
+	v := rhpv2.NewRangeProofVerifier(proofStart, proofEnd)
+	if _, err := v.ReadFrom(bytes.NewReader(resp.Sector)); err != nil {
+		return nil, errors.New("failed to read response data")
+	} else if !v.Verify(resp.Proof, root) {
+		return nil, errors.New("failed to verify sector range proof")
+	}
+	return resp.Sector, nil
 }
 
 // WriteSector stores a sector in the host's temporary storage. To make it
