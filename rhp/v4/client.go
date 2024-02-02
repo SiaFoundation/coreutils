@@ -497,25 +497,29 @@ func (c *Client) AccountBalance(ctx context.Context, account types.PublicKey) (t
 }
 
 // FundAccount adds to the balance to an account and returns the new balance.
-func (c *Client) FundAccount(ctx context.Context, contractID types.FileContractID, contract types.V2FileContract, account types.PrivateKey) (types.V2FileContract, types.Currency, error) {
-	// TODO: build new revision and signature
-	var rev types.V2FileContract
-	var sig types.Signature
+func (c *Client) FundAccount(ctx context.Context, contractID types.FileContractID, contract types.V2FileContract, sv SignerVerifier, deposits []rhpv4.AccountDeposit) ([]types.Currency, types.V2FileContract, error) {
+	// build new revision
+	newRevision := contract
+	newRevision.RevisionNumber++
+	// TODO: payouts
+	sv.SignContract(&newRevision)
 
-	rpc := rhpv4.RPCFundAccount{
-		Request: rhpv4.RPCFundAccountRequest{
-			Account:         account.PublicKey(),
-			ContractID:      contractID,
-			Amount:          contract.Payout,
-			RenterSignature: sig,
-		},
+	req := rhpv4.RPCFundAccountRequest{
+		ContractID:      contractID,
+		Deposits:        deposits,
+		RenterSignature: newRevision.RenterSignature,
 	}
-	if err := c.do(ctx, &rpc); err != nil {
-		return types.V2FileContract{}, types.Currency{}, fmt.Errorf("RPCFundAccount failed: %w", err)
+	var resp rhpv4.RPCFundAccountResponse
+	if err := c.performSingleTripRPC(ctx, &req, &resp); err != nil {
+		return nil, types.V2FileContract{}, fmt.Errorf("RPCFundAccount failed: %w", err)
 	}
 
-	// TODO: verify host signature
-	return rpc.Revision, rpc.NewBalance, nil
+	// verify host signature
+	newRevision.HostSignature = resp.HostSignature
+	if !sv.VerifyHostSignature(newRevision) {
+		return nil, types.V2FileContract{}, ErrInvalidHostSig
+	}
+	return resp.Balances, newRevision, nil
 }
 
 // ReviseContract is a more generic version of 'PinSectors' and 'PruneContract'.
