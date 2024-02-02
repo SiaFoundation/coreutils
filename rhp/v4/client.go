@@ -104,9 +104,10 @@ func (c *Client) Close() error {
 	return err
 }
 
-// do performs an RPC. If retry is 'true', it will recursively retry performing
-// the rpc once if the error returned by rpcFn indicates a failure of the
-// underlying transport.
+// do blockingly performs an RPC. If retry is 'true', it will recursively retry
+// performing the rpc once if the error returned by rpcFn indicates a failure of
+// the underlying transport. This method is not intended to be called directly.
+// Instead 'withStream' should be called instead.
 func (c *Client) do(ctx context.Context, retry bool, rpcFn func(s *mux.Stream) error) error {
 	// dial a stream with a sane deadline
 	c.mu.Lock()
