@@ -123,7 +123,7 @@ func (c *Client) do(ctx context.Context, retry bool, rpcFn func(s *mux.Stream) e
 	// check the error code to see if the error is part of the protocol or
 	// transport related - if it is transport related, reset the transport
 	// and retry the RPC
-	var rpcErr rhpv4.RPCError
+	rpcErr := &rhpv4.RPCError{}
 	if errors.As(errRPC, &rpcErr) {
 		if rpcErr.Code != rhpv4.ErrorCodeTransport {
 			return errRPC // not transport related
