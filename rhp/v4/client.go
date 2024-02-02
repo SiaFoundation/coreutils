@@ -2,21 +2,24 @@ package rhp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"slices"
 	"sync"
 	"time"
 
+	"go.sia.tech/core/consensus"
 	rhpv2 "go.sia.tech/core/rhp/v2"
 	rhpv4 "go.sia.tech/core/rhp/v4"
 	"go.sia.tech/core/types"
+	"go.sia.tech/mux"
 )
 
 var (
 	defaultOptions = Options{
 		DialTimeout: time.Minute,
-		IdleTimeout: 30 * time.Second,
 		RPCTimeout:  5 * time.Minute,
 	}
 )
@@ -27,7 +30,6 @@ type (
 	// Options are used to configure the client during creation.
 	Options struct {
 		DialTimeout time.Duration // timeout for dialing a new connection
-		IdleTimeout time.Duration // timeout for idle connections before recreating them
 		RPCTimeout  time.Duration // timeout for RPCs
 	}
 
@@ -40,14 +42,12 @@ type (
 		hostKey types.PublicKey
 
 		dialTimeout time.Duration
-		idleTimeout time.Duration
 		rpcTimeout  time.Duration
 
-		mu          sync.Mutex
-		wg          sync.WaitGroup
-		openStreams int
-		lastSuccess time.Time
-		t           *rhpv4.Transport
+		mu           sync.Mutex
+		wg           sync.WaitGroup
+		lastMuxReset time.Time
+		mux          *mux.Mux
 	}
 )
 
@@ -55,13 +55,6 @@ type (
 func WithDialTimeout(d time.Duration) Option {
 	return func(opts *Options) {
 		opts.DialTimeout = d
-	}
-}
-
-// WithIdleTimeout overwrites the default idle timeout of 30 seconds.
-func WithIdleTimeout(d time.Duration) Option {
-	return func(opts *Options) {
-		opts.IdleTimeout = d
 	}
 }
 
@@ -81,10 +74,7 @@ func NewClient(ctx context.Context, addr string, hostKey types.PublicKey, opts .
 	c := &Client{
 		addr:        addr,
 		hostKey:     hostKey,
-		openStreams: 0,
-		lastSuccess: time.Now(),
 		dialTimeout: o.DialTimeout,
-		idleTimeout: o.IdleTimeout,
 		rpcTimeout:  o.RPCTimeout,
 	}
 	return c, c.resetTransport(ctx)
@@ -95,20 +85,64 @@ func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var err error
-	if c.t != nil {
-		err = c.t.Close()
-		c.t = nil
+	if c.mux != nil {
+		err = c.mux.Close()
+		c.mux = nil
 	}
 	c.wg.Wait()
 	return err
 }
 
-// do performs an RPC with a host in a way that allows the caller to interrupt
-// it
-func (c *Client) do(ctx context.Context, rpc rhpv4.RPC) error {
+// do performs an RPC. If retry is 'true', it will recursively retry performing
+// the rpc once if the error returned by rpcFn indicates a failure of the
+// underlying transport.
+func (c *Client) do(ctx context.Context, retry bool, rpcFn func(s *mux.Stream) error) error {
+	// dial a stream with a sane deadline
+	c.mu.Lock()
+	s := c.mux.DialStream()
+	c.mu.Unlock()
+	if err := s.SetDeadline(time.Now().Add(c.rpcTimeout)); err != nil {
+		return fmt.Errorf("failed to set deadline: %w", err)
+	}
+	defer s.Close()
+
+	// perform rpc
+	errRPC := rpcFn(s)
+
+	// check the error code to see if the error is part of the protocol or
+	// transport related - if it is transport related, reset the transport
+	// and retry the RPC
+	var rpcErr rhpv4.RPCError
+	if errors.As(errRPC, &rpcErr) {
+		if rpcErr.Code != rhpv4.ErrorCodeTransport {
+			return errRPC // not transport related
+		}
+		c.mu.Lock()
+		if time.Since(c.lastMuxReset) < 10*time.Second {
+			// don't reset too often
+			c.mu.Unlock()
+			return fmt.Errorf("not resetting mux since it was recently reset: %w", errRPC)
+		} else if err := c.resetTransport(ctx); err != nil {
+			// failed to reset transport
+			c.mu.Unlock()
+			return fmt.Errorf("%v: %w", err, errRPC)
+		}
+		c.mu.Unlock()
+		return c.do(ctx, false, rpcFn) // retry
+	}
+	return errRPC
+}
+
+// withStream creates a stream for the caller to perform an RPC on. It will
+// write the RPC id and then leave it to the caller to perform the remaining RPC
+// in the callback. The stream will be closed automatically and any panics which
+// might occurr will be returned as an error.
+// NOTE: rpcFn might be called up to 2 times so it should be written in a way
+// that avoids carrying state over from the first call to the second.
+func (c *Client) withStream(ctx context.Context, rpcFn func(*mux.Stream) error) error {
 	done := make(chan struct{})
 	var doErr error
-	var s *rhpv4.Stream
+	var s *mux.Stream
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
@@ -121,57 +155,8 @@ func (c *Client) do(ctx context.Context, rpc rhpv4.RPC) error {
 			}
 		}()
 
-		// reset the transport if it hasn't been used in a while
-		c.mu.Lock()
-		if c.t == nil || (c.openStreams == 0 && time.Since(c.lastSuccess) > c.idleTimeout) {
-			if err := c.resetTransport(ctx); err != nil {
-				c.mu.Unlock()
-				doErr = err
-				return
-			}
-		}
-		c.openStreams++
-		c.mu.Unlock()
-
-		defer func() {
-			c.mu.Lock()
-			c.openStreams--
-			c.mu.Unlock()
-		}()
-
-		// dial a stream with a sane deadline
-		var err error
-		s, err = c.t.DialStream()
-		if err != nil {
-			doErr = fmt.Errorf("failed to dial stream: %w", err)
-			return
-		} else if err = s.SetDeadline(time.Now().Add(c.rpcTimeout)); err != nil {
-			doErr = fmt.Errorf("failed to set deadline: %w", err)
-			return
-		}
-		defer s.Close()
-
-		// write rpc id
-		if err := s.WriteID(rpc); err != nil {
-			doErr = fmt.Errorf("failed to write rpc id: %w", err)
-			return
-		}
-
-		// the write succeeded, the connection is still intact
-		defer func() {
-			c.mu.Lock()
-			c.lastSuccess = time.Now()
-			c.mu.Unlock()
-		}()
-
-		// perform remaining rpc
-		if err := s.WriteRequest(rpc); err != nil {
-			doErr = fmt.Errorf("failed to write rpc request: %w", err)
-			return
-		} else if err := s.ReadResponse(rpc); err != nil {
-			doErr = fmt.Errorf("failed to read rpc response: %w", err)
-			return
-		}
+		// perform RPC
+		doErr = c.do(ctx, true, rpcFn)
 	}()
 	select {
 	case <-ctx.Done():
@@ -184,20 +169,43 @@ func (c *Client) do(ctx context.Context, rpc rhpv4.RPC) error {
 	}
 }
 
+// performSingleTripRPC is a helper that performs an RPC that requires a single
+// request and response.
+func (c *Client) performSingleTripRPC(ctx context.Context, req rhpv4.Request, resp rhpv4.Object) error {
+	return c.withStream(ctx, func(s *mux.Stream) error {
+		if err := rhpv4.WriteID(s, req); err != nil {
+			return fmt.Errorf("failed to write rpc id: %w", err)
+		} else if err := rhpv4.WriteRequest(s, req); err != nil {
+			return fmt.Errorf("failed to write request: %w", err)
+		} else if err := rhpv4.ReadResponse(s, resp); err != nil {
+			return fmt.Errorf("failed to read response: %w", err)
+		}
+		return nil
+	})
+}
+
+// resetTransport resets the client's underlying connection and creates a new
+// one.
 func (c *Client) resetTransport(ctx context.Context) error {
-	conn, err := net.DialTimeout("tcp", c.addr, c.dialTimeout)
-	if err != nil {
+	// close the old transport
+	if c.mux != nil {
+		c.mux.Close()
+		c.mux = nil
+	}
+	// create new transport
+	if conn, err := net.DialTimeout("tcp", c.addr, c.dialTimeout); err != nil {
 		return fmt.Errorf("failed to dial tcp connection: %w", err)
 	} else if conn.(*net.TCPConn).SetKeepAlive(true); err != nil {
 		return fmt.Errorf("failed to set keepalive: %w", err)
 	} else if conn.SetDeadline(time.Now().Add(c.dialTimeout)); err != nil {
 		return fmt.Errorf("failed to set dial deadline on tcp connection: %w", err)
-	} else if t, err := rhpv4.Dial(conn, c.hostKey); err != nil {
+	} else if mux, err := mux.Dial(conn, c.hostKey[:]); err != nil {
 		return fmt.Errorf("failed to dial mux: %w", err)
 	} else if err := conn.SetDeadline(time.Time{}); err != nil {
 		return fmt.Errorf("failed to revoke deadline on tcp connection")
 	} else {
-		c.t = t
+		c.mux = mux
+		c.lastMuxReset = time.Now()
 	}
 	return nil
 }
@@ -212,26 +220,80 @@ func (c *Client) AuditContract(ctx context.Context, n int) ([]interface{}, error
 
 // Settings returns the host's current settings, including its prices.
 func (c *Client) Settings(ctx context.Context) (rhpv4.HostSettings, error) {
-	rpc := rhpv4.RPCSettings{}
-	if err := c.do(ctx, &rpc); err != nil {
+	req := rhpv4.RPCSettingsRequest{}
+	var resp rhpv4.RPCSettingsResponse
+	if err := c.performSingleTripRPC(ctx, &req, &resp); err != nil {
 		return rhpv4.HostSettings{}, fmt.Errorf("RPCSettings failed: %w", err)
 	}
-	return rpc.Settings, nil
+	return resp.Settings, nil
 }
 
 // FormContract forms a new contract with the host.
-func (c *Client) FormContract(ctx context.Context, hp rhpv4.HostPrices, contract types.V2FileContract, inputs []types.V2SiacoinInput) (types.V2FileContract, error) {
-	rpc := rhpv4.RPCFormContract{
-		Prices:       hp,
-		Contract:     contract,
-		RenterInputs: inputs,
-	}
-	if err := c.do(ctx, &rpc); err != nil {
-		return types.V2FileContract{}, fmt.Errorf("RPCFormContract failed: %w", err)
-	}
-	panic("incomplete rpc - missing outputs")
-	// TODO: verify host signatures
-	return rpc.Contract, nil
+func (c *Client) FormContract(ctx context.Context, contract types.V2FileContract, signer Signer, hp rhpv4.HostPrices, inputs []types.V2SiacoinInput, parents []types.V2Transaction) (types.V2FileContract, []types.V2Transaction, error) {
+	var txnSet []types.V2Transaction
+	err := c.withStream(ctx, func(s *mux.Stream) error {
+		// first roundtrip
+		req := rhpv4.RPCFormContractRequest{
+			Prices:        hp,
+			Contract:      contract,
+			RenterInputs:  inputs,
+			RenterParents: parents,
+		}
+		var resp rhpv4.RPCFormContractResponse
+		if err := rhpv4.WriteRequest(s, &req); err != nil {
+			return err
+		} else if err := rhpv4.ReadResponse(s, &resp); err != nil {
+			return err
+		}
+
+		// prepare txn
+		txn := types.V2Transaction{
+			FileContracts: []types.V2FileContract{contract},
+		}
+		signer.SignContract(&txn.FileContracts[0])
+		signer.SignInputs(&txn)
+
+		// second roundtrip
+		req2 := rhpv4.RPCFormContractSecondResponse{
+			RenterContractSignature: contract.RenterSignature,
+		}
+		for _, input := range txn.SiacoinInputs {
+			req2.RenterSatisfiedPolicies = append(req2.RenterSatisfiedPolicies, input.SatisfiedPolicy)
+		}
+		var resp2 rhpv4.RPCFormContractThirdResponse
+		if err := rhpv4.WriteResponse(s, &req2); err != nil {
+			return err
+		} else if err := rhpv4.ReadResponse(s, &resp2); err != nil {
+			return err
+		}
+
+		// add host signatures
+		txn.FileContracts[0].HostSignature = resp2.HostContractSignature
+
+		// add host inputs to txn
+		if len(resp.HostInputs) != len(resp2.HostSatisfiedPolicies) {
+			return fmt.Errorf("number of host policies doesn't match number of host inputs: %v != %v", len(resp.HostInputs), len(resp2.HostSatisfiedPolicies))
+		}
+		for i := range resp.HostInputs {
+			sci := resp.HostInputs[i]
+			sci.SatisfiedPolicy = resp2.HostSatisfiedPolicies[i]
+			txn.SiacoinInputs = append(txn.SiacoinInputs, sci)
+		}
+
+		// verify whole transaction
+		if err := signer.VerifyTransaction(txn); err != nil {
+			return fmt.Errorf("verifying signatures on txn failed")
+		}
+
+		// finalise txn
+		txnSet = append([]types.V2Transaction{}, parents...) // parents first
+		txnSet = append(txnSet, txn)                         // contract txn
+
+		// update the contract to return
+		contract = txn.FileContracts[0]
+		return nil
+	})
+	return contract, txnSet, err
 }
 
 // RenewContract renews a contract with the host, immediately unlocking
@@ -246,7 +308,7 @@ func (c *Client) RenewContract(ctx context.Context, hp rhpv4.HostPrices, finalRe
 // gaps were filled. PinSectors fails if more roots than gaps are provided since
 // it sorts the gaps to find duplicates which makes it hard for the caller to
 // know which gaps got filled.
-func (c *Client) PinSectors(ctx context.Context, contract types.V2FileContract, hp rhpv4.HostPrices, roots []types.Hash256, gaps []uint64) (types.V2FileContract, error) {
+func (c *Client) PinSectors(ctx context.Context, contract types.V2FileContract, signer Signer, hp rhpv4.HostPrices, roots []types.Hash256, gaps []uint64) (types.V2FileContract, error) {
 	// sanity check input - no duplicate gaps, at most one gap per root
 	if len(gaps) > len(roots) {
 		return types.V2FileContract{}, fmt.Errorf("more gaps than roots provided")
@@ -258,11 +320,14 @@ func (c *Client) PinSectors(ctx context.Context, contract types.V2FileContract, 
 		}
 	}
 
+	// prepare actions
 	actions := make([]rhpv4.WriteAction, len(roots))
 	for i := range roots {
 		if len(gaps) > 0 {
-			actions[i] = rhpv4.WriteAction{}
-			panic("incomplete type")
+			actions[i] = rhpv4.WriteAction{
+				A:    gaps[0],
+				Root: roots[i],
+			}
 			gaps = gaps[1:]
 		} else {
 			actions[i] = rhpv4.WriteAction{
@@ -271,26 +336,47 @@ func (c *Client) PinSectors(ctx context.Context, contract types.V2FileContract, 
 			}
 		}
 	}
-	rpcModify := rhpv4.RPCModifySectors{
-		Actions: actions,
-	}
-	if err := c.do(ctx, &rpcModify); err != nil {
-		return types.V2FileContract{}, fmt.Errorf("RPCModifySectors failed: %w", err)
-	}
 
-	// TODO: verify proof & build new revision
-	var rev types.V2FileContract
+	// run rpc
+	newRevision := contract
+	newRevision.RevisionNumber++
+	err := c.withStream(ctx, func(s *mux.Stream) error {
+		// TODO: create payment revision
 
-	rpcRevise := rhpv4.RPCReviseContract{
-		Prices:   hp,
-		Revision: rev,
-	}
-	if err := c.do(ctx, &rpcRevise); err != nil {
-		return types.V2FileContract{}, fmt.Errorf("RPCReviseSectors failed: %w", err)
-	}
+		// sign revision
+		signer.SignContract(&newRevision)
 
-	// TODO: verify host signatures
-	return rpcRevise.Revision, nil
+		// first roundtrip
+		req := rhpv4.RPCModifySectorsRequest{
+			Prices:  hp,
+			Actions: actions,
+		}
+		var resp rhpv4.RPCModifySectorsResponse
+		if err := rhpv4.WriteRequest(s, &req); err != nil {
+			return err
+		} else if err := rhpv4.ReadResponse(s, &resp); err != nil {
+			return err
+		}
+
+		// second roundtrip
+		req2 := rhpv4.RPCModifySectorsSecondResponse{
+			RenterSignature: newRevision.RenterSignature,
+		}
+		var resp2 rhpv4.RPCModifySectorsThirdResponse
+		if err := rhpv4.WriteResponse(s, &req2); err != nil {
+			return err
+		} else if err := rhpv4.ReadResponse(s, &resp2); err != nil {
+			return err
+		}
+
+		// finalise new revision and verify signature
+		newRevision.HostSignature = resp2.HostSignature
+		if !signer.VerifyHostSignature(newRevision) {
+			return errors.New("invalid host signature")
+		}
+		return nil
+	})
+	return newRevision, err
 }
 
 // PruneContract prunes the sectors with the given indices from a contract.
@@ -436,15 +522,18 @@ func (c *Client) AccountBalance(ctx context.Context, account types.PublicKey) (t
 }
 
 // FundAccount adds to the balance to an account and returns the new balance.
-func (c *Client) FundAccount(ctx context.Context, contract types.V2FileContract, account types.PrivateKey) (types.V2FileContract, types.Currency, error) {
+func (c *Client) FundAccount(ctx context.Context, contractID types.FileContractID, contract types.V2FileContract, account types.PrivateKey) (types.V2FileContract, types.Currency, error) {
 	// TODO: build new revision and signature
 	var rev types.V2FileContract
 	var sig types.Signature
 
 	rpc := rhpv4.RPCFundAccount{
-		Account:         account.PublicKey(),
-		Revision:        rev,
-		RenterSignature: sig,
+		Request: rhpv4.RPCFundAccountRequest{
+			Account:         account.PublicKey(),
+			ContractID:      contractID,
+			Amount:          contract.Payout,
+			RenterSignature: sig,
+		},
 	}
 	if err := c.do(ctx, &rpc); err != nil {
 		return types.V2FileContract{}, types.Currency{}, fmt.Errorf("RPCFundAccount failed: %w", err)
@@ -478,4 +567,60 @@ func (c *Client) ReviseContract(ctx context.Context, hp rhpv4.HostPrices, action
 
 	// TODO: verify host signatures
 	return reviseRPC.Revision, nil
+}
+
+type Signer interface {
+	io.Closer
+	SignContract(contract *types.V2FileContract)
+	SignInputs(txn *types.V2Transaction)
+	VerifyHostSignature(c types.V2FileContract) bool
+	VerifyTransaction(txn types.V2Transaction) error
+}
+
+type signer struct {
+	state       consensus.State
+	contractKey types.PrivateKey
+	walletKey   types.PrivateKey
+}
+
+func (s *signer) Close() error {
+	clear(s.contractKey)
+	clear(s.walletKey)
+	return nil
+}
+
+func (s *signer) SignContract(c *types.V2FileContract) {
+	c.RenterSignature = s.contractKey.SignHash(s.state.ContractSigHash(*c))
+}
+
+func (s *signer) SignInputs(txn *types.V2Transaction) {
+	sig := s.walletKey.SignHash(s.state.InputSigHash(*txn))
+	wpk := s.walletKey.PublicKey()
+	for i := range txn.SiacoinInputs {
+		txn.SiacoinInputs[i].SatisfiedPolicy = types.SatisfiedPolicy{
+			Policy: types.SpendPolicy{
+				Type: types.PolicyTypeUnlockConditions(
+					types.StandardUnlockConditions(wpk),
+				),
+			},
+			Signatures: []types.Signature{sig}, // same for all inputs in single address wallet
+		}
+	}
+}
+
+func (s *signer) VerifyHostSignature(c types.V2FileContract) bool {
+	return c.HostPublicKey.VerifyHash(s.state.ContractSigHash(c), c.HostSignature)
+}
+
+func (s *signer) VerifyTransaction(txn types.V2Transaction) error {
+	ms := consensus.NewMidState(s.state)
+	return consensus.ValidateV2Transaction(ms, txn)
+}
+
+func NewSigner(state consensus.State, contractKey, walletKey types.PrivateKey) Signer {
+	return &signer{
+		state:       state,
+		contractKey: contractKey,
+		walletKey:   walletKey,
+	}
 }
