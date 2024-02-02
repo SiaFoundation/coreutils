@@ -18,6 +18,16 @@ import (
 )
 
 var (
+	// ErrInvalidHostSig is returned when a host provides a contract with
+	// invalid host signature
+	ErrInvalidHostSig = errors.New("host signature is invalid")
+
+	// ErrInvalidRenterSig is returned when a host provides a contract with
+	// invalid renter signature
+	ErrInvalidRenterSig = errors.New("renter signature is invalid")
+)
+
+var (
 	defaultOptions = Options{
 		DialTimeout: time.Minute,
 		RPCTimeout:  5 * time.Minute,
@@ -387,14 +397,19 @@ func (c *Client) PruneContract(ctx context.Context, contract types.V2FileContrac
 }
 
 // LatestRevision returns the latest revision for a given contract.
-func (c *Client) LatestRevision(ctx context.Context, contractID types.FileContractID) (types.V2FileContract, error) {
-	rpc := rhpv4.RPCLatestRevision{
+func (c *Client) LatestRevision(ctx context.Context, sv SignerVerifier, contractID types.FileContractID) (types.V2FileContract, error) {
+	req := rhpv4.RPCLatestRevisionRequest{
 		ContractID: contractID,
 	}
-	if err := c.do(ctx, &rpc); err != nil {
+	var resp rhpv4.RPCLatestRevisionResponse
+	if err := c.performSingleTripRPC(ctx, &req, &resp); err != nil {
 		return types.V2FileContract{}, fmt.Errorf("RPCLatestRevision failed: %w", err)
+	} else if !sv.VerifyHostSignature(resp.Contract) {
+		return types.V2FileContract{}, ErrInvalidHostSig
+	} else if !sv.VerifyRenterSignature(resp.Contract) {
+		return types.V2FileContract{}, ErrInvalidRenterSig
 	}
-	return rpc.Contract, nil
+	return resp.Contract, nil
 }
 
 // ReadSector reads a sector from the host.
@@ -560,6 +575,9 @@ type SignerVerifier interface {
 	// VerifyHostSignature verifies the host signature on the given contract
 	VerifyHostSignature(c types.V2FileContract) bool
 
+	// VerifyRenterSignature verifies the renter signature on the given contract
+	VerifyRenterSignature(c types.V2FileContract) bool
+
 	// VerifyTransaction verifies the whole transaction including the renter,
 	// host and input signatures
 	VerifyTransaction(txn types.V2Transaction) error
@@ -600,6 +618,10 @@ func (s *singleAddressSignerVerifier) SignInputs(txn *types.V2Transaction) {
 
 func (s *singleAddressSignerVerifier) VerifyHostSignature(c types.V2FileContract) bool {
 	return c.HostPublicKey.VerifyHash(s.state.ContractSigHash(c), c.HostSignature)
+}
+
+func (s *singleAddressSignerVerifier) VerifyRenterSignature(c types.V2FileContract) bool {
+	return c.RenterPublicKey.VerifyHash(s.state.ContractSigHash(c), c.RenterSignature)
 }
 
 func (s *singleAddressSignerVerifier) VerifyTransaction(txn types.V2Transaction) error {
