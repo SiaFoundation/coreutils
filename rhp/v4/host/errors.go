@@ -21,7 +21,10 @@ var (
 	// ErrOffsetOutOfBounds is returned when a renter requests a sector with an
 	// offset that is out of bounds.
 	ErrOffsetOutOfBounds = errors.New("offset out of bounds")
-	//ErrContractExists is returned when a renter tries to form a contract with
+	// ErrContractExists is returned when a renter tries to form a contract with
 	// a host that already has a contract with the renter.
 	ErrContractExists = errors.New("contract already exists")
+	// ErrSectorTooLarge is returned when a renter tries to store a sector that
+	// is larger than the maximum sector size.
+	ErrSectorTooLarge = errors.New("sector too large")
 )

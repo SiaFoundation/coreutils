@@ -1,7 +1,7 @@
 package host
 
 import (
-	"fmt"
+	"net"
 	"time"
 
 	"go.sia.tech/core/rhp/v4"
@@ -20,12 +20,7 @@ func validatePriceTable(pk types.PrivateKey, pt rhp.HostPrices) error {
 	return nil
 }
 
-func (s *Server) handleRPCSettings(stream Stream, rpc *rhp.RPCSettings, _ *zap.Logger) error {
-	if err := stream.ReadRequest(rpc); err != nil {
-		stream.WriteResponseErr(err)
-		return fmt.Errorf("failed to read RPCSettings: %w", err)
-	}
-
+func (s *Server) handleRPCSettings(stream net.Conn, req *rhp.RPCSettingsRequest, _ *zap.Logger) error {
 	pt := rhp.HostPrices{
 		ContractPrice: s.config.Settings.ContractPrice,
 		Collateral:    s.config.Settings.StoragePrice.Mul64(uint64(s.config.Settings.CollateralMultiplier * 1000)).Div64(1000),
@@ -39,25 +34,25 @@ func (s *Server) handleRPCSettings(stream Stream, rpc *rhp.RPCSettings, _ *zap.L
 	// sigHash := pt.SigHash()
 	// pt.Signature = s.privKey.SignHash(sigHash)
 
-	rpc.Settings = rhp.HostSettings{
-		Version:            protocolVersion,
-		Protocols:          s.config.Settings.Protocols,
-		AcceptingContracts: s.config.Settings.AcceptingContracts,
-		MaxDuration:        s.config.Settings.MaxDuration,
-		Prices:             pt,
-	}
-
-	if err := stream.WriteResponse(rpc); err != nil {
-		return fmt.Errorf("failed to write RPCSettings: %w", err)
-	}
-	return nil
+	err := rhp.WriteResponse(stream, &rhp.RPCSettingsResponse{
+		Settings: rhp.HostSettings{
+			Version:            protocolVersion,
+			NetAddresses:       s.config.Settings.NetAddresses,
+			AcceptingContracts: s.config.Settings.AcceptingContracts,
+			MaxDuration:        s.config.Settings.MaxDuration,
+			Prices:             pt,
+		},
+	})
+	return err
 }
 
-func (s *Server) handleRPCReadSector(stream Stream, rpc *rhp.RPCReadSector, _ *zap.Logger) error {
+/*
+func (s *Server) handleRPCReadSector(stream net.Conn, rpc *rhp.RPCReadSector, _ *zap.Logger) error {
 	if err := validatePriceTable(s.privKey, rpc.Prices); err != nil {
 		stream.WriteResponseErr(err)
 		return err
-	} else if rpc.Length+rpc.Offset > rhp.SectorSize {
+	}
+	if rpc.Length+rpc.Offset > rhp.SectorSize {
 		stream.WriteResponseErr(ErrOffsetOutOfBounds)
 		return ErrOffsetOutOfBounds
 	}
@@ -80,23 +75,25 @@ func (s *Server) handleRPCWriteSector(stream Stream, rpc *rhp.RPCWriteSector, _ 
 	if err := validatePriceTable(s.privKey, rpc.Prices); err != nil {
 		stream.WriteResponseErr(err)
 		return err
+	} else if len(rpc.Sector) > rhp.SectorSize {
+		stream.WriteResponseErr(ErrSectorTooLarge)
+		return ErrSectorTooLarge
 	}
 
 	sector := ([rhp.SectorSize]byte)(rpc.Sector)
+	// TODO: stream sector root calculation
+	rpc.Root = rhp2.SectorRoot(&sector)
 
 	if err := s.sectors.Write(rpc.Root, sector); err != nil {
 		stream.WriteResponseErr(err)
 		return fmt.Errorf("failed to write sector: %w", err)
-	}
-	// TODO: stream sector root calculation
-	// note: the root will be filled out by the request decoder
-	if err := stream.WriteResponse(rpc); err != nil {
+	} else if err := stream.WriteResponse(rpc); err != nil {
 		return fmt.Errorf("failed to write RPCWriteSector: %w", err)
 	}
 	return nil
 }
 
-func (s *Server) handleRPCReviseContract(stream Stream, rpc *rhp.RPCReviseContract, _ *zap.Logger) error {
+func (s *Server) handleRPCModifySectors(stream Stream, rpc *rhp.RPCModifySectors, _ *zap.Logger) error {
 	panic("implement me")
 }
 
@@ -111,3 +108,4 @@ func (s *Server) handleRPCFundAccount(stream Stream, rpc *rhp.RPCFundAccount, _ 
 func (s *Server) handleRPCSectorRoots(stream Stream, rpc *rhp.RPCSectorRoots, _ *zap.Logger) error {
 	panic("missing contract payment")
 }
+*/

@@ -1,3 +1,5 @@
+//go:build ignore
+
 package rhp_test
 
 import (

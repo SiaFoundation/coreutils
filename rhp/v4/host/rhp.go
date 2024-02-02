@@ -14,26 +14,15 @@ import (
 	"lukechampine.com/frand"
 )
 
-const (
-	protocolVersion = "reference 0.0.1"
+var (
+	protocolVersion = [3]byte{0, 0, 1}
 )
 
 type (
-	// A Stream is a multiplexed stream
-	Stream interface {
-		ReadID() (types.Specifier, error)
-		ReadRequest(r rhp.RPC) error
-		WriteResponse(r rhp.RPC) error
-		WriteResponseErr(err error) error
-
-		Close() error
-		SetDeadline(time.Time) error
-	}
-
 	// A Transport is a generic multiplexer interface used to handle incoming
 	// streams.
 	Transport interface {
-		AcceptStream() (Stream, error)
+		AcceptStream() (net.Conn, error)
 		Close() error
 	}
 
@@ -61,54 +50,60 @@ type (
 
 	// Settings contains the host's internal settings.
 	Settings struct {
-		Protocols            []rhp.Protocol `json:"protocols"`
-		AcceptingContracts   bool           `json:"acceptingContracts"`
-		MaxDuration          uint64         `json:"maxDuration"`
-		CollateralMultiplier float64        `json:"collateralMultiplier"`
-		ContractPrice        types.Currency `json:"contractPrice"`
-		StoragePrice         types.Currency `json:"storagePrice"`
-		IngressPrice         types.Currency `json:"ingressPrice"`
-		EgressPrice          types.Currency `json:"egressPrice"`
-		MaxCollateral        types.Currency `json:"maxCollateral"`
-		PriceTableValidity   time.Duration  `json:"priceTableValidity"`
+		NetAddresses         []rhp.NetAddress `json:"protocols"`
+		AcceptingContracts   bool             `json:"acceptingContracts"`
+		MaxDuration          uint64           `json:"maxDuration"`
+		CollateralMultiplier float64          `json:"collateralMultiplier"`
+		ContractPrice        types.Currency   `json:"contractPrice"`
+		StoragePrice         types.Currency   `json:"storagePrice"`
+		IngressPrice         types.Currency   `json:"ingressPrice"`
+		EgressPrice          types.Currency   `json:"egressPrice"`
+		MaxCollateral        types.Currency   `json:"maxCollateral"`
+		PriceTableValidity   time.Duration    `json:"priceTableValidity"`
 	}
 )
 
-func (s *Server) handleHostStream(stream Stream, log *zap.Logger) {
+func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 	defer stream.Close()
 
 	stream.SetDeadline(time.Now().Add(30 * time.Second)) // set an initial timeout
-	id, err := stream.ReadID()
+	rpcStart := time.Now()
+	id, err := rhp.ReadID(stream)
 	if err != nil {
 		log.Debug("failed to read RPC ID", zap.Error(err))
 		return
 	}
-	rpcStart := time.Now()
-	rpc := rhp.RPCforID(id)
-	switch rpc := rpc.(type) {
-	case *rhp.RPCSettings:
-		err = s.handleRPCSettings(stream, rpc, log.Named(id.String()))
-	case *rhp.RPCReadSector:
+
+	req := rhp.RequestforID(id)
+	if err := rhp.ReadRequest(stream, req); err != nil {
+		log.Debug("failed to read RPC request", zap.Error(err))
+		return
+	}
+
+	switch req := req.(type) {
+	case *rhp.RPCSettingsRequest:
+		err = s.handleRPCSettings(stream, req, log.Named(id.String()))
+	case *rhp.RPCReadSectorRequest:
 		panic("not implemented")
-	case *rhp.RPCWriteSector:
+	case *rhp.RPCWriteSectorRequest:
 		panic("not implemented")
-	case *rhp.RPCReviseContract:
+	case *rhp.RPCModifySectorsRequest:
 		panic("not implemented")
-	case *rhp.RPCFundAccount:
+	case *rhp.RPCFundAccountRequest:
 		panic("not implemented")
-	case *rhp.RPCFormContract:
+	case *rhp.RPCFormContractRequest:
 		panic("not implemented")
-	case *rhp.RPCRenewContract:
+	case *rhp.RPCRenewContractRequest:
 		panic("not implemented")
-	case *rhp.RPCLatestRevision:
+	case *rhp.RPCLatestRevisionRequest:
 		panic("not implemented")
-	case *rhp.RPCSectorRoots:
+	case *rhp.RPCSectorRootsRequest:
 		panic("not implemented")
-	case *rhp.RPCAccountBalance:
+	case *rhp.RPCAccountBalanceRequest:
 		panic("not implemented")
 	default:
 		log.Debug("unrecognized RPC", zap.Stringer("rpc", id))
-		stream.WriteResponseErr(fmt.Errorf("unrecognized RPC ID %q", id))
+		rhp.WriteResponse(stream, &rhp.RPCError{Code: 0, Description: "unrecognized RPC"})
 		return
 	}
 	if err != nil {
@@ -120,6 +115,8 @@ func (s *Server) handleHostStream(stream Stream, log *zap.Logger) {
 
 // Serve accepts incoming streams on the provided multiplexer and handles them
 func (s *Server) Serve(t Transport, log *zap.Logger) error {
+	defer t.Close()
+
 	for {
 		stream, err := t.AcceptStream()
 		if errors.Is(err, net.ErrClosed) {
