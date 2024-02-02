@@ -445,26 +445,28 @@ func (c *Client) ReadSector(ctx context.Context, account rhpv4.AccountID, hp rhp
 // WriteSector stores a sector in the host's temporary storage. To make it
 // permanent, use 'PinSectors'. The provided data will be extended to
 // rhpv4.SectorSize by the host so the client still pays for the full sector.
-func (c *Client) WriteSector(ctx context.Context, hp rhpv4.HostPrices, data []byte) (types.Hash256, error) {
+func (c *Client) WriteSector(ctx context.Context, account rhpv4.AccountID, hp rhpv4.HostPrices, data []byte) (types.Hash256, error) {
 	if len(data) == 0 {
 		return types.Hash256{}, fmt.Errorf("empty sector")
 	} else if len(data) > rhpv4.SectorSize {
 		return types.Hash256{}, fmt.Errorf("sector too large")
 	}
-	rpc := rhpv4.RPCWriteSector{
-		Prices: hp,
-		Sector: data,
+	req := rhpv4.RPCWriteSectorRequest{
+		Prices:    hp,
+		AccountID: account,
+		Sector:    data,
 	}
-	if err := c.do(ctx, &rpc); err != nil {
+	var resp rhpv4.RPCWriteSectorResponse
+	if err := c.performSingleTripRPC(ctx, &req, &resp); err != nil {
 		return types.Hash256{}, fmt.Errorf("RPCWriteSector failed: %w", err)
 	}
+
 	var sectorData [rhpv4.SectorSize]byte
 	copy(sectorData[:], data)
-	if rhpv2.SectorRoot((&sectorData)) != rpc.Root {
+	if rhpv2.SectorRoot((&sectorData)) != resp.Root {
 		return types.Hash256{}, fmt.Errorf("root mismatch")
 	}
-	panic("unfinished rpc - missing payment")
-	return rpc.Root, nil
+	return resp.Root, nil
 }
 
 // SectorRoots returns 'length' roots of a contract starting at the given
