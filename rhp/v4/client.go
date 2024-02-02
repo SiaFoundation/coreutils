@@ -229,7 +229,7 @@ func (c *Client) Settings(ctx context.Context) (rhpv4.HostSettings, error) {
 }
 
 // FormContract forms a new contract with the host.
-func (c *Client) FormContract(ctx context.Context, contract types.V2FileContract, signer Signer, hp rhpv4.HostPrices, inputs []types.V2SiacoinInput, parents []types.V2Transaction) (types.V2FileContract, []types.V2Transaction, error) {
+func (c *Client) FormContract(ctx context.Context, contract types.V2FileContract, signer SignerVerifier, hp rhpv4.HostPrices, inputs []types.V2SiacoinInput, parents []types.V2Transaction) (types.V2FileContract, []types.V2Transaction, error) {
 	var txnSet []types.V2Transaction
 	err := c.withStream(ctx, func(s *mux.Stream) error {
 		// first roundtrip
@@ -308,7 +308,7 @@ func (c *Client) RenewContract(ctx context.Context, hp rhpv4.HostPrices, finalRe
 // gaps were filled. PinSectors fails if more roots than gaps are provided since
 // it sorts the gaps to find duplicates which makes it hard for the caller to
 // know which gaps got filled.
-func (c *Client) PinSectors(ctx context.Context, contract types.V2FileContract, signer Signer, hp rhpv4.HostPrices, roots []types.Hash256, gaps []uint64) (types.V2FileContract, error) {
+func (c *Client) PinSectors(ctx context.Context, contract types.V2FileContract, signer SignerVerifier, hp rhpv4.HostPrices, roots []types.Hash256, gaps []uint64) (types.V2FileContract, error) {
 	// sanity check input - no duplicate gaps, at most one gap per root
 	if len(gaps) > len(roots) {
 		return types.V2FileContract{}, fmt.Errorf("more gaps than roots provided")
@@ -569,31 +569,46 @@ func (c *Client) ReviseContract(ctx context.Context, hp rhpv4.HostPrices, action
 	return reviseRPC.Revision, nil
 }
 
-type Signer interface {
+// SignerVerifier is a minimal interface for signing/verifying contracts and
+// transactions as part of performing RPCs.
+type SignerVerifier interface {
 	io.Closer
+
+	// SignContract signs the given contract, setting the
+	// 'RenterSignature' in the process
 	SignContract(contract *types.V2FileContract)
+
+	// SignInputs signs all inputs within the transaction, setting their
+	// signatures in the process
 	SignInputs(txn *types.V2Transaction)
+
+	// VerifyHostSignature verifies the host signature on the given contract
 	VerifyHostSignature(c types.V2FileContract) bool
+
+	// VerifyTransaction verifies the whole transaction including the renter,
+	// host and input signatures
 	VerifyTransaction(txn types.V2Transaction) error
 }
 
-type signer struct {
+// singleAddressSignerVerifier is an implementation of the SignerVerifier which
+// assumes that all inputs can be signed with a single key
+type singleAddressSignerVerifier struct {
 	state       consensus.State
 	contractKey types.PrivateKey
 	walletKey   types.PrivateKey
 }
 
-func (s *signer) Close() error {
+func (s *singleAddressSignerVerifier) Close() error {
 	clear(s.contractKey)
 	clear(s.walletKey)
 	return nil
 }
 
-func (s *signer) SignContract(c *types.V2FileContract) {
+func (s *singleAddressSignerVerifier) SignContract(c *types.V2FileContract) {
 	c.RenterSignature = s.contractKey.SignHash(s.state.ContractSigHash(*c))
 }
 
-func (s *signer) SignInputs(txn *types.V2Transaction) {
+func (s *singleAddressSignerVerifier) SignInputs(txn *types.V2Transaction) {
 	sig := s.walletKey.SignHash(s.state.InputSigHash(*txn))
 	wpk := s.walletKey.PublicKey()
 	for i := range txn.SiacoinInputs {
@@ -608,17 +623,17 @@ func (s *signer) SignInputs(txn *types.V2Transaction) {
 	}
 }
 
-func (s *signer) VerifyHostSignature(c types.V2FileContract) bool {
+func (s *singleAddressSignerVerifier) VerifyHostSignature(c types.V2FileContract) bool {
 	return c.HostPublicKey.VerifyHash(s.state.ContractSigHash(c), c.HostSignature)
 }
 
-func (s *signer) VerifyTransaction(txn types.V2Transaction) error {
+func (s *singleAddressSignerVerifier) VerifyTransaction(txn types.V2Transaction) error {
 	ms := consensus.NewMidState(s.state)
 	return consensus.ValidateV2Transaction(ms, txn)
 }
 
-func NewSigner(state consensus.State, contractKey, walletKey types.PrivateKey) Signer {
-	return &signer{
+func NewSigner(state consensus.State, contractKey, walletKey types.PrivateKey) SignerVerifier {
+	return &singleAddressSignerVerifier{
 		state:       state,
 		contractKey: contractKey,
 		walletKey:   walletKey,
