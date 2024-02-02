@@ -471,18 +471,31 @@ func (c *Client) WriteSector(ctx context.Context, account rhpv4.AccountID, hp rh
 
 // SectorRoots returns 'length' roots of a contract starting at the given
 // 'offset'.
-func (c *Client) SectorRoots(ctx context.Context, hp rhpv4.HostPrices, offset, length uint64) ([]types.Hash256, error) {
-	rpc := rhpv4.RPCSectorRoots{
-		Prices: hp,
-		Offset: offset,
-		Length: length,
+func (c *Client) SectorRoots(ctx context.Context, contract types.V2FileContract, sv SignerVerifier, hp rhpv4.HostPrices, offset, length uint64) ([]types.Hash256, error) {
+	newRevision := contract
+	newRevision.RevisionNumber++
+	// TODO: payment
+	sv.SignContract(&newRevision)
+
+	req := rhpv4.RPCSectorRootsRequest{
+		Prices:          hp,
+		RenterSignature: newRevision.RenterSignature,
+		Offset:          offset,
+		Length:          length,
 	}
-	if err := c.do(ctx, &rpc); err != nil {
+	var resp rhpv4.RPCSectorRootsResponse
+	if err := c.performSingleTripRPC(ctx, &req, &resp); err != nil {
 		return nil, fmt.Errorf("RPCSectorRoots failed: %w", err)
 	}
+
+	// verify host signature
+	newRevision.HostSignature = resp.HostSignature
+	if !sv.VerifyHostSignature(newRevision) {
+		return nil, ErrInvalidHostSig
+	}
+
 	// TODO: verify proof
-	panic("unfinished rpc - missing payment")
-	return rpc.Roots, nil
+	return resp.Roots, nil
 }
 
 // AccountBalance returns the balance of a given account.
