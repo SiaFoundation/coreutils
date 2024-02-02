@@ -486,14 +486,15 @@ func (c *Client) SectorRoots(ctx context.Context, hp rhpv4.HostPrices, offset, l
 }
 
 // AccountBalance returns the balance of a given account.
-func (c *Client) AccountBalance(ctx context.Context, account types.PublicKey) (types.Currency, error) {
-	rpc := rhpv4.RPCAccountBalance{
-		Account: types.PublicKey{},
+func (c *Client) AccountBalance(ctx context.Context, account rhpv4.AccountID) (types.Currency, error) {
+	req := rhpv4.RPCAccountBalanceRequest{
+		AccountID: account,
 	}
-	if err := c.do(ctx, &rpc); err != nil {
+	var resp rhpv4.RPCAccountBalanceResponse
+	if err := c.performSingleTripRPC(ctx, &req, &resp); err != nil {
 		return types.Currency{}, fmt.Errorf("RPCAccountBalance failed: %w", err)
 	}
-	return rpc.Balance, nil
+	return resp.Balance, nil
 }
 
 // FundAccount adds to the balance to an account and returns the new balance.
