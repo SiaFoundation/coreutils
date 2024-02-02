@@ -229,7 +229,7 @@ func (c *Client) Settings(ctx context.Context) (rhpv4.HostSettings, error) {
 }
 
 // FormContract forms a new contract with the host.
-func (c *Client) FormContract(ctx context.Context, contract types.V2FileContract, signer SignerVerifier, hp rhpv4.HostPrices, inputs []types.V2SiacoinInput, parents []types.V2Transaction) (types.V2FileContract, []types.V2Transaction, error) {
+func (c *Client) FormContract(ctx context.Context, contract types.V2FileContract, sv SignerVerifier, hp rhpv4.HostPrices, inputs []types.V2SiacoinInput, parents []types.V2Transaction) (types.V2FileContract, []types.V2Transaction, error) {
 	var txnSet []types.V2Transaction
 	err := c.withStream(ctx, func(s *mux.Stream) error {
 		// first roundtrip
@@ -250,8 +250,8 @@ func (c *Client) FormContract(ctx context.Context, contract types.V2FileContract
 		txn := types.V2Transaction{
 			FileContracts: []types.V2FileContract{contract},
 		}
-		signer.SignContract(&txn.FileContracts[0])
-		signer.SignInputs(&txn)
+		sv.SignContract(&txn.FileContracts[0])
+		sv.SignInputs(&txn)
 
 		// second roundtrip
 		req2 := rhpv4.RPCFormContractSecondResponse{
@@ -281,7 +281,7 @@ func (c *Client) FormContract(ctx context.Context, contract types.V2FileContract
 		}
 
 		// verify whole transaction
-		if err := signer.VerifyTransaction(txn); err != nil {
+		if err := sv.VerifyTransaction(txn); err != nil {
 			return fmt.Errorf("verifying signatures on txn failed")
 		}
 
@@ -308,7 +308,7 @@ func (c *Client) RenewContract(ctx context.Context, hp rhpv4.HostPrices, finalRe
 // gaps were filled. PinSectors fails if more roots than gaps are provided since
 // it sorts the gaps to find duplicates which makes it hard for the caller to
 // know which gaps got filled.
-func (c *Client) PinSectors(ctx context.Context, contract types.V2FileContract, signer SignerVerifier, hp rhpv4.HostPrices, roots []types.Hash256, gaps []uint64) (types.V2FileContract, error) {
+func (c *Client) PinSectors(ctx context.Context, contract types.V2FileContract, sv SignerVerifier, hp rhpv4.HostPrices, roots []types.Hash256, gaps []uint64) (types.V2FileContract, error) {
 	// sanity check input - no duplicate gaps, at most one gap per root
 	if len(gaps) > len(roots) {
 		return types.V2FileContract{}, fmt.Errorf("more gaps than roots provided")
@@ -336,51 +336,15 @@ func (c *Client) PinSectors(ctx context.Context, contract types.V2FileContract, 
 			}
 		}
 	}
-
-	// run rpc
-	newRevision := contract
-	newRevision.RevisionNumber++
-	err := c.withStream(ctx, func(s *mux.Stream) error {
-		// TODO: create payment revision
-
-		// sign revision
-		signer.SignContract(&newRevision)
-
-		// first roundtrip
-		req := rhpv4.RPCModifySectorsRequest{
-			Prices:  hp,
-			Actions: actions,
-		}
-		var resp rhpv4.RPCModifySectorsResponse
-		if err := rhpv4.WriteRequest(s, &req); err != nil {
-			return err
-		} else if err := rhpv4.ReadResponse(s, &resp); err != nil {
-			return err
-		}
-
-		// second roundtrip
-		req2 := rhpv4.RPCModifySectorsSecondResponse{
-			RenterSignature: newRevision.RenterSignature,
-		}
-		var resp2 rhpv4.RPCModifySectorsThirdResponse
-		if err := rhpv4.WriteResponse(s, &req2); err != nil {
-			return err
-		} else if err := rhpv4.ReadResponse(s, &resp2); err != nil {
-			return err
-		}
-
-		// finalise new revision and verify signature
-		newRevision.HostSignature = resp2.HostSignature
-		if !signer.VerifyHostSignature(newRevision) {
-			return errors.New("invalid host signature")
-		}
-		return nil
-	})
-	return newRevision, err
+	newRevision, err := c.reviseContract(ctx, contract, sv, hp, actions)
+	if err != nil {
+		return types.V2FileContract{}, fmt.Errorf("RPCReviseContract failed: %w", err)
+	}
+	return newRevision, nil
 }
 
 // PruneContract prunes the sectors with the given indices from a contract.
-func (c *Client) PruneContract(ctx context.Context, contract types.V2FileContract, hp rhpv4.HostPrices, nSectors uint64, sectorIndices []uint64) (types.V2FileContract, error) {
+func (c *Client) PruneContract(ctx context.Context, contract types.V2FileContract, sv SignerVerifier, hp rhpv4.HostPrices, nSectors uint64, sectorIndices []uint64) (types.V2FileContract, error) {
 	if len(sectorIndices) == 0 {
 		return types.V2FileContract{}, nil // nothing to do
 	} else if nSectors == 0 {
@@ -415,28 +379,11 @@ func (c *Client) PruneContract(ctx context.Context, contract types.V2FileContrac
 		N: uint64(len(actions)),
 	})
 
-	// modify sector
-	rpcModify := rhpv4.RPCModifySectors{
-		Actions: actions,
-	}
-	if err := c.do(ctx, &rpcModify); err != nil {
-		return types.V2FileContract{}, fmt.Errorf("RPCModifySectors failed: %w", err)
-	}
-
-	// TODO: check proof & build new revision
-	var rev types.V2FileContract
-
-	// revise contract
-	rpcRevise := rhpv4.RPCReviseContract{
-		Prices:   hp,
-		Revision: rev,
-	}
-	if err := c.do(ctx, &rpcRevise); err != nil {
+	newRevision, err := c.reviseContract(ctx, contract, sv, hp, actions)
+	if err != nil {
 		return types.V2FileContract{}, fmt.Errorf("RPCReviseSectors failed: %w", err)
 	}
-
-	// TODO: verify host signatures
-	return rpcRevise.Revision, nil
+	return newRevision, nil
 }
 
 // LatestRevision returns the latest revision for a given contract.
@@ -546,27 +493,55 @@ func (c *Client) FundAccount(ctx context.Context, contractID types.FileContractI
 // ReviseContract is a more generic version of 'PinSectors' and 'PruneContract'.
 // It's allows for arbitrary actions to be performed. Most users should use
 // 'PinSectors' and 'PruneContract' instead.
-func (c *Client) ReviseContract(ctx context.Context, hp rhpv4.HostPrices, actions []rhpv4.WriteAction) (types.V2FileContract, error) {
-	modifyRPC := rhpv4.RPCModifySectors{
-		Actions: actions,
-	}
-	if err := c.do(ctx, &modifyRPC); err != nil {
-		return types.V2FileContract{}, fmt.Errorf("RPCModifySectors failed: %w", err)
-	}
-
-	// TODO: verify proof & build new revision
-	var rev types.V2FileContract
-
-	reviseRPC := rhpv4.RPCReviseContract{
-		Prices:   hp,
-		Revision: rev,
-	}
-	if err := c.do(ctx, &reviseRPC); err != nil {
+func (c *Client) ReviseContract(ctx context.Context, contract types.V2FileContract, sv SignerVerifier, hp rhpv4.HostPrices, actions []rhpv4.WriteAction) (types.V2FileContract, error) {
+	newRevision, err := c.reviseContract(ctx, contract, sv, hp, actions)
+	if err != nil {
 		return types.V2FileContract{}, fmt.Errorf("RPCReviseContract failed: %w", err)
 	}
+	return newRevision, nil
+}
 
-	// TODO: verify host signatures
-	return reviseRPC.Revision, nil
+func (c *Client) reviseContract(ctx context.Context, contract types.V2FileContract, sv SignerVerifier, hp rhpv4.HostPrices, actions []rhpv4.WriteAction) (types.V2FileContract, error) {
+	// run rpc
+	newRevision := contract
+	newRevision.RevisionNumber++
+	err := c.withStream(ctx, func(s *mux.Stream) error {
+		// TODO: create payment revision
+
+		// sign revision
+		sv.SignContract(&newRevision)
+
+		// first roundtrip
+		req := rhpv4.RPCModifySectorsRequest{
+			Prices:  hp,
+			Actions: actions,
+		}
+		var resp rhpv4.RPCModifySectorsResponse
+		if err := rhpv4.WriteRequest(s, &req); err != nil {
+			return err
+		} else if err := rhpv4.ReadResponse(s, &resp); err != nil {
+			return err
+		}
+
+		// second roundtrip
+		req2 := rhpv4.RPCModifySectorsSecondResponse{
+			RenterSignature: newRevision.RenterSignature,
+		}
+		var resp2 rhpv4.RPCModifySectorsThirdResponse
+		if err := rhpv4.WriteResponse(s, &req2); err != nil {
+			return err
+		} else if err := rhpv4.ReadResponse(s, &resp2); err != nil {
+			return err
+		}
+
+		// finalise new revision and verify signature
+		newRevision.HostSignature = resp2.HostSignature
+		if !sv.VerifyHostSignature(newRevision) {
+			return errors.New("invalid host signature")
+		}
+		return nil
+	})
+	return newRevision, err
 }
 
 // SignerVerifier is a minimal interface for signing/verifying contracts and
