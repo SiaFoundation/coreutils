@@ -62,6 +62,8 @@ type PeerStore interface {
 var (
 	// ErrPeerBanned is returned when a peer is banned.
 	ErrPeerBanned = errors.New("peer is banned")
+	// ErrPeerNotFound is returned when the peer is not found.
+	ErrPeerNotFound = errors.New("peer not found")
 )
 
 // Subnet normalizes the provided CIDR subnet string.
