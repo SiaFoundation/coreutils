@@ -223,8 +223,6 @@ func (c *Client) resetTransport(ctx context.Context) error {
 	// create new transport
 	if conn, err := net.DialTimeout("tcp", c.addr, c.dialTimeout); err != nil {
 		return fmt.Errorf("failed to dial tcp connection: %w", err)
-	} else if conn.(*net.TCPConn).SetKeepAlive(true); err != nil {
-		return fmt.Errorf("failed to set keepalive: %w", err)
 	} else if conn.SetDeadline(time.Now().Add(c.dialTimeout)); err != nil {
 		return fmt.Errorf("failed to set dial deadline on tcp connection: %w", err)
 	} else if mux, err := mux.Dial(conn, c.hostKey[:]); err != nil {
