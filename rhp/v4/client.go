@@ -309,7 +309,7 @@ func (c *Client) FormContract(ctx context.Context, contract types.V2FileContract
 		}
 
 		// verify whole transaction
-		if err := sv.VerifyTransaction(txn); err != nil {
+		if err := sv.VerifyTransaction(txn, resp.HostParents, parents); err != nil {
 			return fmt.Errorf("verifying signatures on txn failed")
 		}
 
@@ -628,7 +628,7 @@ type SignerVerifier interface {
 
 	// VerifyTransaction verifies the whole transaction including the renter,
 	// host and input signatures
-	VerifyTransaction(txn types.V2Transaction) error
+	VerifyTransaction(txn types.V2Transaction, hostParents, clientParents []types.V2Transaction) error
 }
 
 // singleAddressSignerVerifier is an implementation of the SignerVerifier which
@@ -672,9 +672,24 @@ func (s *singleAddressSignerVerifier) VerifyRenterSignature(c types.V2FileContra
 	return c.RenterPublicKey.VerifyHash(s.state.ContractSigHash(c), c.RenterSignature)
 }
 
-func (s *singleAddressSignerVerifier) VerifyTransaction(txn types.V2Transaction) error {
+func (s *singleAddressSignerVerifier) VerifyTransaction(contractTxn types.V2Transaction, hostParents, clientParents []types.V2Transaction) error {
 	ms := consensus.NewMidState(s.state)
-	return consensus.ValidateV2Transaction(ms, txn)
+	for _, txn := range hostParents {
+		if err := consensus.ValidateV2Transaction(ms, txn); err != nil {
+			return fmt.Errorf("host sent invalid parent txn: %w", err)
+		}
+		ms.ApplyV2Transaction(txn)
+	}
+	for _, txn := range clientParents {
+		if err := consensus.ValidateV2Transaction(ms, txn); err != nil {
+			return fmt.Errorf("invalid parent txn: %w", err)
+		}
+		ms.ApplyV2Transaction(txn)
+	}
+	if err := consensus.ValidateV2Transaction(ms, contractTxn); err != nil {
+		return fmt.Errorf("contract txn is invalid: %w", err)
+	}
+	return nil
 }
 
 func NewSigner(state consensus.State, contractKey, walletKey types.PrivateKey) SignerVerifier {
