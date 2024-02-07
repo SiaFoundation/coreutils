@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"slices"
 	"sync"
@@ -56,7 +55,6 @@ type (
 		rpcTimeout  time.Duration
 
 		mu           sync.Mutex
-		wg           sync.WaitGroup
 		lastMuxReset time.Time
 		mux          *mux.Mux
 	}
@@ -91,32 +89,16 @@ func NewClient(ctx context.Context, addr string, hostKey types.PublicKey, opts .
 	return c, c.resetTransport(ctx)
 }
 
-// Close closes the client and waits for any spawned goroutines to finish.
-func (c *Client) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	var err error
-	if c.mux != nil {
-		err = c.mux.Close()
-		c.mux = nil
-	}
-	c.wg.Wait()
-	return err
-}
-
-// do blockingly performs an RPC. If retry is 'true', it will recursively retry
-// performing the rpc once if the error returned by rpcFn indicates a failure of
-// the underlying transport. This method is not intended to be called directly.
-// Instead 'withStream' should be called instead.
-func (c *Client) do(ctx context.Context, retry bool, rpcFn func(s *mux.Stream) error) error {
-	// dial a stream with a sane deadline
-	c.mu.Lock()
-	s := c.mux.DialStream()
-	c.mu.Unlock()
+// do blockingly performs an RPC. It will return one of 3 things.
+//  1. false, nil: the RPC was successful
+//  2. true, nil: the RPC failed due to a transport error and the transport was reset
+//  3. false, error: the RPC either failed due to a protocol error or the
+//     transport wasn't recoverable
+func (c *Client) do(ctx context.Context, s *mux.Stream, rpcFn func(s *mux.Stream) error) (bool, error) {
+	// set a sane deadline
 	if err := s.SetDeadline(time.Now().Add(c.rpcTimeout)); err != nil {
-		return fmt.Errorf("failed to set deadline: %w", err)
+		return false, fmt.Errorf("failed to set deadline: %w", err)
 	}
-	defer s.Close()
 
 	// perform rpc
 	errRPC := rpcFn(s)
@@ -124,21 +106,21 @@ func (c *Client) do(ctx context.Context, retry bool, rpcFn func(s *mux.Stream) e
 	// check the error code to see if the error is part of the protocol or
 	// transport related - if it is transport related, reset the transport
 	// and retry the RPC
-	if retry && rhpv4.ErrorCode(errRPC) == rhpv4.ErrorCodeTransport {
+	if rhpv4.ErrorCode(errRPC) == rhpv4.ErrorCodeTransport {
 		c.mu.Lock()
 		if time.Since(c.lastMuxReset) < 10*time.Second {
 			// don't reset too often
 			c.mu.Unlock()
-			return fmt.Errorf("not resetting mux since it was recently reset: %w", errRPC)
+			return false, fmt.Errorf("not resetting mux since it was recently reset: %w", errRPC)
 		} else if err := c.resetTransport(ctx); err != nil {
 			// failed to reset transport
 			c.mu.Unlock()
-			return fmt.Errorf("%v: %w", err, errRPC)
+			return false, fmt.Errorf("%v: %w", err, errRPC)
 		}
 		c.mu.Unlock()
-		return c.do(ctx, false, rpcFn) // retry
+		return true, nil
 	}
-	return errRPC
+	return false, errRPC
 }
 
 // withStream creates a stream for the caller to perform an RPC on. It will
@@ -147,34 +129,45 @@ func (c *Client) do(ctx context.Context, retry bool, rpcFn func(s *mux.Stream) e
 // might occurr will be returned as an error.
 // NOTE: rpcFn might be called up to 2 times so it should be written in a way
 // that avoids carrying state over from the first call to the second.
-func (c *Client) withStream(ctx context.Context, rpcFn func(*mux.Stream) error) error {
+func (c *Client) withStream(ctx context.Context, rpcFn func(*mux.Stream) error) (err error) {
 	done := make(chan struct{})
-	var doErr error
-	var s *mux.Stream
-	c.wg.Add(1)
-	go func() {
-		defer c.wg.Done()
-		defer close(done)
+	defer close(done)
 
-		// defer recover
-		defer func() {
-			if r := recover(); r != nil {
-				doErr = fmt.Errorf("a panic occurred while executing the rpc: %v", r)
+	// helper to dial and interrupt stream
+	dial := func() *mux.Stream {
+		c.mu.Lock()
+		s := c.mux.DialStream()
+		go func() {
+			select {
+			case <-ctx.Done():
+			case <-done:
 			}
+			_ = s.Close()
 		}()
-
-		// perform RPC
-		doErr = c.do(ctx, true, rpcFn)
-	}()
-	select {
-	case <-ctx.Done():
-		// Caller interrupted the RPC - optimistically set deadline to abort
-		// goroutine as soon as possible
-		s.SetDeadline(time.Now())
-		return ctx.Err()
-	case <-done:
-		return doErr
+		c.mu.Unlock()
+		return s
 	}
+
+	// defer recover
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("a panic occurred while executing the rpc: %v", r)
+		}
+	}()
+
+	// dial a stream
+	s := dial()
+
+	// perform RPC
+	retry, err := c.do(ctx, s, rpcFn)
+	if err != nil {
+		return err
+	} else if retry {
+		s = dial() // new stream
+		_, err = c.do(ctx, s, rpcFn)
+		return err
+	}
+	return nil
 }
 
 // performSingleTripRPC is a helper that performs an RPC that requires a single
@@ -294,7 +287,8 @@ func (c *Client) FormContract(ctx context.Context, contract types.V2FileContract
 		}
 
 		// finalise txn
-		txnSet = append([]types.V2Transaction{}, parents...) // parents first
+		txnSet = append([]types.V2Transaction{}, parents...) // client parents
+		txnSet = append(txnSet, resp.HostParents...)         // host parents
 		txnSet = append(txnSet, txn)                         // contract txn
 
 		// update the contract to return
@@ -333,6 +327,7 @@ func (c *Client) PinSectors(ctx context.Context, contract types.V2FileContract, 
 	for i := range roots {
 		if len(gaps) > 0 {
 			actions[i] = rhpv4.WriteAction{
+				Type: rhpv4.ActionUpdate,
 				A:    gaps[0],
 				Root: roots[i],
 			}
@@ -590,8 +585,6 @@ func (c *Client) reviseContract(ctx context.Context, contract types.V2FileContra
 // SignerVerifier is a minimal interface for signing/verifying contracts and
 // transactions as part of performing RPCs.
 type SignerVerifier interface {
-	io.Closer
-
 	// SignContract signs the given contract, setting the
 	// 'RenterSignature' in the process
 	SignContract(contract *types.V2FileContract)
