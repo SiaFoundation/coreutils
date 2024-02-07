@@ -50,6 +50,8 @@ type (
 	Client struct {
 		addr    string
 		hostKey types.PublicKey
+		wg      sync.WaitGroup
+		closed  chan struct{}
 
 		dialTimeout time.Duration
 		rpcTimeout  time.Duration
@@ -87,6 +89,22 @@ func NewClient(ctx context.Context, addr string, hostKey types.PublicKey, opts .
 		rpcTimeout:  o.RPCTimeout,
 	}
 	return c, c.resetTransport(ctx)
+}
+
+// Close closes the stream which prevents new RPCs from being performed and
+// blocks until all ongoing RPCs are finished.
+func (c *Client) Close() error {
+	close(c.closed)
+	c.wg.Wait()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var err error
+	if c.mux != nil {
+		err = c.mux.Close()
+		c.mux = nil
+	}
+	return err
 }
 
 // do blockingly performs an RPC. It will return one of 3 things.
@@ -133,11 +151,20 @@ func (c *Client) withStream(ctx context.Context, rpcFn func(*mux.Stream) error) 
 	done := make(chan struct{})
 	defer close(done)
 
+	// don't perform any RPCs if the client is closed
+	select {
+	case <-c.closed:
+		return errors.New("client is closed")
+	default:
+	}
+
 	// helper to dial and interrupt stream
 	dial := func() *mux.Stream {
 		c.mu.Lock()
 		s := c.mux.DialStream()
+		c.wg.Add(1)
 		go func() {
+			defer c.wg.Done()
 			select {
 			case <-ctx.Done():
 			case <-done:
