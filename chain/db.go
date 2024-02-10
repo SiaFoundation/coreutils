@@ -37,6 +37,21 @@ func (sb *supplementedBlock) DecodeFrom(d *types.Decoder) {
 	}
 }
 
+// helper type for decoding just the header information from a block
+type supplementedHeader struct {
+	ParentID  types.BlockID
+	Timestamp time.Time
+}
+
+func (sh *supplementedHeader) DecodeFrom(d *types.Decoder) {
+	if v := d.ReadUint8(); v != 2 {
+		d.SetErr(fmt.Errorf("incompatible version (%d)", v))
+	}
+	sh.ParentID.DecodeFrom(d)
+	_ = d.ReadUint64() // nonce
+	sh.Timestamp = d.ReadTime()
+}
+
 type versionedState struct {
 	State consensus.State
 }
@@ -235,7 +250,6 @@ var (
 	bFileContractElements = []byte("FileContracts")
 	bSiacoinElements      = []byte("SiacoinElements")
 	bSiafundElements      = []byte("SiafundElements")
-	bAncestorTimestamps   = []byte("AncestorTimestamps")
 	bTree                 = []byte("Tree")
 
 	keyHeight = []byte("Height")
@@ -299,6 +313,12 @@ func (db *DBStore) getBlock(id types.BlockID) (b types.Block, bs *consensus.V1Bl
 func (db *DBStore) putBlock(b types.Block, bs *consensus.V1BlockSupplement) {
 	id := b.ID()
 	db.bucket(bBlocks).put(id[:], supplementedBlock{b, bs})
+}
+
+func (db *DBStore) getBlockHeader(id types.BlockID) (parentID types.BlockID, timestamp time.Time, _ bool) {
+	var sh supplementedHeader
+	ok := db.bucket(bBlocks).get(id[:], &sh)
+	return sh.ParentID, sh.Timestamp, ok
 }
 
 func (db *DBStore) treeKey(row, col uint64) []byte {
@@ -574,35 +594,19 @@ func (db *DBStore) AncestorTimestamp(id types.BlockID) (t time.Time, ok bool) {
 		db.bucket(bMainChain).get(db.encHeight(height), &id)
 		return
 	}
-	computeTimestamp := func(id types.BlockID) (time.Time, bool) {
-		ancestorID := id
-		for i := uint64(0); i < cs.AncestorDepth() && i < cs.Index.Height; i++ {
-			// if we're on the best path, we can jump to the n'th block directly
-			if ancestorID == getBestID(cs.Index.Height-i) {
-				ancestorID = getBestID(cs.Index.Height - cs.AncestorDepth())
-				if cs.Index.Height < cs.AncestorDepth() {
-					ancestorID = getBestID(0)
-				}
-				break
+	ancestorID := id
+	for i := uint64(0); i < cs.AncestorDepth() && i < cs.Index.Height; i++ {
+		// if we're on the best path, we can jump to the n'th block directly
+		if ancestorID == getBestID(cs.Index.Height-i) {
+			ancestorID = getBestID(cs.Index.Height - cs.AncestorDepth())
+			if cs.Index.Height < cs.AncestorDepth() {
+				ancestorID = getBestID(0)
 			}
-			b, _, _ := db.Block(ancestorID)
-			ancestorID = b.ParentID
+			break
 		}
-		b, _, ok := db.Block(ancestorID)
-		return b.Timestamp, ok
+		ancestorID, _, _ = db.getBlockHeader(ancestorID)
 	}
-
-	ok = db.bucket(bAncestorTimestamps).get(id[:], types.DecoderFunc(func(d *types.Decoder) {
-		t = d.ReadTime()
-	}))
-	if !ok {
-		t, ok = computeTimestamp(id)
-		if ok {
-			db.bucket(bAncestorTimestamps).put(id[:], types.EncoderFunc(func(e *types.Encoder) {
-				e.WriteTime(t)
-			}))
-		}
-	}
+	_, t, ok = db.getBlockHeader(ancestorID)
 	return
 }
 
@@ -629,8 +633,8 @@ func (db *DBStore) AddBlock(b types.Block, bs *consensus.V1BlockSupplement) {
 func (db *DBStore) shouldFlush() bool {
 	// NOTE: these values were chosen empirically and should constitute a
 	// sensible default; if necessary, we can make them configurable
-	const flushSizeThreshold = 2e6
-	const flushDurationThreshold = 100 * time.Millisecond
+	const flushSizeThreshold = 20e6
+	const flushDurationThreshold = 1000 * time.Millisecond
 	return db.unflushed >= flushSizeThreshold || time.Since(db.lastFlush) >= flushDurationThreshold
 }
 
@@ -703,7 +707,6 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block) (_ *DBSto
 			bFileContractElements,
 			bSiacoinElements,
 			bSiafundElements,
-			bAncestorTimestamps,
 			bTree,
 		} {
 			if _, err := db.CreateBucket(bucket); err != nil {
