@@ -633,8 +633,8 @@ func (db *DBStore) AddBlock(b types.Block, bs *consensus.V1BlockSupplement) {
 func (db *DBStore) shouldFlush() bool {
 	// NOTE: these values were chosen empirically and should constitute a
 	// sensible default; if necessary, we can make them configurable
-	const flushSizeThreshold = 2e6
-	const flushDurationThreshold = 100 * time.Millisecond
+	const flushSizeThreshold = 20e6
+	const flushDurationThreshold = 1000 * time.Millisecond
 	return db.unflushed >= flushSizeThreshold || time.Since(db.lastFlush) >= flushDurationThreshold
 }
 
