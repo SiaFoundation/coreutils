@@ -214,7 +214,7 @@ func (sw *SingleAddressWallet) TransactionCount() (uint64, error) {
 // SpendableOutputs returns a list of spendable siacoin outputs, a spendable
 // output is an unspent output that's not locked, not currently in the
 // transaction pool and that has matured.
-func (sw *SingleAddressWallet) SpendableOutputs() ([]types.SiacoinElement, error) {
+func (sw *SingleAddressWallet) SpendableOutputs() ([]SiacoinElement, error) {
 	// fetch outputs from the store
 	utxos, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
@@ -256,7 +256,7 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 		return nil, nil
 	}
 
-	utxos, err := sw.store.UnspentSiacoinElements()
+	elements, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
 		return nil, err
 	}
@@ -282,14 +282,13 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 	defer sw.mu.Unlock()
 
 	// remove locked and spent outputs
-	filtered := utxos[:0]
-	for _, sce := range utxos {
+	utxos := make([]types.SiacoinElement, 0, len(elements))
+	for _, sce := range elements {
 		if time.Now().Before(sw.locked[sce.ID]) || tpoolSpent[sce.ID] {
 			continue
 		}
-		filtered = append(filtered, sce)
+		utxos = append(utxos, sce.SiacoinElement)
 	}
-	utxos = filtered
 
 	// sort by value, descending
 	sort.Slice(utxos, func(i, j int) bool {
@@ -319,7 +318,7 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 			utxos = utxos[i:]
 			break
 		}
-		selected = append(selected, sce.SiacoinElement)
+		selected = append(selected, sce)
 		inputSum = inputSum.Add(sce.SiacoinOutput.Value)
 	}
 
@@ -355,7 +354,7 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 			}
 
 			sce := defraggable[i]
-			selected = append(selected, sce.SiacoinElement)
+			selected = append(selected, sce)
 			inputSum = inputSum.Add(sce.SiacoinOutput.Value)
 			txnInputs++
 		}
@@ -459,7 +458,7 @@ func (sw *SingleAddressWallet) UnconfirmedTransactions() ([]Transaction, error) 
 // outputs. It also returns a list of output IDs that need to be signed.
 func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte types.Currency) (txns []types.Transaction, toSign []types.Hash256, err error) {
 	// fetch outputs from the store
-	utxos, err := sw.store.UnspentSiacoinElements()
+	elements, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -481,8 +480,8 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 
 	// adjust the number of desired outputs for any output we encounter that is
 	// unused, matured and has the same value
-	usable := utxos[:0]
-	for _, sce := range utxos {
+	utxos := make([]types.SiacoinElement, 0, len(elements))
+	for _, sce := range elements {
 		inUse := time.Now().After(sw.locked[sce.ID]) || inPool[sce.ID]
 		matured := bh >= sce.MaturityHeight
 		sameValue := sce.SiacoinOutput.Value.Equals(amount)
@@ -494,10 +493,9 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 
 		// collect usable outputs for defragging
 		if !inUse && matured && !sameValue {
-			usable = append(usable, sce)
+			utxos = append(utxos, sce.SiacoinElement)
 		}
 	}
-	utxos = usable
 
 	// return early if we don't have to defrag at all
 	if outputs <= 0 {

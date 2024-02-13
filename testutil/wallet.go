@@ -29,9 +29,9 @@ type (
 	}
 )
 
-func (et *ephemeralWalletUpdateTxn) WalletStateElements() (eles []types.StateElement, _ error) {
+func (et *ephemeralWalletUpdateTxn) WalletStateElements() (elements []types.StateElement, _ error) {
 	for _, se := range et.store.utxos {
-		eles = append(eles, se.StateElement)
+		elements = append(elements, se.StateElement)
 	}
 	return
 }
@@ -133,6 +133,7 @@ func (es *EphemeralWalletStore) Tip() (types.ChainIndex, error) {
 	return es.tip, nil
 }
 
+// ProcessChainApplyUpdate implements chain.Subscriber.
 func (es *EphemeralWalletStore) ProcessChainApplyUpdate(cau *chain.ApplyUpdate, mayCommit bool) error {
 	es.mu.Lock()
 	defer es.mu.Unlock()
@@ -153,6 +154,7 @@ func (es *EphemeralWalletStore) ProcessChainApplyUpdate(cau *chain.ApplyUpdate, 
 	return nil
 }
 
+// ProcessChainRevertUpdate implements chain.Subscriber.
 func (es *EphemeralWalletStore) ProcessChainRevertUpdate(cru *chain.RevertUpdate) error {
 	es.mu.Lock()
 	defer es.mu.Unlock()
