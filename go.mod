@@ -1,6 +1,6 @@
 module go.sia.tech/coreutils
 
-go 1.21
+go 1.21.6
 
 require (
 	go.etcd.io/bbolt v1.3.8
