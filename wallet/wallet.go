@@ -9,7 +9,6 @@ import (
 
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/types"
-	"go.sia.tech/coreutils/chain"
 	"go.uber.org/zap"
 )
 
@@ -76,18 +75,13 @@ type (
 	ChainManager interface {
 		TipState() consensus.State
 		BestIndex(height uint64) (types.ChainIndex, bool)
-
 		PoolTransactions() []types.Transaction
-
-		AddSubscriber(chain.Subscriber, types.ChainIndex) error
-		RemoveSubscriber(chain.Subscriber)
+		OnReorg(func(types.ChainIndex)) func()
 	}
 
 	// A SingleAddressStore stores the state of a single-address wallet.
 	// Implementations are assumed to be thread safe.
 	SingleAddressStore interface {
-		chain.Subscriber
-
 		// Tip returns the consensus change ID and block height of
 		// the last wallet change.
 		Tip() (types.ChainIndex, error)
@@ -151,7 +145,7 @@ func (t *Event) DecodeFrom(d *types.Decoder) {
 
 // Close closes the wallet
 func (sw *SingleAddressWallet) Close() error {
-	sw.cm.RemoveSubscriber(sw.store)
+	// TODO: remove subscription??
 	return nil
 }
 
@@ -571,7 +565,9 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 		}
 
 		// set the miner fee
-		txn.MinerFees = []types.Currency{fee}
+		if !fee.IsZero() {
+			txn.MinerFees = []types.Currency{fee}
+		}
 
 		// add the change output
 		change := SumOutputs(inputs).Sub(want.Add(fee))

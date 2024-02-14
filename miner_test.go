@@ -26,7 +26,6 @@ func TestMiner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
 	cm := chain.NewManager(store, tipState)
 
 	// create a transaction

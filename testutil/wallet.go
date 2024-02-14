@@ -140,35 +140,21 @@ func (es *EphemeralWalletStore) Tip() (types.ChainIndex, error) {
 }
 
 // ProcessChainApplyUpdate implements chain.Subscriber.
-func (es *EphemeralWalletStore) ProcessChainApplyUpdate(cau *chain.ApplyUpdate, mayCommit bool) error {
+func (es *EphemeralWalletStore) ProcessChainApplyUpdate(cau chain.ApplyUpdate) error {
 	es.mu.Lock()
 	defer es.mu.Unlock()
-
-	es.uncommitted = append(es.uncommitted, cau)
-	if !mayCommit {
-		return nil
-	}
-
 	address := types.StandardUnlockHash(es.privateKey.PublicKey())
-	ephemeralWalletUpdateTxn := &ephemeralWalletUpdateTxn{store: es}
-
-	if err := wallet.ApplyChainUpdates(ephemeralWalletUpdateTxn, address, es.uncommitted); err != nil {
+	if err := wallet.ApplyChainUpdates(&ephemeralWalletUpdateTxn{store: es}, address, []chain.ApplyUpdate{cau}); err != nil {
 		return err
 	}
 	es.tip = cau.State.Index
-	es.uncommitted = nil
 	return nil
 }
 
 // ProcessChainRevertUpdate implements chain.Subscriber.
-func (es *EphemeralWalletStore) ProcessChainRevertUpdate(cru *chain.RevertUpdate) error {
+func (es *EphemeralWalletStore) ProcessChainRevertUpdate(cru chain.RevertUpdate) error {
 	es.mu.Lock()
 	defer es.mu.Unlock()
-
-	if len(es.uncommitted) > 0 && es.uncommitted[len(es.uncommitted)-1].State.Index == cru.State.Index {
-		es.uncommitted = es.uncommitted[:len(es.uncommitted)-1]
-		return nil
-	}
 
 	address := types.StandardUnlockHash(es.privateKey.PublicKey())
 	return wallet.RevertChainUpdate(&ephemeralWalletUpdateTxn{store: es}, address, cru)

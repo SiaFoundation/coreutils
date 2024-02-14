@@ -2,6 +2,7 @@ package wallet_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"go.sia.tech/core/types"
@@ -14,7 +15,7 @@ import (
 type testWallet struct {
 	t     *testing.T
 	cm    *chain.Manager
-	store wallet.SingleAddressStore
+	store *testutil.EphemeralWalletStore
 
 	*wallet.SingleAddressWallet
 }
@@ -33,11 +34,6 @@ func newTestWallet(t *testing.T, funded bool) *testWallet {
 
 	// create chain manager and subscribe the wallet
 	cm := chain.NewManager(cs, tipState)
-	err = cm.AddSubscriber(ws, types.ChainIndex{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	// create wallet
 	l := zaptest.NewLogger(t)
 	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(l.Named("wallet")))
@@ -45,49 +41,55 @@ func newTestWallet(t *testing.T, funded bool) *testWallet {
 		t.Fatal(err)
 	}
 
+	tw := &testWallet{t, cm, ws, w}
+
 	if funded {
 		// mine a block to fund the wallet
-		b := testutil.MineBlock(cm, w.Address())
-		if err := cm.AddBlocks([]types.Block{b}); err != nil {
+		if err := tw.mineBlock(w.Address()); err != nil {
 			t.Fatal(err)
 		}
-
 		// mine until the payout matures
-		tip := cm.TipState()
-		target := tip.MaturityHeight() + 1
-		for i := tip.Index.Height; i < target; i++ {
-			b := testutil.MineBlock(cm, types.VoidAddress)
-			if err := cm.AddBlocks([]types.Block{b}); err != nil {
+		maturityHeight := cm.TipState().MaturityHeight()
+		for cm.Tip().Height != maturityHeight {
+			if err := tw.mineBlock(types.VoidAddress); err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
+	return tw
+}
 
-	return &testWallet{t, cm, ws, w}
+func (w *testWallet) mineBlock(addr types.Address) error {
+	tip := w.cm.Tip()
+	if err := w.cm.AddBlocks([]types.Block{testutil.MineBlock(w.cm, addr)}); err != nil {
+		return err
+	}
+	_, caus, err := w.cm.UpdatesSince(tip, 1)
+	if err != nil {
+		return err
+	}
+	if err := w.store.ProcessChainApplyUpdate(caus[0]); err != nil {
+		return fmt.Errorf("failed to process apply update: %w", err)
+	}
+	return nil
 }
 
 // redistribute creates a transaction that redistributes the wallet's balance
 // into n outputs of amount, and mines a block to confirm the transaction.
 func (w *testWallet) redistribute(n int, amount types.Currency) error {
 	// redistribute & sign
-	txns, toSign, err := w.Redistribute(n, amount, types.NewCurrency64(1))
-	if err != nil {
-		return err
-	} else {
-		for i := 0; i < len(txns); i++ {
-			w.SignTransaction(&txns[i], toSign, types.CoveredFields{WholeTransaction: true})
-		}
-	}
-
-	// add txn to the pool
-	_, err = w.cm.AddPoolTransactions(txns)
+	txns, toSign, err := w.Redistribute(n, amount, types.ZeroCurrency)
 	if err != nil {
 		return err
 	}
-
-	// mine a block
-	b := testutil.MineBlock(w.cm, w.Address())
-	return w.cm.AddBlocks([]types.Block{b})
+	for i := 0; i < len(txns); i++ {
+		w.SignTransaction(&txns[i], toSign, types.CoveredFields{WholeTransaction: true})
+	}
+	// mine txn
+	if _, err := w.cm.AddPoolTransactions(txns); err != nil {
+		return err
+	}
+	return w.mineBlock(types.VoidAddress)
 }
 
 // assertBalance compares the wallet's balance to the expected values.
@@ -108,6 +110,7 @@ func (w *testWallet) assertBalance(spendable, confirmed, immature, unconfirmed t
 
 // assertOutputs checks that the wallet has the expected number of outputs with given value.
 func (w *testWallet) assertOutputs(n int, amount types.Currency) {
+	w.t.Helper()
 	// assert outputs
 	utxos, err := w.store.UnspentSiacoinElements()
 	if err != nil {
@@ -116,7 +119,7 @@ func (w *testWallet) assertOutputs(n int, amount types.Currency) {
 	var cnt int
 	for _, utxo := range utxos {
 		if utxo.SiacoinOutput.Value.Equals(amount) {
-			n--
+			cnt++
 		}
 	}
 	if cnt != n {
@@ -136,11 +139,7 @@ func TestWallet(t *testing.T) {
 	w.assertBalance(types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency)
 
 	// mine a block to fund the wallet
-	b := testutil.MineBlock(cm, w.Address())
-	if err := cm.AddBlocks([]types.Block{b}); err != nil {
-		t.Fatal(err)
-	}
-
+	w.mineBlock(w.Address())
 	maturityHeight := cm.TipState().MaturityHeight()
 	// check that the wallet has a single event
 	if events, err := w.Events(0, 100); err != nil {
@@ -178,10 +177,7 @@ func TestWallet(t *testing.T) {
 	tip := cm.TipState()
 	target := tip.MaturityHeight() + 1
 	for i := tip.Index.Height; i < target; i++ {
-		b := testutil.MineBlock(cm, types.VoidAddress)
-		if err := cm.AddBlocks([]types.Block{b}); err != nil {
-			t.Fatal(err)
-		}
+		w.mineBlock(types.VoidAddress)
 	}
 
 	// check that one payout has matured
@@ -250,10 +246,7 @@ func TestWallet(t *testing.T) {
 	w.assertBalance(types.ZeroCurrency, initialReward, types.ZeroCurrency, initialReward)
 
 	// mine a block to confirm the transaction
-	b = testutil.MineBlock(cm, types.VoidAddress)
-	if err := cm.AddBlocks([]types.Block{b}); err != nil {
-		t.Fatal(err)
-	}
+	w.mineBlock(types.VoidAddress)
 
 	// check that the balance was confirmed and the other values reset
 	w.assertBalance(initialReward, initialReward, types.ZeroCurrency, types.ZeroCurrency)
@@ -297,10 +290,7 @@ func TestWallet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	b = testutil.MineBlock(cm, types.VoidAddress)
-	if err := cm.AddBlocks([]types.Block{b}); err != nil {
-		t.Fatal(err)
-	}
+	w.mineBlock(types.VoidAddress)
 
 	// check that the wallet now has 22 transactions, the initial payout
 	// transaction, the split transaction, and 20 void transactions
@@ -413,13 +403,13 @@ func TestWalletRedistribute(t *testing.T) {
 		t.Fatalf("expected one output, got %v", len(utxos))
 	}
 
-	// redistribute the wallet into 3 outputs of 75KS
+	// redistribute the wallet into 4 outputs of 75KS
 	amount := types.Siacoins(75e3)
-	err = w.redistribute(3, amount)
+	err = w.redistribute(4, amount)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.assertOutputs(3, amount)
+	w.assertOutputs(4, amount)
 
 	// redistribute the wallet into 4 outputs of 50KS
 	amount = types.Siacoins(50e3)
@@ -429,14 +419,14 @@ func TestWalletRedistribute(t *testing.T) {
 	}
 	w.assertOutputs(4, amount)
 
-	// redistribute the wallet into 3 outputs of 100KS - expect ErrNotEnoughFunds
-	err = w.redistribute(3, types.Siacoins(100e3))
+	// redistribute the wallet into 3 outputs of 101KS - expect ErrNotEnoughFunds
+	err = w.redistribute(3, types.Siacoins(101e3))
 	if !errors.Is(err, wallet.ErrNotEnoughFunds) {
 		t.Fatal(err)
 	}
 
 	// redistribute the wallet into 3 outputs of 50KS - assert this is a no-op
-	txns, toSign, err := w.Redistribute(3, amount, types.NewCurrency64(1))
+	txns, toSign, err := w.Redistribute(3, amount, types.ZeroCurrency)
 	if err != nil {
 		t.Fatal(err)
 	} else if len(txns) != 0 {
