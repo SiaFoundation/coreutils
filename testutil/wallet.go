@@ -3,6 +3,7 @@ package testutil
 import (
 	"fmt"
 	"slices"
+	"sort"
 	"sync"
 
 	"go.sia.tech/core/types"
@@ -19,9 +20,9 @@ type (
 		mu          sync.Mutex
 		uncommitted []*chain.ApplyUpdate
 
-		tip          types.ChainIndex
-		utxos        map[types.SiacoinOutputID]wallet.SiacoinElement
-		transactions []wallet.Transaction
+		tip    types.ChainIndex
+		utxos  map[types.SiacoinOutputID]wallet.SiacoinElement
+		events []wallet.Event
 	}
 
 	ephemeralWalletUpdateTxn struct {
@@ -45,10 +46,8 @@ func (et *ephemeralWalletUpdateTxn) UpdateStateElements(elements []types.StateEl
 	return nil
 }
 
-func (et *ephemeralWalletUpdateTxn) AddTransactions(transactions []wallet.Transaction) error {
-	// transactions are added in reverse order to make the most recent transaction the first
-	slices.Reverse(transactions)
-	et.store.transactions = append(transactions, et.store.transactions...)
+func (et *ephemeralWalletUpdateTxn) AddEvents(events []wallet.Event) error {
+	et.store.events = append(events, et.store.events...)
 	return nil
 }
 
@@ -74,14 +73,14 @@ func (et *ephemeralWalletUpdateTxn) RemoveSiacoinElements(ids []types.SiacoinOut
 
 func (et *ephemeralWalletUpdateTxn) RevertIndex(index types.ChainIndex) error {
 	// remove any transactions that were added in the reverted block
-	filtered := et.store.transactions[:0]
-	for i := range et.store.transactions {
-		if et.store.transactions[i].Index == index {
+	filtered := et.store.events[:0]
+	for i := range et.store.events {
+		if et.store.events[i].Index == index {
 			continue
 		}
-		filtered = append(filtered, et.store.transactions[i])
+		filtered = append(filtered, et.store.events[i])
 	}
-	et.store.transactions = filtered
+	et.store.events = filtered
 
 	// remove any siacoin elements that were added in the reverted block
 	for id, se := range et.store.utxos {
@@ -92,27 +91,34 @@ func (et *ephemeralWalletUpdateTxn) RevertIndex(index types.ChainIndex) error {
 	return nil
 }
 
-// Transactions returns the wallet's transactions.
-func (es *EphemeralWalletStore) Transactions(limit, offset int) ([]wallet.Transaction, error) {
+// WalletEvents returns the wallet's events.
+func (es *EphemeralWalletStore) WalletEvents(limit, offset int) ([]wallet.Event, error) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
 
-	if offset > len(es.transactions) {
+	n := len(es.events)
+	start, end := offset, offset+limit
+	if start > n {
 		return nil, nil
+	} else if end > n {
+		end = n
 	}
-
-	end := offset + limit
-	if end > len(es.transactions) {
-		end = len(es.transactions)
-	}
-	return es.transactions[offset:end], nil
+	// events are inserted in chronological order, reverse the slice to get the
+	// correct display order then sort by maturity height, so
+	// immature events are displayed first.
+	events := append([]wallet.Event(nil), es.events...)
+	slices.Reverse(events)
+	sort.SliceStable(events, func(i, j int) bool {
+		return events[i].MaturityHeight > events[j].MaturityHeight
+	})
+	return events[start:end], nil
 }
 
-// TransactionCount returns the number of transactions in the wallet.
-func (es *EphemeralWalletStore) TransactionCount() (uint64, error) {
+// WalletEventCount returns the number of events relevant to the wallet.
+func (es *EphemeralWalletStore) WalletEventCount() (uint64, error) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
-	return uint64(len(es.transactions)), nil
+	return uint64(len(es.events)), nil
 }
 
 // UnspentSiacoinElements returns the wallet's unspent siacoin outputs.
@@ -173,7 +179,6 @@ func NewEphemeralWalletStore(pk types.PrivateKey) *EphemeralWalletStore {
 	return &EphemeralWalletStore{
 		privateKey: pk,
 
-		utxos:        make(map[types.SiacoinOutputID]wallet.SiacoinElement),
-		transactions: make([]wallet.Transaction, 0),
+		utxos: make(map[types.SiacoinOutputID]wallet.SiacoinElement),
 	}
 }

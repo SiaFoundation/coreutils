@@ -18,8 +18,8 @@ type (
 		// update.
 		UpdateStateElements([]types.StateElement) error
 
-		// AddTransactions is called with all transactions added in the update.
-		AddTransactions([]Transaction) error
+		// AddEvents is called with all relevant events added in the update.
+		AddEvents([]Event) error
 		// AddSiacoinElements is called with all new siacoin elements in the
 		// update. Ephemeral siacoin elements are not included.
 		AddSiacoinElements([]SiacoinElement) error
@@ -48,17 +48,17 @@ type (
 	}
 )
 
-// addressPayoutTransactions is a helper to add all payout transactions from an
+// addressPayoutEvents is a helper to add all payout transactions from an
 // apply update to a slice of transactions.
-func addressPayoutTransactions(addr types.Address, cau *chain.ApplyUpdate) (transactions []Transaction) {
+func addressPayoutEvents(addr types.Address, cau *chain.ApplyUpdate) (events []Event) {
 	index := cau.State.Index
 	state := cau.State
 	block := cau.Block
 
 	// cache the source of new immature outputs to show payout transactions
 	if state.FoundationPrimaryAddress == addr {
-		transactions = append(transactions, Transaction{
-			ID:    types.TransactionID(index.ID.FoundationOutputID()),
+		events = append(events, Event{
+			ID:    types.Hash256(index.ID.FoundationOutputID()),
 			Index: index,
 			Transaction: types.Transaction{
 				SiacoinOutputs: []types.SiacoinOutput{
@@ -66,7 +66,7 @@ func addressPayoutTransactions(addr types.Address, cau *chain.ApplyUpdate) (tran
 				},
 			},
 			Inflow:    state.FoundationSubsidy().Value,
-			Source:    TxnSourceFoundationPayout,
+			Source:    EventSourceFoundationPayout,
 			Timestamp: block.Timestamp,
 		})
 	}
@@ -77,8 +77,8 @@ func addressPayoutTransactions(addr types.Address, cau *chain.ApplyUpdate) (tran
 			continue
 		}
 
-		transactions = append(transactions, Transaction{
-			ID:    types.TransactionID(index.ID.MinerOutputID(i)),
+		events = append(events, Event{
+			ID:    types.Hash256(index.ID.MinerOutputID(i)),
 			Index: index,
 			Transaction: types.Transaction{
 				SiacoinOutputs: []types.SiacoinOutput{
@@ -87,7 +87,7 @@ func addressPayoutTransactions(addr types.Address, cau *chain.ApplyUpdate) (tran
 			},
 			Inflow:         block.MinerPayouts[i].Value,
 			MaturityHeight: state.MaturityHeight(),
-			Source:         TxnSourceMinerPayout,
+			Source:         EventSourceMinerPayout,
 			Timestamp:      block.Timestamp,
 		})
 	}
@@ -105,8 +105,8 @@ func addressPayoutTransactions(addr types.Address, cau *chain.ApplyUpdate) (tran
 				}
 
 				outputID := types.FileContractID(fce.ID).ValidOutputID(i)
-				transactions = append(transactions, Transaction{
-					ID:    types.TransactionID(outputID),
+				events = append(events, Event{
+					ID:    types.Hash256(outputID),
 					Index: index,
 					Transaction: types.Transaction{
 						SiacoinOutputs: []types.SiacoinOutput{output},
@@ -114,7 +114,7 @@ func addressPayoutTransactions(addr types.Address, cau *chain.ApplyUpdate) (tran
 					},
 					Inflow:         fce.FileContract.ValidProofOutputs[i].Value,
 					MaturityHeight: state.MaturityHeight(),
-					Source:         TxnSourceValidContract,
+					Source:         EventSourceValidContract,
 					Timestamp:      block.Timestamp,
 				})
 			}
@@ -125,8 +125,8 @@ func addressPayoutTransactions(addr types.Address, cau *chain.ApplyUpdate) (tran
 				}
 
 				outputID := types.FileContractID(fce.ID).MissedOutputID(i)
-				transactions = append(transactions, Transaction{
-					ID:    types.TransactionID(outputID),
+				events = append(events, Event{
+					ID:    types.Hash256(outputID),
 					Index: index,
 					Transaction: types.Transaction{
 						SiacoinOutputs: []types.SiacoinOutput{output},
@@ -134,7 +134,7 @@ func addressPayoutTransactions(addr types.Address, cau *chain.ApplyUpdate) (tran
 					},
 					Inflow:         fce.FileContract.ValidProofOutputs[i].Value,
 					MaturityHeight: state.MaturityHeight(),
-					Source:         TxnSourceMissedContract,
+					Source:         EventSourceMissedContract,
 					Timestamp:      block.Timestamp,
 				})
 			}
@@ -150,12 +150,12 @@ func ApplyChainUpdates(tx ApplyTx, address types.Address, updates []*chain.Apply
 		return fmt.Errorf("failed to get state elements: %w", err)
 	}
 
-	var transactions []Transaction
+	var events []Event
 	var spentUTXOs []types.SiacoinOutputID
 	newUTXOs := make(map[types.Hash256]SiacoinElement)
 
 	for _, cau := range updates {
-		transactions = append(transactions, addressPayoutTransactions(address, cau)...)
+		events = append(events, addressPayoutEvents(address, cau)...)
 		utxoValues := make(map[types.SiacoinOutputID]types.Currency)
 
 		cau.ForEachSiacoinElement(func(se types.SiacoinElement, spent bool) {
@@ -182,12 +182,13 @@ func ApplyChainUpdates(tx ApplyTx, address types.Address, updates []*chain.Apply
 		})
 
 		for _, txn := range cau.Block.Transactions {
-			wtx := Transaction{
-				ID:          txn.ID(),
-				Index:       cau.State.Index,
-				Transaction: txn,
-				Source:      TxnSourceTransaction,
-				Timestamp:   cau.Block.Timestamp,
+			ev := Event{
+				ID:             types.Hash256(txn.ID()),
+				Index:          cau.State.Index,
+				Transaction:    txn,
+				Source:         EventSourceTransaction,
+				MaturityHeight: cau.State.Index.Height, // regular transactions "mature" immediately
+				Timestamp:      cau.Block.Timestamp,
 			}
 
 			for _, si := range txn.SiacoinInputs {
@@ -196,7 +197,7 @@ func ApplyChainUpdates(tx ApplyTx, address types.Address, updates []*chain.Apply
 					if !ok {
 						panic("missing utxo") // this should never happen
 					}
-					wtx.Inflow = wtx.Inflow.Add(value)
+					ev.Inflow = ev.Inflow.Add(value)
 				}
 			}
 
@@ -204,15 +205,15 @@ func ApplyChainUpdates(tx ApplyTx, address types.Address, updates []*chain.Apply
 				if so.Address != address {
 					continue
 				}
-				wtx.Outflow = wtx.Outflow.Add(so.Value)
+				ev.Outflow = ev.Outflow.Add(so.Value)
 			}
 
 			// skip irrelevant transactions
-			if wtx.Inflow.IsZero() && wtx.Outflow.IsZero() {
+			if ev.Inflow.IsZero() && ev.Outflow.IsZero() {
 				continue
 			}
 
-			transactions = append(transactions, wtx)
+			events = append(events, ev)
 		}
 
 		for i := range stateElements {
@@ -233,7 +234,7 @@ func ApplyChainUpdates(tx ApplyTx, address types.Address, updates []*chain.Apply
 		return fmt.Errorf("failed to add siacoin elements: %w", err)
 	} else if err := tx.RemoveSiacoinElements(spentUTXOs); err != nil {
 		return fmt.Errorf("failed to remove siacoin elements: %w", err)
-	} else if err := tx.AddTransactions(transactions); err != nil {
+	} else if err := tx.AddEvents(events); err != nil {
 		return fmt.Errorf("failed to add transactions: %w", err)
 	} else if err := tx.UpdateStateElements(stateElements); err != nil {
 		return fmt.Errorf("failed to update state elements: %w", err)

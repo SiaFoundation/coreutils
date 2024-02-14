@@ -17,12 +17,12 @@ import (
 // either be created by sending Siacoins between unlock hashes or they can be
 // created by consensus (e.g. a miner payout, a siafund claim, or a contract).
 const (
-	TxnSourceTransaction      TransactionSource = "transaction"
-	TxnSourceMinerPayout      TransactionSource = "miner"
-	TxnSourceSiafundClaim     TransactionSource = "siafundClaim"
-	TxnSourceValidContract    TransactionSource = "validContract"
-	TxnSourceMissedContract   TransactionSource = "missedContract"
-	TxnSourceFoundationPayout TransactionSource = "foundation"
+	EventSourceTransaction      EventSource = "transaction"
+	EventSourceMinerPayout      EventSource = "miner"
+	EventSourceSiafundClaim     EventSource = "siafundClaim"
+	EventSourceValidContract    EventSource = "validContract"
+	EventSourceMissedContract   EventSource = "missedContract"
+	EventSourceFoundationPayout EventSource = "foundation"
 )
 
 const (
@@ -43,19 +43,27 @@ var (
 
 type (
 	// A TransactionSource is a string indicating the source of a transaction.
-	TransactionSource string
+	EventSource string
 
-	// A Transaction is a transaction relevant to a particular wallet, paired
-	// with useful metadata.
-	Transaction struct {
-		ID             types.TransactionID `json:"id"`
-		Index          types.ChainIndex    `json:"index"`
-		Transaction    types.Transaction   `json:"transaction"`
-		Inflow         types.Currency      `json:"inflow"`
-		Outflow        types.Currency      `json:"outflow"`
-		Source         TransactionSource   `json:"source"`
-		MaturityHeight uint64              `json:"maturityHeight"`
-		Timestamp      time.Time           `json:"timestamp"`
+	// An Event is a transaction or other event that affects the wallet including
+	// miner payouts, siafund claims, and file contract payouts.
+	Event struct {
+		ID             types.Hash256     `json:"id"`
+		Index          types.ChainIndex  `json:"index"`
+		Inflow         types.Currency    `json:"inflow"`
+		Outflow        types.Currency    `json:"outflow"`
+		Transaction    types.Transaction `json:"transaction"`
+		Source         EventSource       `json:"source"`
+		MaturityHeight uint64            `json:"maturityHeight"`
+		Timestamp      time.Time         `json:"timestamp"`
+	}
+
+	// Balance is the balance of a wallet.
+	Balance struct {
+		Spendable   types.Currency `json:"spendable"`
+		Confirmed   types.Currency `json:"confirmed"`
+		Unconfirmed types.Currency `json:"unconfirmed"`
+		Immature    types.Currency `json:"immature"`
 	}
 
 	// A SiacoinElement is a siacoin output paired with its chain index
@@ -84,14 +92,15 @@ type (
 		// the last wallet change.
 		Tip() (types.ChainIndex, error)
 		// UnspentSiacoinElements returns a list of all unspent siacoin outputs
+		// including immature outputs.
 		UnspentSiacoinElements() ([]SiacoinElement, error)
-		// Transactions returns a paginated list of transactions ordered by
+		// WalletEvents returns a paginated list of transactions ordered by
 		// maturity height, descending. If no more transactions are available,
 		// (nil, nil) should be returned.
-		Transactions(limit, offset int) ([]Transaction, error)
-		// TransactionCount returns the total number of transactions in the
+		WalletEvents(limit, offset int) ([]Event, error)
+		// WalletEventCount returns the total number of events relevant to the
 		// wallet.
-		TransactionCount() (uint64, error)
+		WalletEventCount() (uint64, error)
 	}
 
 	// A SingleAddressWallet is a hot wallet that manages the outputs controlled
@@ -119,7 +128,7 @@ type (
 var ErrDifferentSeed = errors.New("seed differs from wallet seed")
 
 // EncodeTo implements types.EncoderTo.
-func (t Transaction) EncodeTo(e *types.Encoder) {
+func (t Event) EncodeTo(e *types.Encoder) {
 	t.ID.EncodeTo(e)
 	t.Index.EncodeTo(e)
 	t.Transaction.EncodeTo(e)
@@ -130,13 +139,13 @@ func (t Transaction) EncodeTo(e *types.Encoder) {
 }
 
 // DecodeFrom implements types.DecoderFrom.
-func (t *Transaction) DecodeFrom(d *types.Decoder) {
+func (t *Event) DecodeFrom(d *types.Decoder) {
 	t.ID.DecodeFrom(d)
 	t.Index.DecodeFrom(d)
 	t.Transaction.DecodeFrom(d)
 	(*types.V2Currency)(&t.Inflow).DecodeFrom(d)
 	(*types.V2Currency)(&t.Outflow).DecodeFrom(d)
-	t.Source = TransactionSource(d.ReadString())
+	t.Source = EventSource(d.ReadString())
 	t.Timestamp = d.ReadTime()
 }
 
@@ -157,10 +166,10 @@ func (sw *SingleAddressWallet) UnlockConditions() types.UnlockConditions {
 }
 
 // Balance returns the balance of the wallet.
-func (sw *SingleAddressWallet) Balance() (spendable, confirmed, unconfirmed types.Currency, err error) {
+func (sw *SingleAddressWallet) Balance() (balance Balance, err error) {
 	outputs, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
-		return types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency, fmt.Errorf("failed to get unspent outputs: %w", err)
+		return Balance{}, fmt.Errorf("failed to get unspent outputs: %w", err)
 	}
 
 	tpoolSpent := make(map[types.Hash256]bool)
@@ -186,29 +195,33 @@ func (sw *SingleAddressWallet) Balance() (spendable, confirmed, unconfirmed type
 
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
+	bh := sw.cm.TipState().Index.Height
 	for _, sco := range outputs {
-		confirmed = confirmed.Add(sco.SiacoinOutput.Value)
-		if time.Now().After(sw.locked[sco.ID]) && !tpoolSpent[sco.ID] {
-			spendable = spendable.Add(sco.SiacoinOutput.Value)
+		if sco.MaturityHeight > bh {
+			balance.Immature = balance.Immature.Add(sco.SiacoinOutput.Value)
+		} else {
+			balance.Confirmed = balance.Confirmed.Add(sco.SiacoinOutput.Value)
+			if time.Now().After(sw.locked[sco.ID]) && !tpoolSpent[sco.ID] {
+				balance.Spendable = balance.Spendable.Add(sco.SiacoinOutput.Value)
+			}
 		}
 	}
 
 	for _, sco := range tpoolUtxos {
-		unconfirmed = unconfirmed.Add(sco.SiacoinOutput.Value)
+		balance.Unconfirmed = balance.Unconfirmed.Add(sco.SiacoinOutput.Value)
 	}
 	return
 }
 
-// Transactions returns a paginated list of transactions, ordered by block
-// height descending. If no more transactions are available, (nil, nil) is
-// returned.
-func (sw *SingleAddressWallet) Transactions(limit, offset int) ([]Transaction, error) {
-	return sw.store.Transactions(limit, offset)
+// Events returns a paginated list of events, ordered by maturity height, descending.
+// If no more events are available, (nil, nil) is returned.
+func (sw *SingleAddressWallet) Events(limit, offset int) ([]Event, error) {
+	return sw.store.WalletEvents(limit, offset)
 }
 
-// TransactionCount returns the total number of transactions in the wallet.
-func (sw *SingleAddressWallet) TransactionCount() (uint64, error) {
-	return sw.store.TransactionCount()
+// EventCount returns the total number of events relevant to the wallet.
+func (sw *SingleAddressWallet) EventCount() (uint64, error) {
+	return sw.store.WalletEventCount()
 }
 
 // SpendableOutputs returns a list of spendable siacoin outputs, a spendable
@@ -409,7 +422,7 @@ func (sw *SingleAddressWallet) Tip() (types.ChainIndex, error) {
 
 // UnconfirmedTransactions returns all unconfirmed transactions relevant to the
 // wallet.
-func (sw *SingleAddressWallet) UnconfirmedTransactions() ([]Transaction, error) {
+func (sw *SingleAddressWallet) UnconfirmedTransactions() ([]Event, error) {
 	confirmed, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get unspent outputs: %w", err)
@@ -422,12 +435,12 @@ func (sw *SingleAddressWallet) UnconfirmedTransactions() ([]Transaction, error) 
 
 	poolTxns := sw.cm.PoolTransactions()
 
-	var annotated []Transaction
+	var annotated []Event
 	for _, txn := range poolTxns {
-		wt := Transaction{
-			ID:          txn.ID(),
+		wt := Event{
+			ID:          types.Hash256(txn.ID()),
 			Transaction: txn,
-			Source:      TxnSourceTransaction,
+			Source:      EventSourceTransaction,
 			Timestamp:   time.Now(),
 		}
 
