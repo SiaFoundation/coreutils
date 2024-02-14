@@ -42,7 +42,7 @@ var (
 )
 
 type (
-	// A TransactionSource is a string indicating the source of a transaction.
+	// An EventSource is a string indicating the source of a transaction.
 	EventSource string
 
 	// An Event is a transaction or other event that affects the wallet including
