@@ -97,7 +97,7 @@ type (
 		// WalletEvents returns a paginated list of transactions ordered by
 		// maturity height, descending. If no more transactions are available,
 		// (nil, nil) should be returned.
-		WalletEvents(limit, offset int) ([]Event, error)
+		WalletEvents(offset, limit int) ([]Event, error)
 		// WalletEventCount returns the total number of events relevant to the
 		// wallet.
 		WalletEventCount() (uint64, error)
@@ -215,8 +215,8 @@ func (sw *SingleAddressWallet) Balance() (balance Balance, err error) {
 
 // Events returns a paginated list of events, ordered by maturity height, descending.
 // If no more events are available, (nil, nil) is returned.
-func (sw *SingleAddressWallet) Events(limit, offset int) ([]Event, error) {
-	return sw.store.WalletEvents(limit, offset)
+func (sw *SingleAddressWallet) Events(offset, limit int) ([]Event, error) {
+	return sw.store.WalletEvents(offset, limit)
 }
 
 // EventCount returns the total number of events relevant to the wallet.

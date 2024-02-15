@@ -235,7 +235,7 @@ func ApplyChainUpdates(tx ApplyTx, address types.Address, updates []*chain.Apply
 	} else if err := tx.RemoveSiacoinElements(spentUTXOs); err != nil {
 		return fmt.Errorf("failed to remove siacoin elements: %w", err)
 	} else if err := tx.AddEvents(events); err != nil {
-		return fmt.Errorf("failed to add transactions: %w", err)
+		return fmt.Errorf("failed to add events: %w", err)
 	} else if err := tx.UpdateStateElements(stateElements); err != nil {
 		return fmt.Errorf("failed to update state elements: %w", err)
 	}

@@ -72,7 +72,7 @@ func (et *ephemeralWalletUpdateTxn) RemoveSiacoinElements(ids []types.SiacoinOut
 }
 
 func (et *ephemeralWalletUpdateTxn) RevertIndex(index types.ChainIndex) error {
-	// remove any transactions that were added in the reverted block
+	// remove any events that were added in the reverted block
 	filtered := et.store.events[:0]
 	for i := range et.store.events {
 		if et.store.events[i].Index == index {
@@ -92,7 +92,7 @@ func (et *ephemeralWalletUpdateTxn) RevertIndex(index types.ChainIndex) error {
 }
 
 // WalletEvents returns the wallet's events.
-func (es *EphemeralWalletStore) WalletEvents(limit, offset int) ([]wallet.Event, error) {
+func (es *EphemeralWalletStore) WalletEvents(offset, limit int) ([]wallet.Event, error) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
 

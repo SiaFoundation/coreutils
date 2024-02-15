@@ -68,7 +68,7 @@ func TestWallet(t *testing.T) {
 
 	maturityHeight := cm.TipState().MaturityHeight()
 	// check that the wallet has a single event
-	if events, err := w.Events(100, 0); err != nil {
+	if events, err := w.Events(0, 100); err != nil {
 		t.Fatal(err)
 	} else if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %v", len(events))
@@ -107,7 +107,7 @@ func TestWallet(t *testing.T) {
 	}
 
 	// check that the payout transaction was created
-	events, err := w.Events(100, 0)
+	events, err := w.Events(0, 100)
 	if err != nil {
 		t.Fatal(err)
 	} else if len(events) != 1 {
@@ -195,7 +195,7 @@ func TestWallet(t *testing.T) {
 	}
 
 	// check that the paginated transactions are in the proper order
-	events, err = w.Events(100, 0)
+	events, err = w.Events(0, 100)
 	if err != nil {
 		t.Fatal(err)
 	} else if len(events) != 2 {
@@ -213,7 +213,6 @@ func TestWallet(t *testing.T) {
 		sent[i].SiacoinOutputs = []types.SiacoinOutput{
 			{Address: types.VoidAddress, Value: sendAmount},
 		}
-
 		toSign, err := w.FundTransaction(&sent[i], sendAmount, false)
 		if err != nil {
 			t.Fatal(err)
@@ -246,7 +245,7 @@ func TestWallet(t *testing.T) {
 	}
 
 	// check that the paginated transactions are in the proper order
-	events, err = w.Events(20, 0) // limit of 20 so the original two transactions are not included
+	events, err = w.Events(0, 20) // limit of 20 so the original two transactions are not included
 	if err != nil {
 		t.Fatal(err)
 	} else if len(events) != 20 {
