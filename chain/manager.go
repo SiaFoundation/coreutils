@@ -14,6 +14,9 @@ import (
 var (
 	// ErrFutureBlock is returned when a block's timestamp is too far in the future.
 	ErrFutureBlock = errors.New("block's timestamp is too far in the future")
+	// ErrV1AfterV2Required is returned when a v1 transaction is introduced after
+	// v2 transactions are required.
+	ErrV1AfterV2Required = errors.New("v1 transaction added after v2 require height")
 )
 
 // An ApplyUpdate reflects the changes to the blockchain resulting from the
@@ -296,6 +299,9 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 		panic("applyTip called with non-attaching block")
 	} else if bs == nil {
 		bs = new(consensus.V1BlockSupplement)
+		if cs.Index.Height > cs.Network.HardforkV2.RequireHeight && len(b.Transactions) > 0 {
+			return ErrV1AfterV2Required
+		}
 		*bs = m.store.SupplementTipBlock(b)
 		if err := consensus.ValidateBlock(m.tipState, b, *bs); err != nil {
 			m.markBadBlock(index.ID, err)
@@ -983,6 +989,10 @@ func (m *Manager) AddPoolTransactions(txns []types.Transaction) (known bool, err
 	setID, known := m.checkDupTxnSet(txns, nil)
 	if known {
 		return true, m.txpool.invalidTxnSets[setID]
+	}
+
+	if m.tipState.Index.Height > m.tipState.Network.HardforkV2.RequireHeight {
+		return false, m.markBadTxnSet(setID, fmt.Errorf("transactions are invalid: %w", ErrV1AfterV2Required))
 	}
 
 	// validate as a standalone set
