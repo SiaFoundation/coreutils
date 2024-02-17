@@ -526,8 +526,12 @@ func (db *DBStore) BestIndex(height uint64) (index types.ChainIndex, ok bool) {
 
 // SupplementTipTransaction implements Store.
 func (db *DBStore) SupplementTipTransaction(txn types.Transaction) (ts consensus.V1TransactionSupplement) {
+	height := db.getHeight()
+	if height >= db.n.HardforkV2.RequireHeight {
+		return consensus.V1TransactionSupplement{}
+	}
 	// get tip state, for proof-trimming
-	index, _ := db.BestIndex(db.getHeight())
+	index, _ := db.BestIndex(height)
 	cs, _ := db.State(index.ID)
 	numLeaves := cs.Elements.NumLeaves
 
@@ -559,8 +563,13 @@ func (db *DBStore) SupplementTipTransaction(txn types.Transaction) (ts consensus
 
 // SupplementTipBlock implements Store.
 func (db *DBStore) SupplementTipBlock(b types.Block) (bs consensus.V1BlockSupplement) {
+	height := db.getHeight()
+	if height >= db.n.HardforkV2.RequireHeight {
+		return consensus.V1BlockSupplement{Transactions: make([]consensus.V1TransactionSupplement, len(b.Transactions))}
+	}
+
 	// get tip state, for proof-trimming
-	index, _ := db.BestIndex(db.getHeight())
+	index, _ := db.BestIndex(height)
 	cs, _ := db.State(index.ID)
 	numLeaves := cs.Elements.NumLeaves
 
