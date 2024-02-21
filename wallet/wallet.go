@@ -274,6 +274,17 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 		return nil, err
 	}
 
+	cs := sw.cm.TipState()
+
+	// filter out immature elements
+	filtered := elements[:0]
+	for _, sce := range elements {
+		if cs.Index.Height >= sce.MaturityHeight {
+			filtered = append(filtered, sce)
+		}
+	}
+	elements = filtered
+
 	tpoolSpent := make(map[types.Hash256]bool)
 	tpoolUtxos := make(map[types.Hash256]types.SiacoinElement)
 	for _, txn := range sw.cm.PoolTransactions() {
