@@ -53,6 +53,7 @@ func MineBlock(cm *chain.Manager, addr types.Address, timeout time.Duration) (ty
 			break
 		}
 		b.Transactions = append(b.Transactions, txn)
+		b.MinerPayouts[0].Value = b.MinerPayouts[0].Value.Add(txn.TotalFees())
 	}
 	for _, txn := range cm.V2PoolTransactions() {
 		if weight += cs.V2TransactionWeight(txn); weight > cs.MaxBlockWeight() {
@@ -64,6 +65,7 @@ func MineBlock(cm *chain.Manager, addr types.Address, timeout time.Duration) (ty
 			}
 		}
 		b.V2.Transactions = append(b.V2.Transactions, txn)
+		b.MinerPayouts[0].Value = b.MinerPayouts[0].Value.Add(txn.MinerFee)
 	}
 	if b.V2 != nil {
 		b.V2.Commitment = cs.Commitment(cs.TransactionsCommitment(b.Transactions, b.V2Transactions()), addr)
