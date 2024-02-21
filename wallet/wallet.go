@@ -274,17 +274,6 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 		return nil, err
 	}
 
-	cs := sw.cm.TipState()
-
-	// filter out immature elements
-	filtered := elements[:0]
-	for _, sce := range elements {
-		if cs.Index.Height >= sce.MaturityHeight {
-			filtered = append(filtered, sce)
-		}
-	}
-	elements = filtered
-
 	tpoolSpent := make(map[types.Hash256]bool)
 	tpoolUtxos := make(map[types.Hash256]types.SiacoinElement)
 	for _, txn := range sw.cm.PoolTransactions() {
@@ -305,10 +294,11 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
-	// remove locked and spent outputs
+	// remove immature, locked and spent outputs
+	cs := sw.cm.TipState()
 	utxos := make([]types.SiacoinElement, 0, len(elements))
 	for _, sce := range elements {
-		if time.Now().Before(sw.locked[sce.ID]) || tpoolSpent[sce.ID] {
+		if time.Now().Before(sw.locked[sce.ID]) || tpoolSpent[sce.ID] || cs.Index.Height < sce.MaturityHeight {
 			continue
 		}
 		utxos = append(utxos, sce.SiacoinElement)
