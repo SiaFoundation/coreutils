@@ -79,8 +79,25 @@ func TestWallet(t *testing.T) {
 	}
 
 	// check that the wallet has an immature balance
-	if checkBalance(w, types.ZeroCurrency, types.ZeroCurrency, initialReward, types.ZeroCurrency); err != nil {
+	if err := checkBalance(w, types.ZeroCurrency, types.ZeroCurrency, initialReward, types.ZeroCurrency); err != nil {
 		t.Fatal(err)
+	}
+
+	// create a transaction that splits the wallet's balance into 20 outputs
+	txn := types.Transaction{
+		SiacoinOutputs: make([]types.SiacoinOutput, 20),
+	}
+	for i := range txn.SiacoinOutputs {
+		txn.SiacoinOutputs[i] = types.SiacoinOutput{
+			Value:   initialReward.Div64(20),
+			Address: w.Address(),
+		}
+	}
+
+	// try funding the transaction, expect it to fail since the outputs are immature
+	_, err = w.FundTransaction(&txn, initialReward, false)
+	if err != wallet.ErrNotEnoughFunds {
+		t.Fatal("expected ErrNotEnoughFunds, got", err)
 	}
 
 	// mine until the payout matures
@@ -94,7 +111,7 @@ func TestWallet(t *testing.T) {
 	}
 
 	// check that one payout has matured
-	if checkBalance(w, initialReward, initialReward, types.ZeroCurrency, types.ZeroCurrency); err != nil {
+	if err := checkBalance(w, initialReward, initialReward, types.ZeroCurrency, types.ZeroCurrency); err != nil {
 		t.Fatal(err)
 	}
 
@@ -114,17 +131,6 @@ func TestWallet(t *testing.T) {
 		t.Fatalf("expected 1 transaction, got %v", len(events))
 	} else if events[0].Source != wallet.EventSourceMinerPayout {
 		t.Fatalf("expected miner payout, got %v", events[0].Source)
-	}
-
-	// split the wallet's balance into 20 outputs
-	txn := types.Transaction{
-		SiacoinOutputs: make([]types.SiacoinOutput, 20),
-	}
-	for i := range txn.SiacoinOutputs {
-		txn.SiacoinOutputs[i] = types.SiacoinOutput{
-			Value:   initialReward.Div64(20),
-			Address: w.Address(),
-		}
 	}
 
 	// fund and sign the transaction

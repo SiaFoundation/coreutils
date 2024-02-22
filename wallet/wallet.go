@@ -294,10 +294,11 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
-	// remove locked and spent outputs
+	// remove immature, locked and spent outputs
+	cs := sw.cm.TipState()
 	utxos := make([]types.SiacoinElement, 0, len(elements))
 	for _, sce := range elements {
-		if time.Now().Before(sw.locked[sce.ID]) || tpoolSpent[sce.ID] {
+		if time.Now().Before(sw.locked[sce.ID]) || tpoolSpent[sce.ID] || cs.Index.Height < sce.MaturityHeight {
 			continue
 		}
 		utxos = append(utxos, sce.SiacoinElement)
