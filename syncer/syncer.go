@@ -497,9 +497,13 @@ func (s *Syncer) peerLoop(closeChan <-chan struct{}) error {
 			if numOutbound() >= s.config.MaxOutboundPeers || closing() {
 				break
 			}
+
 			// NOTE: we don't bother logging failure here, since it's common and
 			// not particularly interesting or actionable
-			if _, err := s.Connect(p); err == nil {
+			//
+			// NOTE: we can safely pass the background context here since the
+			// connect timeout will be enforced
+			if _, err := s.Connect(context.Background(), p); err == nil {
 				s.log.Debug("connected to peer", zap.String("peer", p))
 			}
 			lastTried[p] = time.Now()
@@ -635,11 +639,11 @@ func (s *Syncer) Run() error {
 }
 
 // Connect forms an outbound connection to a peer.
-func (s *Syncer) Connect(addr string) (*Peer, error) {
+func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
 	if err := s.allowConnect(addr, false); err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), s.config.ConnectTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.config.ConnectTimeout)
 	defer cancel()
 	// slightly gross polling hack so that we shutdown quickly
 	go func() {
