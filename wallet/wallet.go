@@ -201,7 +201,7 @@ func (sw *SingleAddressWallet) Balance() (balance Balance, err error) {
 			balance.Immature = balance.Immature.Add(sco.SiacoinOutput.Value)
 		} else {
 			balance.Confirmed = balance.Confirmed.Add(sco.SiacoinOutput.Value)
-			if time.Now().After(sw.locked[sco.ID]) && !tpoolSpent[sco.ID] {
+			if !sw.isLocked(sco.ID) && !tpoolSpent[sco.ID] {
 				balance.Spendable = balance.Spendable.Add(sco.SiacoinOutput.Value)
 			}
 		}
@@ -252,7 +252,7 @@ func (sw *SingleAddressWallet) SpendableOutputs() ([]SiacoinElement, error) {
 	// filter outputs that are either locked, in the pool or have not yet matured
 	unspent := utxos[:0]
 	for _, sce := range utxos {
-		if time.Now().Before(sw.locked[sce.ID]) || inPool[sce.ID] || bh < sce.MaturityHeight {
+		if sw.isLocked(sce.ID) || inPool[sce.ID] || bh < sce.MaturityHeight {
 			continue
 		}
 		unspent = append(unspent, sce)
@@ -298,7 +298,7 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 	cs := sw.cm.TipState()
 	utxos := make([]types.SiacoinElement, 0, len(elements))
 	for _, sce := range elements {
-		if time.Now().Before(sw.locked[sce.ID]) || tpoolSpent[sce.ID] || cs.Index.Height < sce.MaturityHeight {
+		if sw.isLocked(sce.ID) || tpoolSpent[sce.ID] || cs.Index.Height < sce.MaturityHeight {
 			continue
 		}
 		utxos = append(utxos, sce.SiacoinElement)
@@ -312,7 +312,7 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 	var unconfirmedUTXOs []types.SiacoinElement
 	if useUnconfirmed {
 		for _, sce := range tpoolUtxos {
-			if sce.SiacoinOutput.Address != sw.addr || time.Now().Before(sw.locked[sce.ID]) {
+			if sce.SiacoinOutput.Address != sw.addr || sw.isLocked(sce.ID) {
 				continue
 			}
 			unconfirmedUTXOs = append(unconfirmedUTXOs, sce)
@@ -496,7 +496,7 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 	// unused, matured and has the same value
 	utxos := make([]types.SiacoinElement, 0, len(elements))
 	for _, sce := range elements {
-		inUse := time.Now().Before(sw.locked[sce.ID]) || inPool[sce.ID]
+		inUse := sw.isLocked(sce.ID) || inPool[sce.ID]
 		matured := bh >= sce.MaturityHeight
 		sameValue := sce.SiacoinOutput.Value.Equals(amount)
 
@@ -600,6 +600,12 @@ func (sw *SingleAddressWallet) ReleaseInputs(txns ...types.Transaction) {
 			delete(sw.locked, types.Hash256(in.ParentID))
 		}
 	}
+}
+
+// isLocked returns true if the siacoin output with given id is locked, this
+// method must be called whilst holding the mutex lock.
+func (sw *SingleAddressWallet) isLocked(id types.Hash256) bool {
+	return time.Now().Before(sw.locked[id])
 }
 
 // IsRelevantTransaction returns true if the v1 transaction is relevant to the
