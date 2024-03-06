@@ -22,7 +22,8 @@ func Network() (*consensus.Network, types.Block) {
 	return n, genesisBlock
 }
 
-// MineBlock mines a block with the given transactions.
+// MineBlock mines a block with the given transactions, transaction fees are
+// added to the miner payout.
 func MineBlock(cm *chain.Manager, minerAddress types.Address) types.Block {
 	var minerFees types.Currency
 	for _, txn := range cm.PoolTransactions() {
