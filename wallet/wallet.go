@@ -496,7 +496,7 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 	// unused, matured and has the same value
 	utxos := make([]types.SiacoinElement, 0, len(elements))
 	for _, sce := range elements {
-		inUse := time.Now().After(sw.locked[sce.ID]) || inPool[sce.ID]
+		inUse := time.Now().Before(sw.locked[sce.ID]) || inPool[sce.ID]
 		matured := bh >= sce.MaturityHeight
 		sameValue := sce.SiacoinOutput.Value.Equals(amount)
 
