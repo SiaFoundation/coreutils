@@ -202,6 +202,9 @@ type Syncer struct {
 	config config
 	log    *zap.Logger // redundant, but convenient
 
+	shutdownCtx       context.Context
+	shutdownCtxCancel context.CancelFunc
+
 	mu      sync.Mutex
 	peers   map[string]*Peer
 	strikes map[string]int
@@ -417,7 +420,7 @@ func (s *Syncer) isStopped() bool {
 	return s.l == nil
 }
 
-func (s *Syncer) peerLoop(closeChan <-chan struct{}) error {
+func (s *Syncer) peerLoop() error {
 	log := s.log.Named("peerLoop")
 	numOutbound := func() (n int) {
 		s.mu.Lock()
@@ -481,7 +484,7 @@ func (s *Syncer) peerLoop(closeChan <-chan struct{}) error {
 		select {
 		case <-ticker.C:
 			return true
-		case <-closeChan:
+		case <-s.shutdownCtx.Done():
 			return false
 		}
 	}
@@ -501,7 +504,7 @@ func (s *Syncer) peerLoop(closeChan <-chan struct{}) error {
 
 			// NOTE: we don't bother logging failure here, since it's common and
 			// not particularly interesting or actionable
-			ctx, cancel := context.WithTimeout(context.Background(), s.config.ConnectTimeout)
+			ctx, cancel := context.WithTimeout(s.shutdownCtx, s.config.ConnectTimeout)
 			if _, err := s.Connect(ctx, p); err == nil {
 				s.log.Debug("connected to peer", zap.String("peer", p))
 			}
@@ -512,7 +515,7 @@ func (s *Syncer) peerLoop(closeChan <-chan struct{}) error {
 	return nil
 }
 
-func (s *Syncer) syncLoop(closeChan <-chan struct{}) error {
+func (s *Syncer) syncLoop() error {
 	peersForSync := func() (peers []*Peer) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -533,7 +536,7 @@ func (s *Syncer) syncLoop(closeChan <-chan struct{}) error {
 		select {
 		case <-ticker.C:
 			return true
-		case <-closeChan:
+		case <-s.shutdownCtx.Done():
 			return false
 		}
 	}
@@ -604,14 +607,13 @@ func (s *Syncer) syncLoop(closeChan <-chan struct{}) error {
 // terminated. To gracefully shutdown a Syncer, close its net.Listener.
 func (s *Syncer) Run() error {
 	errChan := make(chan error)
-	closeChan := make(chan struct{})
 	go func() { errChan <- s.acceptLoop() }()
-	go func() { errChan <- s.peerLoop(closeChan) }()
-	go func() { errChan <- s.syncLoop(closeChan) }()
+	go func() { errChan <- s.peerLoop() }()
+	go func() { errChan <- s.syncLoop() }()
 	err := <-errChan
 
 	// when one goroutine exits, shutdown and wait for the others
-	close(closeChan)
+	s.shutdownCtxCancel()
 	s.l.Close()
 	s.mu.Lock()
 	s.l = nil
@@ -643,22 +645,6 @@ func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
 	if err := s.allowConnect(addr, false); err != nil {
 		return nil, err
 	}
-
-	// slightly gross polling hack so that we shutdown quickly
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(100 * time.Millisecond):
-				if s.isStopped() {
-					cancel()
-				}
-			}
-		}
-	}()
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
@@ -745,14 +731,17 @@ func New(l net.Listener, cm ChainManager, pm PeerStore, header gateway.Header, o
 	for _, opt := range opts {
 		opt(&config)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Syncer{
-		l:       l,
-		cm:      cm,
-		pm:      pm,
-		header:  header,
-		config:  config,
-		log:     config.Logger,
-		peers:   make(map[string]*Peer),
-		strikes: make(map[string]int),
+		l:                 l,
+		cm:                cm,
+		pm:                pm,
+		header:            header,
+		config:            config,
+		log:               config.Logger,
+		shutdownCtx:       ctx,
+		shutdownCtxCancel: cancel,
+		peers:             make(map[string]*Peer),
+		strikes:           make(map[string]int),
 	}
 }
