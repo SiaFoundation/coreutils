@@ -415,9 +415,12 @@ func (s *Syncer) acceptLoop() error {
 }
 
 func (s *Syncer) isStopped() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.l == nil
+	select {
+	case <-s.shutdownCtx.Done():
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Syncer) peerLoop() error {
