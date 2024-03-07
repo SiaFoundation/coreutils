@@ -411,6 +411,12 @@ func (s *Syncer) acceptLoop() error {
 	}
 }
 
+func (s *Syncer) isStopped() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.l == nil
+}
+
 func (s *Syncer) peerLoop(closeChan <-chan struct{}) error {
 	log := s.log.Named("peerLoop")
 	numOutbound := func() (n int) {
@@ -479,11 +485,6 @@ func (s *Syncer) peerLoop(closeChan <-chan struct{}) error {
 			return false
 		}
 	}
-	closing := func() bool {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		return s.l == nil
-	}
 	for fst := true; fst || sleep(); fst = false {
 		if numOutbound() >= s.config.MaxOutboundPeers {
 			continue
@@ -494,18 +495,17 @@ func (s *Syncer) peerLoop(closeChan <-chan struct{}) error {
 			continue
 		}
 		for _, p := range candidates {
-			if numOutbound() >= s.config.MaxOutboundPeers || closing() {
+			if numOutbound() >= s.config.MaxOutboundPeers || s.isStopped() {
 				break
 			}
 
 			// NOTE: we don't bother logging failure here, since it's common and
 			// not particularly interesting or actionable
-			//
-			// NOTE: we can safely pass the background context here since the
-			// connect timeout will be enforced
-			if _, err := s.Connect(context.Background(), p); err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), s.config.ConnectTimeout)
+			if _, err := s.Connect(ctx, p); err == nil {
 				s.log.Debug("connected to peer", zap.String("peer", p))
 			}
+			cancel()
 			lastTried[p] = time.Now()
 		}
 	}
@@ -643,20 +643,19 @@ func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
 	if err := s.allowConnect(addr, false); err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, s.config.ConnectTimeout)
-	defer cancel()
+
 	// slightly gross polling hack so that we shutdown quickly
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(100 * time.Millisecond):
-				s.mu.Lock()
-				if s.l == nil {
+				if s.isStopped() {
 					cancel()
 				}
-				s.mu.Unlock()
 			}
 		}
 	}()
