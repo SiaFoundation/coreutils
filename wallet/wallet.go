@@ -297,8 +297,14 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 	// remove immature, locked and spent outputs
 	cs := sw.cm.TipState()
 	utxos := make([]types.SiacoinElement, 0, len(elements))
+	var usedSum types.Currency
+	var immatureSum types.Currency
 	for _, sce := range elements {
-		if sw.isLocked(sce.ID) || tpoolSpent[sce.ID] || cs.Index.Height < sce.MaturityHeight {
+		if used := sw.isLocked(sce.ID) || tpoolSpent[sce.ID]; used {
+			usedSum = usedSum.Add(sce.SiacoinOutput.Value)
+			continue
+		} else if immature := cs.Index.Height < sce.MaturityHeight; immature {
+			immatureSum = immatureSum.Add(sce.SiacoinOutput.Value)
 			continue
 		}
 		utxos = append(utxos, sce.SiacoinElement)
@@ -310,19 +316,21 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 	})
 
 	var unconfirmedUTXOs []types.SiacoinElement
+	var unconfirmedSum types.Currency
 	if useUnconfirmed {
 		for _, sce := range tpoolUtxos {
 			if sce.SiacoinOutput.Address != sw.addr || sw.isLocked(sce.ID) {
 				continue
 			}
 			unconfirmedUTXOs = append(unconfirmedUTXOs, sce)
+			unconfirmedSum = unconfirmedSum.Add(sce.SiacoinOutput.Value)
 		}
-
-		// sort by value, descending
-		sort.Slice(unconfirmedUTXOs, func(i, j int) bool {
-			return unconfirmedUTXOs[i].SiacoinOutput.Value.Cmp(unconfirmedUTXOs[j].SiacoinOutput.Value) > 0
-		})
 	}
+
+	// sort by value, descending
+	sort.Slice(unconfirmedUTXOs, func(i, j int) bool {
+		return unconfirmedUTXOs[i].SiacoinOutput.Value.Cmp(unconfirmedUTXOs[j].SiacoinOutput.Value) > 0
+	})
 
 	// fund the transaction using the largest utxos first
 	var selected []types.SiacoinElement
@@ -339,19 +347,19 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 	if inputSum.Cmp(amount) < 0 && useUnconfirmed {
 		// try adding unconfirmed utxos.
 		for _, sce := range unconfirmedUTXOs {
+			selected = append(selected, sce)
+			inputSum = inputSum.Add(sce.SiacoinOutput.Value)
 			if inputSum.Cmp(amount) >= 0 {
 				break
 			}
-			selected = append(selected, sce)
-			inputSum = inputSum.Add(sce.SiacoinOutput.Value)
 		}
 
 		if inputSum.Cmp(amount) < 0 {
 			// still not enough funds
-			return nil, ErrNotEnoughFunds
+			return nil, fmt.Errorf("%w: inputs %v < needed %v (used: %v immature: %v unconfirmed: %v)", ErrNotEnoughFunds, inputSum.String(), amount.String(), usedSum.String(), immatureSum.String(), unconfirmedSum.String())
 		}
 	} else if inputSum.Cmp(amount) < 0 {
-		return nil, ErrNotEnoughFunds
+		return nil, fmt.Errorf("%w: inputs %v < needed %v (used: %v immature: %v", ErrNotEnoughFunds, inputSum.String(), amount.String(), usedSum.String(), immatureSum.String())
 	}
 
 	// check if remaining utxos should be defragged
