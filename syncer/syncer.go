@@ -648,6 +648,17 @@ func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
 	if err := s.allowConnect(addr, false); err != nil {
 		return nil, err
 	}
+
+	// ensure we cancel out immediately if the syncer is stopped
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-s.shutdownCtx.Done():
+			cancel()
+		}
+	}()
+
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
