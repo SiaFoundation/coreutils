@@ -170,7 +170,7 @@ func TestWallet(t *testing.T) {
 
 	// try funding the transaction, expect it to fail since the outputs are immature
 	_, err := w.FundTransaction(&txn, initialReward, false)
-	if err != wallet.ErrNotEnoughFunds {
+	if !errors.Is(err, wallet.ErrNotEnoughFunds) {
 		t.Fatal("expected ErrNotEnoughFunds, got", err)
 	}
 
