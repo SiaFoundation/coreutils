@@ -22,14 +22,20 @@ func Network() (*consensus.Network, types.Block) {
 	return n, genesisBlock
 }
 
-// MineBlock mines a block with the given transactions.
+// MineBlock mines a block with the given transactions, transaction fees are
+// added to the miner payout.
 func MineBlock(cm *chain.Manager, minerAddress types.Address) types.Block {
+	var minerFees types.Currency
+	for _, txn := range cm.PoolTransactions() {
+		minerFees = minerFees.Add(txn.TotalFees())
+	}
+
 	state := cm.TipState()
 	b := types.Block{
 		ParentID:     state.Index.ID,
 		Timestamp:    types.CurrentTimestamp(),
 		Transactions: cm.PoolTransactions(),
-		MinerPayouts: []types.SiacoinOutput{{Address: minerAddress, Value: state.BlockReward()}},
+		MinerPayouts: []types.SiacoinOutput{{Address: minerAddress, Value: state.BlockReward().Add(minerFees)}},
 	}
 	for b.ID().CmpWork(state.ChildTarget) < 0 {
 		b.Nonce += state.NonceFactor()
