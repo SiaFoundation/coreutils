@@ -48,6 +48,9 @@ type PeerStore interface {
 	AddPeer(addr string) error
 	// Peers returns the set of known peers.
 	Peers() ([]PeerInfo, error)
+	// PeerInfo returns the metadata for the specified peer or ErrPeerNotFound
+	// if the peer wasn't found in the store.
+	PeerInfo(addr string) (PeerInfo, error)
 	// UpdatePeerInfo updates the metadata for the specified peer. If the peer
 	// is not found, the error should be ErrPeerNotFound.
 	UpdatePeerInfo(addr string, fn func(*PeerInfo)) error
@@ -562,10 +565,13 @@ func (s *Syncer) syncLoop() error {
 				}
 				sentBlocks += uint64(len(blocks))
 				endTime, endHeight := time.Now(), s.cm.Tip().Height
-				s.pm.UpdatePeerInfo(p.t.Addr, func(info *PeerInfo) {
+				err = s.pm.UpdatePeerInfo(p.t.Addr, func(info *PeerInfo) {
 					info.SyncedBlocks += endHeight - startHeight
 					info.SyncDuration += endTime.Sub(startTime)
 				})
+				if err != nil {
+					return fmt.Errorf("syncLoop: failed to update peer info: %w", err)
+				}
 				startTime, startHeight = endTime, endHeight
 				if time.Since(lastPrint) > 30*time.Second {
 					s.log.Debug("syncing with peer", zap.Stringer("peer", p), zap.Uint64("blocks", sentBlocks), zap.Duration("elapsed", endTime.Sub(oldTime)))
@@ -715,6 +721,12 @@ func (s *Syncer) Peers() []*Peer {
 		peers = append(peers, p)
 	}
 	return peers
+}
+
+// PeerInfo returns the metadata for the specified peer or ErrPeerNotFound if
+// the peer wasn't found in the store.
+func (s *Syncer) PeerInfo(addr string) (PeerInfo, error) {
+	return s.pm.PeerInfo(addr)
 }
 
 // Addr returns the address of the Syncer.
