@@ -219,10 +219,10 @@ func (s *Syncer) resync(p *Peer, reason string) {
 	}
 }
 
-func (s *Syncer) ban(p *Peer, err error) error {
+func (s *Syncer) ban(ctx context.Context, p *Peer, err error) error {
 	s.log.Debug("banning peer", zap.Stringer("peer", p), zap.Error(err))
 	p.setErr(ErrPeerBanned)
-	if err := s.pm.Ban(s.shutdownCtx, p.ConnAddr, s.config.BanDuration, err.Error()); err != nil {
+	if err := s.pm.Ban(ctx, p.ConnAddr, s.config.BanDuration, err.Error()); err != nil {
 		return fmt.Errorf("failed to ban peer: %w", err)
 	}
 
@@ -247,7 +247,7 @@ func (s *Syncer) ban(p *Peer, err error) error {
 		s.mu.Unlock()
 		if !ban {
 			continue
-		} else if err := s.pm.Ban(s.shutdownCtx, subnet, s.config.BanDuration, "too many strikes"); err != nil {
+		} else if err := s.pm.Ban(ctx, subnet, s.config.BanDuration, "too many strikes"); err != nil {
 			return fmt.Errorf("failed to ban subnet %q: %w", subnet, err)
 		}
 	}
@@ -255,7 +255,7 @@ func (s *Syncer) ban(p *Peer, err error) error {
 }
 
 func (s *Syncer) runPeer(p *Peer) error {
-	ctx, cancel := context.WithTimeout(s.shutdownCtx, time.Minute)
+	ctx, cancel := context.WithTimeout(s.shutdownCtx, 5*time.Minute)
 	if err := s.pm.AddPeer(ctx, p.t.Addr); err != nil {
 		cancel()
 		return fmt.Errorf("failed to add peer: %w", err)
@@ -289,10 +289,13 @@ func (s *Syncer) runPeer(p *Peer) error {
 		inflight <- struct{}{}
 		go func() {
 			defer stream.Close()
+			ctx, cancel := context.WithTimeout(s.shutdownCtx, 5*time.Minute)
+			defer cancel()
+
 			// NOTE: we do not set any deadlines on the stream. If a peer is
 			// slow, fine; we don't need to worry about resource exhaustion
 			// unless we have tons of peers.
-			if err := s.handleRPC(id, stream, p); err != nil {
+			if err := s.handleRPC(ctx, id, stream, p); err != nil {
 				s.log.Debug("rpc failed", zap.Stringer("peer", p), zap.Stringer("rpc", id), zap.Error(err))
 			}
 			<-inflight
@@ -445,8 +448,8 @@ func (s *Syncer) peerLoop() error {
 	}
 
 	lastTried := make(map[string]time.Time)
-	peersForConnect := func() (peers []string) {
-		p, err := s.pm.Peers(s.shutdownCtx)
+	peersForConnect := func(ctx context.Context) (peers []string) {
+		p, err := s.pm.Peers(ctx)
 		if err != nil {
 			log.Error("failed to fetch peers", zap.Error(err))
 			return
@@ -466,7 +469,7 @@ func (s *Syncer) peerLoop() error {
 		})
 		return peers
 	}
-	discoverPeers := func() {
+	discoverPeers := func(ctx context.Context) {
 		// try up to three randomly-chosen peers
 		var peers []*Peer
 		s.mu.Lock()
@@ -482,7 +485,7 @@ func (s *Syncer) peerLoop() error {
 				continue
 			}
 			for _, n := range nodes {
-				if err := s.pm.AddPeer(s.shutdownCtx, n); err != nil {
+				if err := s.pm.AddPeer(ctx, n); err != nil {
 					log.Debug("failed to add peer", zap.String("peer", n), zap.Error(err))
 				}
 			}
@@ -503,9 +506,9 @@ func (s *Syncer) peerLoop() error {
 		if numOutbound() >= s.config.MaxOutboundPeers {
 			continue
 		}
-		candidates := peersForConnect()
+		candidates := peersForConnect(s.shutdownCtx)
 		if len(candidates) == 0 {
-			discoverPeers()
+			discoverPeers(s.shutdownCtx)
 			continue
 		}
 		for _, p := range candidates {
@@ -520,6 +523,7 @@ func (s *Syncer) peerLoop() error {
 				s.log.Debug("connected to peer", zap.String("peer", p))
 			}
 			cancel()
+
 			lastTried[p] = time.Now()
 		}
 	}
@@ -570,13 +574,16 @@ func (s *Syncer) syncLoop() error {
 				}
 				sentBlocks += uint64(len(blocks))
 				endTime, endHeight := time.Now(), s.cm.Tip().Height
-				err = s.pm.UpdatePeerInfo(s.shutdownCtx, p.t.Addr, func(info *PeerInfo) {
+				ctx, cancel := context.WithTimeout(s.shutdownCtx, 5*time.Minute)
+				err = s.pm.UpdatePeerInfo(ctx, p.t.Addr, func(info *PeerInfo) {
 					info.SyncedBlocks += endHeight - startHeight
 					info.SyncDuration += endTime.Sub(startTime)
 				})
 				if err != nil {
+					cancel()
 					return fmt.Errorf("syncLoop: failed to update peer info: %w", err)
 				}
+				cancel()
 				startTime, startHeight = endTime, endHeight
 				if time.Since(lastPrint) > 30*time.Second {
 					s.log.Debug("syncing with peer", zap.Stringer("peer", p), zap.Uint64("blocks", sentBlocks), zap.Duration("elapsed", endTime.Sub(oldTime)))
