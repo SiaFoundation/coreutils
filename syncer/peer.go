@@ -223,7 +223,7 @@ func (p *Peer) acceptRPC() (types.Specifier, *gateway.Stream, error) {
 func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *Peer) error {
 	switch r := gateway.ObjectForID(id).(type) {
 	case *gateway.RPCShareNodes:
-		peers, err := s.pm.Peers()
+		peers, err := s.pm.Peers(s.shutdownCtx)
 		if err != nil {
 			return fmt.Errorf("failed to fetch peers: %w", err)
 		} else if n := len(peers); n > 10 {

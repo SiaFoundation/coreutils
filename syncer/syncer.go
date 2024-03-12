@@ -45,21 +45,20 @@ type PeerInfo struct {
 type PeerStore interface {
 	// AddPeer adds a peer to the store. If the peer already exists, nil should
 	// be returned.
-	AddPeer(addr string) error
+	AddPeer(ctx context.Context, addr string) error
 	// Peers returns the set of known peers.
-	Peers() ([]PeerInfo, error)
+	Peers(ctx context.Context) ([]PeerInfo, error)
 	// PeerInfo returns the metadata for the specified peer or ErrPeerNotFound
 	// if the peer wasn't found in the store.
-	PeerInfo(addr string) (PeerInfo, error)
+	PeerInfo(ctx context.Context, addr string) (PeerInfo, error)
 	// UpdatePeerInfo updates the metadata for the specified peer. If the peer
 	// is not found, the error should be ErrPeerNotFound.
-	UpdatePeerInfo(addr string, fn func(*PeerInfo)) error
+	UpdatePeerInfo(ctx context.Context, addr string, fn func(*PeerInfo)) error
 	// Ban temporarily bans one or more IPs. The addr should either be a single
 	// IP with port (e.g. 1.2.3.4:5678) or a CIDR subnet (e.g. 1.2.3.4/16).
-	Ban(addr string, duration time.Duration, reason string) error
-
+	Ban(ctx context.Context, addr string, duration time.Duration, reason string) error
 	// Banned returns true, nil if the peer is banned.
-	Banned(addr string) (bool, error)
+	Banned(ctx context.Context, addr string) (bool, error)
 }
 
 var (
@@ -223,7 +222,7 @@ func (s *Syncer) resync(p *Peer, reason string) {
 func (s *Syncer) ban(p *Peer, err error) error {
 	s.log.Debug("banning peer", zap.Stringer("peer", p), zap.Error(err))
 	p.setErr(ErrPeerBanned)
-	if err := s.pm.Ban(p.ConnAddr, s.config.BanDuration, err.Error()); err != nil {
+	if err := s.pm.Ban(s.shutdownCtx, p.ConnAddr, s.config.BanDuration, err.Error()); err != nil {
 		return fmt.Errorf("failed to ban peer: %w", err)
 	}
 
@@ -248,7 +247,7 @@ func (s *Syncer) ban(p *Peer, err error) error {
 		s.mu.Unlock()
 		if !ban {
 			continue
-		} else if err := s.pm.Ban(subnet, s.config.BanDuration, "too many strikes"); err != nil {
+		} else if err := s.pm.Ban(s.shutdownCtx, subnet, s.config.BanDuration, "too many strikes"); err != nil {
 			return fmt.Errorf("failed to ban subnet %q: %w", subnet, err)
 		}
 	}
@@ -256,15 +255,18 @@ func (s *Syncer) ban(p *Peer, err error) error {
 }
 
 func (s *Syncer) runPeer(p *Peer) error {
-	if err := s.pm.AddPeer(p.t.Addr); err != nil {
+	ctx, cancel := context.WithTimeout(s.shutdownCtx, time.Minute)
+	if err := s.pm.AddPeer(ctx, p.t.Addr); err != nil {
+		cancel()
 		return fmt.Errorf("failed to add peer: %w", err)
 	}
-	err := s.pm.UpdatePeerInfo(p.t.Addr, func(info *PeerInfo) {
-		info.LastConnect = time.Now()
-	})
+	err := s.pm.UpdatePeerInfo(ctx, p.t.Addr, func(info *PeerInfo) { info.LastConnect = time.Now() })
 	if err != nil {
+		cancel()
 		return fmt.Errorf("failed to update peer info: %w", err)
 	}
+	cancel()
+
 	s.mu.Lock()
 	s.peers[p.t.Addr] = p
 	s.mu.Unlock()
@@ -353,13 +355,13 @@ func (s *Syncer) relayV2TransactionSet(index types.ChainIndex, txns []types.V2Tr
 	}
 }
 
-func (s *Syncer) allowConnect(peer string, inbound bool) error {
+func (s *Syncer) allowConnect(ctx context.Context, peer string, inbound bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.l == nil {
 		return errors.New("syncer is shutting down")
 	}
-	if banned, err := s.pm.Banned(peer); err != nil {
+	if banned, err := s.pm.Banned(ctx, peer); err != nil {
 		return err
 	} else if banned {
 		return ErrPeerBanned
@@ -400,7 +402,10 @@ func (s *Syncer) acceptLoop() error {
 		}
 		go func() {
 			defer conn.Close()
-			if err := s.allowConnect(conn.RemoteAddr().String(), true); err != nil {
+			ctx, cancel := context.WithTimeout(s.shutdownCtx, 5*time.Minute)
+			defer cancel()
+
+			if err := s.allowConnect(ctx, conn.RemoteAddr().String(), true); err != nil {
 				s.log.Debug("rejected inbound connection", zap.Stringer("remoteAddress", conn.RemoteAddr()), zap.Error(err))
 			} else if t, err := gateway.Accept(conn, s.header); err != nil {
 				s.log.Debug("failed to accept inbound connection", zap.Stringer("remoteAddress", conn.RemoteAddr()), zap.Error(err))
@@ -441,7 +446,7 @@ func (s *Syncer) peerLoop() error {
 
 	lastTried := make(map[string]time.Time)
 	peersForConnect := func() (peers []string) {
-		p, err := s.pm.Peers()
+		p, err := s.pm.Peers(s.shutdownCtx)
 		if err != nil {
 			log.Error("failed to fetch peers", zap.Error(err))
 			return
@@ -477,7 +482,7 @@ func (s *Syncer) peerLoop() error {
 				continue
 			}
 			for _, n := range nodes {
-				if err := s.pm.AddPeer(n); err != nil {
+				if err := s.pm.AddPeer(s.shutdownCtx, n); err != nil {
 					log.Debug("failed to add peer", zap.String("peer", n), zap.Error(err))
 				}
 			}
@@ -565,7 +570,7 @@ func (s *Syncer) syncLoop() error {
 				}
 				sentBlocks += uint64(len(blocks))
 				endTime, endHeight := time.Now(), s.cm.Tip().Height
-				err = s.pm.UpdatePeerInfo(p.t.Addr, func(info *PeerInfo) {
+				err = s.pm.UpdatePeerInfo(s.shutdownCtx, p.t.Addr, func(info *PeerInfo) {
 					info.SyncedBlocks += endHeight - startHeight
 					info.SyncDuration += endTime.Sub(startTime)
 				})
@@ -651,7 +656,7 @@ func (s *Syncer) Run() error {
 
 // Connect forms an outbound connection to a peer.
 func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
-	if err := s.allowConnect(addr, false); err != nil {
+	if err := s.allowConnect(ctx, addr, false); err != nil {
 		return nil, err
 	}
 
@@ -725,8 +730,8 @@ func (s *Syncer) Peers() []*Peer {
 
 // PeerInfo returns the metadata for the specified peer or ErrPeerNotFound if
 // the peer wasn't found in the store.
-func (s *Syncer) PeerInfo(addr string) (PeerInfo, error) {
-	return s.pm.PeerInfo(addr)
+func (s *Syncer) PeerInfo(ctx context.Context, addr string) (PeerInfo, error) {
+	return s.pm.PeerInfo(ctx, addr)
 }
 
 // Addr returns the address of the Syncer.
