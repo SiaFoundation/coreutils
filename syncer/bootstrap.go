@@ -1,26 +1,5 @@
 package syncer
 
-import (
-	"errors"
-	"fmt"
-
-	"go.sia.tech/core/consensus"
-)
-
-const (
-	// NetworkAnagami is the name of the Anagami network.
-	NetworkAnagami = "anagami"
-	// NetworkMainnet is the name of the Mainnet network.
-	NetworkMainnet = "mainnet"
-	// NetworkZen is the name of the Zen network.
-	NetworkZen = "zen"
-)
-
-var (
-	// ErrUnknownNetwork is returned when trying to boostrap a network with a
-	// name that is not recognized.
-	ErrUnknownNetwork = errors.New("unknown network")
-)
 var (
 	// AnagamiBootstrapPeers is a list of peers for the Anagami network.
 	AnagamiBootstrapPeers = []string{
@@ -86,25 +65,3 @@ var (
 		"51.81.208.10:9881",
 	}
 )
-
-// Bootstrap will add the bootstrap peers for the given network to the store.
-func Bootstrap(n consensus.Network, ps PeerStore) error {
-	var bootstrapPeers []string
-	switch n.Name {
-	case NetworkAnagami:
-		bootstrapPeers = AnagamiBootstrapPeers
-	case NetworkMainnet:
-		bootstrapPeers = MainnetBootstrapPeers
-	case NetworkZen:
-		bootstrapPeers = ZenBootstrapPeers
-	default:
-		return fmt.Errorf("%w '%s'", ErrUnknownNetwork, n.Name)
-	}
-
-	for _, addr := range bootstrapPeers {
-		if err := ps.AddPeer(addr); err != nil {
-			return err
-		}
-	}
-	return nil
-}
