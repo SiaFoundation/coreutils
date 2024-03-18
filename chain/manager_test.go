@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -19,21 +20,6 @@ func findBlockNonce(cs consensus.State, b *types.Block) {
 	}
 }
 
-type historySubscriber struct {
-	revertHistory []uint64
-	applyHistory  []uint64
-}
-
-func (hs *historySubscriber) ProcessChainApplyUpdate(cau *ApplyUpdate, _ bool) error {
-	hs.applyHistory = append(hs.applyHistory, cau.State.Index.Height)
-	return nil
-}
-
-func (hs *historySubscriber) ProcessChainRevertUpdate(cru *RevertUpdate) error {
-	hs.revertHistory = append(hs.revertHistory, cru.State.Index.Height)
-	return nil
-}
-
 func TestManager(t *testing.T) {
 	n, genesisBlock := TestnetZen()
 
@@ -43,11 +29,7 @@ func TestManager(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
 	cm := NewManager(store, tipState)
-
-	var hs historySubscriber
-	cm.AddSubscriber(&hs, cm.Tip())
 
 	mine := func(cs consensus.State, n int) (blocks []types.Block) {
 		for i := 0; i < n; i++ {
@@ -67,6 +49,11 @@ func TestManager(t *testing.T) {
 		return
 	}
 
+	var reorgs []uint64
+	cm.OnReorg(func(index types.ChainIndex) {
+		reorgs = append(reorgs, index.Height)
+	})
+
 	// mine two chains
 	chain1 := mine(cm.TipState(), 5)
 	chain2 := mine(cm.TipState(), 7)
@@ -78,25 +65,42 @@ func TestManager(t *testing.T) {
 	if err := cm.AddBlocks(chain2); err != nil {
 		t.Fatal(err)
 	}
-
-	// subscriber history should show the reorg
-	if !reflect.DeepEqual(hs.revertHistory, []uint64{4, 3, 2, 1, 0}) {
-		t.Error("lighter chain should have been reverted:", hs.revertHistory)
-	} else if !reflect.DeepEqual(hs.applyHistory, []uint64{1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 6, 7}) {
-		t.Error("both chains should have been applied:", hs.applyHistory)
+	if !reflect.DeepEqual(reorgs, []uint64{5, 7}) {
+		t.Error("wrong reorg history:", reorgs)
 	}
 
-	// add a subscriber whose tip is in the middle of the lighter chain
-	subTip := types.ChainIndex{Height: 3, ID: chain1[3].ParentID}
-	var hs2 historySubscriber
-	if err := cm.AddSubscriber(&hs2, subTip); err != nil {
+	// get full update history
+	rus, aus, err := cm.UpdatesSince(types.ChainIndex{}, 100)
+	if err != nil {
 		t.Fatal(err)
+	} else if len(rus) != 0 && len(aus) != 8 {
+		t.Fatal("wrong number of updates:", len(rus), len(aus))
 	}
-	// check that the subscriber was properly synced
-	if !reflect.DeepEqual(hs2.revertHistory, []uint64{2, 1, 0}) {
-		t.Fatal("3 blocks should have been reverted:", hs2.revertHistory)
-	} else if !reflect.DeepEqual(hs2.applyHistory, []uint64{1, 2, 3, 4, 5, 6, 7}) {
-		t.Fatal("7 blocks should have been applied:", hs2.applyHistory)
+	var path []uint64
+	for _, au := range aus {
+		path = append(path, au.State.Index.Height)
+	}
+	if !reflect.DeepEqual(path, []uint64{0, 1, 2, 3, 4, 5, 6, 7}) {
+		t.Error("wrong update path:", path)
+	}
+
+	// get update history from the middle of the lighter chain
+	rus, aus, err = cm.UpdatesSince(types.ChainIndex{Height: 3, ID: chain1[3].ParentID}, 100)
+	if err != nil {
+		t.Fatal(err)
+	} else if len(rus) != 3 && len(aus) != 7 {
+		t.Fatal("wrong number of updates:", len(rus), len(aus))
+	}
+	path = nil
+	for _, ru := range rus {
+		path = append(path, ru.State.Index.Height)
+		fmt.Println(path)
+	}
+	for _, au := range aus {
+		path = append(path, au.State.Index.Height)
+	}
+	if !reflect.DeepEqual(path, []uint64{2, 1, 0, 1, 2, 3, 4, 5, 6, 7}) {
+		t.Error("wrong update path:", path)
 	}
 }
 

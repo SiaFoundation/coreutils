@@ -647,25 +647,17 @@ func (db *DBStore) shouldFlush() bool {
 	return db.unflushed >= flushSizeThreshold || time.Since(db.lastFlush) >= flushDurationThreshold
 }
 
-func (db *DBStore) flush() {
-	if err := db.db.Flush(); err != nil {
-		panic(err)
-	}
-	db.unflushed = 0
-	db.lastFlush = time.Now()
-}
-
 // ApplyBlock implements Store.
-func (db *DBStore) ApplyBlock(s consensus.State, cau consensus.ApplyUpdate, mustCommit bool) (committed bool) {
+func (db *DBStore) ApplyBlock(s consensus.State, cau consensus.ApplyUpdate) {
 	db.applyState(s)
 	if s.Index.Height <= db.n.HardforkV2.RequireHeight {
 		db.applyElements(cau)
 	}
-	committed = mustCommit || db.shouldFlush()
-	if committed {
-		db.flush()
+	if db.shouldFlush() {
+		if err := db.Flush(); err != nil {
+			panic(err)
+		}
 	}
-	return
 }
 
 // RevertBlock implements Store.
@@ -675,12 +667,19 @@ func (db *DBStore) RevertBlock(s consensus.State, cru consensus.RevertUpdate) {
 	}
 	db.revertState(s)
 	if db.shouldFlush() {
-		db.flush()
+		if err := db.Flush(); err != nil {
+			panic(err)
+		}
 	}
 }
 
-// Close flushes any uncommitted data to the underlying DB.
-func (db *DBStore) Close() error {
+// Flush flushes any uncommitted data to the underlying DB.
+func (db *DBStore) Flush() error {
+	if db.unflushed == 0 {
+		return nil
+	}
+	db.unflushed = 0
+	db.lastFlush = time.Now()
 	return db.db.Flush()
 }
 
@@ -731,7 +730,10 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block) (_ *DBSto
 		cs, cau := consensus.ApplyBlock(genesisState, genesisBlock, bs, time.Time{})
 		dbs.putBlock(genesisBlock, &bs)
 		dbs.putState(cs)
-		dbs.ApplyBlock(cs, cau, true)
+		dbs.ApplyBlock(cs, cau)
+		if err := dbs.Flush(); err != nil {
+			return nil, consensus.State{}, err
+		}
 	} else if dbGenesis.ID != genesisBlock.ID() {
 		// try to detect network so we can provide a more helpful error message
 		_, mainnetGenesis := Mainnet()

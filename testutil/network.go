@@ -17,8 +17,8 @@ func Network() (*consensus.Network, types.Block) {
 	n.HardforkOak.Height = 1
 	n.HardforkASIC.Height = 1
 	n.HardforkFoundation.Height = 1
-	n.HardforkV2.AllowHeight = 100
-	n.HardforkV2.RequireHeight = 150
+	n.HardforkV2.AllowHeight = 200 // comfortably above MaturityHeight
+	n.HardforkV2.RequireHeight = 250
 	return n, genesisBlock
 }
 

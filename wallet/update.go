@@ -50,7 +50,7 @@ type (
 
 // addressPayoutEvents is a helper to add all payout transactions from an
 // apply update to a slice of transactions.
-func addressPayoutEvents(addr types.Address, cau *chain.ApplyUpdate) (events []Event) {
+func addressPayoutEvents(addr types.Address, cau chain.ApplyUpdate) (events []Event) {
 	index := cau.State.Index
 	state := cau.State
 	block := cau.Block
@@ -144,7 +144,7 @@ func addressPayoutEvents(addr types.Address, cau *chain.ApplyUpdate) (events []E
 }
 
 // ApplyChainUpdates atomically applies a batch of wallet updates
-func ApplyChainUpdates(tx ApplyTx, address types.Address, updates []*chain.ApplyUpdate) error {
+func ApplyChainUpdates(tx ApplyTx, address types.Address, updates []chain.ApplyUpdate) error {
 	stateElements, err := tx.WalletStateElements()
 	if err != nil {
 		return fmt.Errorf("failed to get state elements: %w", err)
@@ -243,7 +243,7 @@ func ApplyChainUpdates(tx ApplyTx, address types.Address, updates []*chain.Apply
 }
 
 // RevertChainUpdate atomically reverts a chain update from a wallet
-func RevertChainUpdate(tx RevertTx, address types.Address, cru *chain.RevertUpdate) error {
+func RevertChainUpdate(tx RevertTx, address types.Address, cru chain.RevertUpdate) error {
 	stateElements, err := tx.WalletStateElements()
 	if err != nil {
 		return fmt.Errorf("failed to get state elements: %w", err)
