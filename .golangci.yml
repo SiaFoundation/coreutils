@@ -60,6 +60,7 @@ linters-settings:
       - style
     disabled-checks:
       # diagnostic
+      - appendAssign
       - commentedOutCode
       - uncheckedInlineErr
 
@@ -67,6 +68,8 @@ linters-settings:
       - exitAfterDefer
       - ifElseChain
       - importShadow
+      - initClause
+      - nestingReduce
       - octalLiteral
       - paramTypeCombine
       - ptrToRefParam
