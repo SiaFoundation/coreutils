@@ -513,7 +513,8 @@ func (m *Manager) revalidatePool() {
 		delete(m.txpool.indices, txid)
 	}
 	m.txpool.ms = consensus.NewMidState(m.tipState)
-	txns := append(m.txpool.txns, m.txpool.lastReverted...)
+	txns := m.txpool.txns
+	txns = append(txns, m.txpool.lastReverted...)
 	m.txpool.txns = m.txpool.txns[:0]
 	m.txpool.weight = 0
 	for _, txn := range txns {
@@ -525,7 +526,8 @@ func (m *Manager) revalidatePool() {
 			m.txpool.weight += m.tipState.TransactionWeight(txn)
 		}
 	}
-	v2txns := append(m.txpool.v2txns, m.txpool.lastRevertedV2...)
+	v2txns := m.txpool.v2txns
+	v2txns = append(v2txns, m.txpool.lastRevertedV2...)
 	m.txpool.v2txns = m.txpool.v2txns[:0]
 	for _, txn := range v2txns {
 		if consensus.ValidateV2Transaction(m.txpool.ms, txn) == nil {
@@ -806,7 +808,8 @@ func (m *Manager) TransactionsForPartialBlock(missing []types.Hash256) (txns []t
 	for _, txn := range m.txpool.txns {
 		if h := txn.FullHash(); want[h] {
 			txns = append(txns, txn)
-			if delete(want, h); len(want) == 0 {
+			delete(want, h)
+			if len(want) == 0 {
 				return
 			}
 		}
@@ -814,7 +817,8 @@ func (m *Manager) TransactionsForPartialBlock(missing []types.Hash256) (txns []t
 	for _, txn := range m.txpool.v2txns {
 		if h := txn.FullHash(); want[h] {
 			v2txns = append(v2txns, txn)
-			if delete(want, h); len(want) == 0 {
+			delete(want, h)
+			if len(want) == 0 {
 				return
 			}
 		}
