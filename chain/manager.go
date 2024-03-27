@@ -513,28 +513,31 @@ func (m *Manager) revalidatePool() {
 		delete(m.txpool.indices, txid)
 	}
 	m.txpool.ms = consensus.NewMidState(m.tipState)
-	txns := append(m.txpool.txns, m.txpool.lastReverted...)
-	m.txpool.txns = m.txpool.txns[:0]
+	m.txpool.txns = append(m.txpool.txns, m.txpool.lastReverted...)
 	m.txpool.weight = 0
-	for _, txn := range txns {
+	filtered := m.txpool.txns[:0]
+	for _, txn := range m.txpool.txns {
 		ts := m.store.SupplementTipTransaction(txn)
 		if consensus.ValidateTransaction(m.txpool.ms, txn, ts) == nil {
 			m.txpool.ms.ApplyTransaction(txn, ts)
 			m.txpool.indices[txn.ID()] = len(m.txpool.txns)
-			m.txpool.txns = append(m.txpool.txns, txn)
 			m.txpool.weight += m.tipState.TransactionWeight(txn)
+			filtered = append(filtered, txn)
 		}
 	}
-	v2txns := append(m.txpool.v2txns, m.txpool.lastRevertedV2...)
-	m.txpool.v2txns = m.txpool.v2txns[:0]
-	for _, txn := range v2txns {
+	m.txpool.txns = filtered
+
+	m.txpool.v2txns = append(m.txpool.v2txns, m.txpool.lastRevertedV2...)
+	v2filtered := m.txpool.v2txns[:0]
+	for _, txn := range m.txpool.v2txns {
 		if consensus.ValidateV2Transaction(m.txpool.ms, txn) == nil {
 			m.txpool.ms.ApplyV2Transaction(txn)
 			m.txpool.indices[txn.ID()] = len(m.txpool.v2txns)
-			m.txpool.v2txns = append(m.txpool.v2txns, txn)
 			m.txpool.weight += m.tipState.V2TransactionWeight(txn)
+			v2filtered = append(v2filtered, txn)
 		}
 	}
+	m.txpool.v2txns = v2filtered
 }
 
 func (m *Manager) computeMedianFee() types.Currency {
