@@ -8,9 +8,9 @@ import (
 )
 
 type (
-	// ApplyTx is an interface for atomically applying a chain update to a
+	// UpdateTx is an interface for atomically applying chain updates to a
 	// single address wallet.
-	ApplyTx interface {
+	UpdateTx interface {
 		// WalletStateElements returns all state elements related to the wallet. It is used
 		// to update the proofs of all state elements affected by the update.
 		WalletStateElements() ([]types.StateElement, error)
@@ -18,33 +18,15 @@ type (
 		// update.
 		UpdateStateElements([]types.StateElement) error
 
-		// AddEvents is called with all relevant events added in the update.
-		AddEvents([]Event) error
-		// AddSiacoinElements is called with all new siacoin elements in the
-		// update. Ephemeral siacoin elements are not included.
-		AddSiacoinElements([]SiacoinElement) error
-		// RemoveSiacoinElements is called with all siacoin elements that were
-		// spent in the update.
-		RemoveSiacoinElements([]types.SiacoinOutputID) error
-	}
-
-	// RevertTx is an interface for atomically reverting a chain update from a
-	// single address wallet.
-	RevertTx interface {
-		// WalletStateElements returns all state elements in the database. It is used
-		// to update the proofs of all state elements affected by the update.
-		WalletStateElements() ([]types.StateElement, error)
-		// UpdateStateElements updates the proofs of all state elements affected by the
-		// update.
-		UpdateStateElements([]types.StateElement) error
-
+		// ApplyIndex is called with the chain index that is being applied.
+		// Any transactions and siacoin elements that were created by the index
+		// should be added and any siacoin elements that were spent should be
+		// removed.
+		ApplyIndex(index types.ChainIndex, created, spent []types.SiacoinElement, events []Event) error
 		// RevertIndex is called with the chain index that is being reverted.
 		// Any transactions and siacoin elements that were created by the index
 		// should be removed.
-		RevertIndex(types.ChainIndex) error
-		// AddSiacoinElements is called with all siacoin elements that are
-		// now unspent due to the revert.
-		AddSiacoinElements([]SiacoinElement) error
+		RevertIndex(index types.ChainIndex, removed, unspent []types.SiacoinElement) error
 	}
 )
 
@@ -143,137 +125,153 @@ func addressPayoutEvents(addr types.Address, cau chain.ApplyUpdate) (events []Ev
 	return
 }
 
-// ApplyChainUpdates atomically applies a batch of wallet updates
-func ApplyChainUpdates(tx ApplyTx, address types.Address, updates []chain.ApplyUpdate) error {
+// applyChainState atomically applies a chain update
+func applyChainState(tx UpdateTx, address types.Address, cau chain.ApplyUpdate) error {
 	stateElements, err := tx.WalletStateElements()
 	if err != nil {
 		return fmt.Errorf("failed to get state elements: %w", err)
 	}
 
-	var events []Event
-	var spentUTXOs []types.SiacoinOutputID
-	newUTXOs := make(map[types.Hash256]SiacoinElement)
+	// determine which siacoin and siafund elements are ephemeral
+	//
+	// note: I thought we could use LeafIndex == EphemeralLeafIndex, but
+	// it seems to be set before the subscriber is called.
+	created := make(map[types.Hash256]bool)
+	ephemeral := make(map[types.Hash256]bool)
+	for _, txn := range cau.Block.Transactions {
+		for i := range txn.SiacoinOutputs {
+			created[types.Hash256(txn.SiacoinOutputID(i))] = true
+		}
+		for _, input := range txn.SiacoinInputs {
+			ephemeral[types.Hash256(input.ParentID)] = created[types.Hash256(input.ParentID)]
+		}
+		for i := range txn.SiafundOutputs {
+			created[types.Hash256(txn.SiafundOutputID(i))] = true
+		}
+		for _, input := range txn.SiafundInputs {
+			ephemeral[types.Hash256(input.ParentID)] = created[types.Hash256(input.ParentID)]
+		}
+	}
 
-	for _, cau := range updates {
-		events = append(events, addressPayoutEvents(address, cau)...)
-		utxoValues := make(map[types.SiacoinOutputID]types.Currency)
+	var createdUTXOs, spentUTXOs []types.SiacoinElement
+	events := addressPayoutEvents(address, cau)
+	utxoValues := make(map[types.SiacoinOutputID]types.Currency)
 
-		cau.ForEachSiacoinElement(func(se types.SiacoinElement, spent bool) {
-			if se.SiacoinOutput.Address != address {
-				return
-			}
+	cau.ForEachSiacoinElement(func(se types.SiacoinElement, spent bool) {
+		if se.SiacoinOutput.Address != address || ephemeral[types.Hash256(se.ID)] {
+			return
+		}
 
-			// cache the value of the utxo to use when calculating outflow
-			utxoValues[types.SiacoinOutputID(se.ID)] = se.SiacoinOutput.Value
-			if spent {
-				// remove the utxo from the new utxos
-				delete(newUTXOs, se.ID)
+		// cache the value of the utxo to use when calculating outflow
+		utxoValues[types.SiacoinOutputID(se.ID)] = se.SiacoinOutput.Value
+		if spent {
+			spentUTXOs = append(spentUTXOs, se)
+		} else {
+			createdUTXOs = append(createdUTXOs, se)
+		}
+	})
 
-				// skip ephemeral outputs
-				if se.StateElement.LeafIndex != types.EphemeralLeafIndex {
-					spentUTXOs = append(spentUTXOs, types.SiacoinOutputID(se.ID))
+	for _, txn := range cau.Block.Transactions {
+		ev := Event{
+			ID:             types.Hash256(txn.ID()),
+			Index:          cau.State.Index,
+			Transaction:    txn,
+			Source:         EventSourceTransaction,
+			MaturityHeight: cau.State.Index.Height, // regular transactions "mature" immediately
+			Timestamp:      cau.Block.Timestamp,
+		}
+
+		for _, si := range txn.SiacoinInputs {
+			if si.UnlockConditions.UnlockHash() == address {
+				value, ok := utxoValues[si.ParentID]
+				if !ok {
+					panic("missing utxo") // this should never happen
 				}
-			} else {
-				newUTXOs[se.ID] = SiacoinElement{
-					SiacoinElement: se,
-					Index:          cau.State.Index,
-				}
+				ev.Inflow = ev.Inflow.Add(value)
 			}
-		})
+		}
 
-		for _, txn := range cau.Block.Transactions {
-			ev := Event{
-				ID:             types.Hash256(txn.ID()),
-				Index:          cau.State.Index,
-				Transaction:    txn,
-				Source:         EventSourceTransaction,
-				MaturityHeight: cau.State.Index.Height, // regular transactions "mature" immediately
-				Timestamp:      cau.Block.Timestamp,
-			}
-
-			for _, si := range txn.SiacoinInputs {
-				if si.UnlockConditions.UnlockHash() == address {
-					value, ok := utxoValues[si.ParentID]
-					if !ok {
-						panic("missing utxo") // this should never happen
-					}
-					ev.Inflow = ev.Inflow.Add(value)
-				}
-			}
-
-			for _, so := range txn.SiacoinOutputs {
-				if so.Address != address {
-					continue
-				}
-				ev.Outflow = ev.Outflow.Add(so.Value)
-			}
-
-			// skip irrelevant transactions
-			if ev.Inflow.IsZero() && ev.Outflow.IsZero() {
+		for _, so := range txn.SiacoinOutputs {
+			if so.Address != address {
 				continue
 			}
-
-			events = append(events, ev)
+			ev.Outflow = ev.Outflow.Add(so.Value)
 		}
 
-		for i := range stateElements {
-			cau.UpdateElementProof(&stateElements[i])
+		// skip irrelevant transactions
+		if ev.Inflow.IsZero() && ev.Outflow.IsZero() {
+			continue
 		}
 
-		for _, se := range newUTXOs {
-			cau.UpdateElementProof(&se.StateElement)
-		}
+		events = append(events, ev)
 	}
 
-	createdUTXOs := make([]SiacoinElement, 0, len(newUTXOs))
-	for _, se := range newUTXOs {
-		createdUTXOs = append(createdUTXOs, se)
+	for i := range stateElements {
+		cau.UpdateElementProof(&stateElements[i])
 	}
 
-	if err := tx.AddSiacoinElements(createdUTXOs); err != nil {
-		return fmt.Errorf("failed to add siacoin elements: %w", err)
-	} else if err := tx.RemoveSiacoinElements(spentUTXOs); err != nil {
-		return fmt.Errorf("failed to remove siacoin elements: %w", err)
-	} else if err := tx.AddEvents(events); err != nil {
-		return fmt.Errorf("failed to add events: %w", err)
+	if err := tx.ApplyIndex(cau.State.Index, createdUTXOs, spentUTXOs, events); err != nil {
+		return fmt.Errorf("failed to apply index: %w", err)
 	} else if err := tx.UpdateStateElements(stateElements); err != nil {
 		return fmt.Errorf("failed to update state elements: %w", err)
 	}
 	return nil
 }
 
-// RevertChainUpdate atomically reverts a chain update from a wallet
-func RevertChainUpdate(tx RevertTx, address types.Address, cru chain.RevertUpdate) error {
-	stateElements, err := tx.WalletStateElements()
-	if err != nil {
-		return fmt.Errorf("failed to get state elements: %w", err)
-	}
-
-	var readdedUTXOs []SiacoinElement
-
+// revertChainUpdate atomically reverts a chain update from a wallet
+func revertChainUpdate(tx UpdateTx, revertedIndex types.ChainIndex, address types.Address, cru chain.RevertUpdate) error {
+	var removedUTXOs, unspentUTXOs []types.SiacoinElement
 	cru.ForEachSiacoinElement(func(se types.SiacoinElement, spent bool) {
 		if se.SiacoinOutput.Address != address {
 			return
 		}
 
-		if !spent {
-			readdedUTXOs = append(readdedUTXOs, SiacoinElement{
-				SiacoinElement: se,
-				Index:          cru.State.Index,
-			})
+		if spent {
+			unspentUTXOs = append(unspentUTXOs, se)
+		} else {
+			removedUTXOs = append(removedUTXOs, se)
 		}
 	})
+
+	// remove any existing events that were added in the reverted block
+	if err := tx.RevertIndex(revertedIndex, removedUTXOs, unspentUTXOs); err != nil {
+		return fmt.Errorf("failed to revert block: %w", err)
+	}
+
+	// update the remaining state elements
+	stateElements, err := tx.WalletStateElements()
+	if err != nil {
+		return fmt.Errorf("failed to get state elements: %w", err)
+	}
 
 	for i := range stateElements {
 		cru.UpdateElementProof(&stateElements[i])
 	}
 
-	if err := tx.RevertIndex(cru.State.Index); err != nil {
-		return fmt.Errorf("failed to revert block: %w", err)
-	} else if err := tx.AddSiacoinElements(readdedUTXOs); err != nil {
-		return fmt.Errorf("failed to add siacoin elements: %w", err)
-	} else if err := tx.UpdateStateElements(stateElements); err != nil {
+	if err := tx.UpdateStateElements(stateElements); err != nil {
 		return fmt.Errorf("failed to update state elements: %w", err)
 	}
+	return nil
+}
+
+// UpdateChainState atomically applies and reverts chain updates to a single
+// wallet store.
+func UpdateChainState(tx UpdateTx, address types.Address, applied []chain.ApplyUpdate, reverted []chain.RevertUpdate) error {
+	for _, cru := range reverted {
+		revertedIndex := types.ChainIndex{
+			ID:     cru.Block.ID(),
+			Height: cru.State.Index.Height + 1,
+		}
+		if err := revertChainUpdate(tx, revertedIndex, address, cru); err != nil {
+			return err
+		}
+	}
+
+	for _, cau := range applied {
+		if err := applyChainState(tx, address, cau); err != nil {
+			return fmt.Errorf("failed to apply chain update %q: %w", cau.State.Index, err)
+		}
+	}
+
 	return nil
 }

@@ -1,8 +1,11 @@
 package testutil
 
 import (
+	"time"
+
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils"
 	"go.sia.tech/coreutils/chain"
 )
 
@@ -37,8 +40,8 @@ func MineBlock(cm *chain.Manager, minerAddress types.Address) types.Block {
 		Transactions: cm.PoolTransactions(),
 		MinerPayouts: []types.SiacoinOutput{{Address: minerAddress, Value: state.BlockReward().Add(minerFees)}},
 	}
-	for b.ID().CmpWork(state.ChildTarget) < 0 {
-		b.Nonce += state.NonceFactor()
+	if !coreutils.FindBlockNonce(state, &b, 5*time.Second) {
+		panic("failed to find nonce")
 	}
 	return b
 }
