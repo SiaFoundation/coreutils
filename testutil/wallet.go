@@ -17,11 +17,9 @@ type (
 	EphemeralWalletStore struct {
 		privateKey types.PrivateKey
 
-		mu          sync.Mutex
-		uncommitted []*chain.ApplyUpdate
-
+		mu     sync.Mutex
 		tip    types.ChainIndex
-		utxos  map[types.SiacoinOutputID]wallet.SiacoinElement
+		utxos  map[types.SiacoinOutputID]types.SiacoinElement
 		events []wallet.Event
 	}
 
@@ -51,27 +49,27 @@ func (et *ephemeralWalletUpdateTxn) AddEvents(events []wallet.Event) error {
 	return nil
 }
 
-func (et *ephemeralWalletUpdateTxn) AddSiacoinElements(elements []wallet.SiacoinElement) error {
-	for _, se := range elements {
+func (et *ephemeralWalletUpdateTxn) ApplyIndex(index types.ChainIndex, created, spent []types.SiacoinElement, events []wallet.Event) error {
+	for _, se := range spent {
+		if _, ok := et.store.utxos[types.SiacoinOutputID(se.ID)]; !ok {
+			panic(fmt.Sprintf("siacoin element %q does not exist", se.ID))
+		}
+		delete(et.store.utxos, types.SiacoinOutputID(se.ID))
+	}
+	// add siacoin elements
+	for _, se := range created {
 		if _, ok := et.store.utxos[types.SiacoinOutputID(se.ID)]; ok {
-			return fmt.Errorf("siacoin element %q already exists", se.ID)
+			continue
 		}
 		et.store.utxos[types.SiacoinOutputID(se.ID)] = se
 	}
+
+	// add events
+	et.store.events = append(et.store.events, events...)
 	return nil
 }
 
-func (et *ephemeralWalletUpdateTxn) RemoveSiacoinElements(ids []types.SiacoinOutputID) error {
-	for _, id := range ids {
-		if _, ok := et.store.utxos[id]; !ok {
-			return fmt.Errorf("siacoin element %q does not exist", id)
-		}
-		delete(et.store.utxos, id)
-	}
-	return nil
-}
-
-func (et *ephemeralWalletUpdateTxn) RevertIndex(index types.ChainIndex) error {
+func (et *ephemeralWalletUpdateTxn) RevertIndex(index types.ChainIndex, removed, unspent []types.SiacoinElement) error {
 	// remove any events that were added in the reverted block
 	filtered := et.store.events[:0]
 	for i := range et.store.events {
@@ -83,11 +81,23 @@ func (et *ephemeralWalletUpdateTxn) RevertIndex(index types.ChainIndex) error {
 	et.store.events = filtered
 
 	// remove any siacoin elements that were added in the reverted block
-	for id, se := range et.store.utxos {
-		if se.Index == index {
-			delete(et.store.utxos, id)
-		}
+	for _, se := range removed {
+		delete(et.store.utxos, types.SiacoinOutputID(se.ID))
 	}
+
+	// readd any siacoin elements that were spent in the reverted block
+	for _, se := range unspent {
+		et.store.utxos[types.SiacoinOutputID(se.ID)] = se
+	}
+	return nil
+}
+
+// UpdateChainState applies and reverts chain updates to the wallet.
+func (es *EphemeralWalletStore) UpdateChainState(reverted []chain.RevertUpdate, applied []chain.ApplyUpdate) error {
+	if err := wallet.UpdateChainState(&ephemeralWalletUpdateTxn{store: es}, types.StandardUnlockHash(es.privateKey.PublicKey()), applied, reverted); err != nil {
+		return fmt.Errorf("failed to update chain state: %w", err)
+	}
+	es.tip = applied[len(applied)-1].State.Index
 	return nil
 }
 
@@ -122,7 +132,7 @@ func (es *EphemeralWalletStore) WalletEventCount() (uint64, error) {
 }
 
 // UnspentSiacoinElements returns the wallet's unspent siacoin outputs.
-func (es *EphemeralWalletStore) UnspentSiacoinElements() (utxos []wallet.SiacoinElement, _ error) {
+func (es *EphemeralWalletStore) UnspentSiacoinElements() (utxos []types.SiacoinElement, _ error) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
 
@@ -139,32 +149,11 @@ func (es *EphemeralWalletStore) Tip() (types.ChainIndex, error) {
 	return es.tip, nil
 }
 
-// ProcessChainApplyUpdate implements chain.Subscriber.
-func (es *EphemeralWalletStore) ProcessChainApplyUpdate(cau chain.ApplyUpdate) error {
-	es.mu.Lock()
-	defer es.mu.Unlock()
-	address := types.StandardUnlockHash(es.privateKey.PublicKey())
-	if err := wallet.ApplyChainUpdates(&ephemeralWalletUpdateTxn{store: es}, address, []chain.ApplyUpdate{cau}); err != nil {
-		return err
-	}
-	es.tip = cau.State.Index
-	return nil
-}
-
-// ProcessChainRevertUpdate implements chain.Subscriber.
-func (es *EphemeralWalletStore) ProcessChainRevertUpdate(cru chain.RevertUpdate) error {
-	es.mu.Lock()
-	defer es.mu.Unlock()
-
-	address := types.StandardUnlockHash(es.privateKey.PublicKey())
-	return wallet.RevertChainUpdate(&ephemeralWalletUpdateTxn{store: es}, address, cru)
-}
-
 // NewEphemeralWalletStore returns a new EphemeralWalletStore.
 func NewEphemeralWalletStore(pk types.PrivateKey) *EphemeralWalletStore {
 	return &EphemeralWalletStore{
 		privateKey: pk,
 
-		utxos: make(map[types.SiacoinOutputID]wallet.SiacoinElement),
+		utxos: make(map[types.SiacoinOutputID]types.SiacoinElement),
 	}
 }

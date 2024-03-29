@@ -9,6 +9,7 @@ import (
 
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils/chain"
 	"go.uber.org/zap"
 )
 
@@ -65,12 +66,6 @@ type (
 		Immature    types.Currency `json:"immature"`
 	}
 
-	// A SiacoinElement is a siacoin output paired with its chain index
-	SiacoinElement struct {
-		types.SiacoinElement
-		Index types.ChainIndex `json:"index"`
-	}
-
 	// A ChainManager manages the current state of the blockchain.
 	ChainManager interface {
 		TipState() consensus.State
@@ -87,7 +82,7 @@ type (
 		Tip() (types.ChainIndex, error)
 		// UnspentSiacoinElements returns a list of all unspent siacoin outputs
 		// including immature outputs.
-		UnspentSiacoinElements() ([]SiacoinElement, error)
+		UnspentSiacoinElements() ([]types.SiacoinElement, error)
 		// WalletEvents returns a paginated list of transactions ordered by
 		// maturity height, descending. If no more transactions are available,
 		// (nil, nil) should be returned.
@@ -95,6 +90,9 @@ type (
 		// WalletEventCount returns the total number of events relevant to the
 		// wallet.
 		WalletEventCount() (uint64, error)
+
+		// UpdateChainState applies and reverts chain updates to the wallet.
+		UpdateChainState([]chain.RevertUpdate, []chain.ApplyUpdate) error
 	}
 
 	// A SingleAddressWallet is a hot wallet that manages the outputs controlled
@@ -221,7 +219,7 @@ func (sw *SingleAddressWallet) EventCount() (uint64, error) {
 // SpendableOutputs returns a list of spendable siacoin outputs, a spendable
 // output is an unspent output that's not locked, not currently in the
 // transaction pool and that has matured.
-func (sw *SingleAddressWallet) SpendableOutputs() ([]SiacoinElement, error) {
+func (sw *SingleAddressWallet) SpendableOutputs() ([]types.SiacoinElement, error) {
 	// fetch outputs from the store
 	utxos, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
@@ -301,7 +299,7 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 			immatureSum = immatureSum.Add(sce.SiacoinOutput.Value)
 			continue
 		}
-		utxos = append(utxos, sce.SiacoinElement)
+		utxos = append(utxos, sce)
 	}
 
 	// sort by value, descending
@@ -509,7 +507,7 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 
 		// collect usable outputs for defragging
 		if !inUse && matured && !sameValue {
-			utxos = append(utxos, sce.SiacoinElement)
+			utxos = append(utxos, sce)
 		}
 	}
 
@@ -685,7 +683,8 @@ func SumOutputs(outputs []types.SiacoinElement) (sum types.Currency) {
 	return
 }
 
-// NewSingleAddressWallet returns a new SingleAddressWallet using the provided private key and store.
+// NewSingleAddressWallet returns a new SingleAddressWallet using the provided
+// private key and store.
 func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store SingleAddressStore, opts ...Option) (*SingleAddressWallet, error) {
 	cfg := config{
 		DefragThreshold:     30,

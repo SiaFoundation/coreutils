@@ -26,7 +26,7 @@ type (
 		// RevertIndex is called with the chain index that is being reverted.
 		// Any transactions and siacoin elements that were created by the index
 		// should be removed.
-		RevertIndex(index types.ChainIndex, unspent []types.SiacoinElement) error
+		RevertIndex(index types.ChainIndex, removed, unspent []types.SiacoinElement) error
 	}
 )
 
@@ -220,29 +220,35 @@ func applyChainState(tx UpdateTx, address types.Address, cau chain.ApplyUpdate) 
 
 // revertChainUpdate atomically reverts a chain update from a wallet
 func revertChainUpdate(tx UpdateTx, revertedIndex types.ChainIndex, address types.Address, cru chain.RevertUpdate) error {
-	stateElements, err := tx.WalletStateElements()
-	if err != nil {
-		return fmt.Errorf("failed to get state elements: %w", err)
-	}
-
-	var unspentUTXOs []types.SiacoinElement
+	var removedUTXOs, unspentUTXOs []types.SiacoinElement
 	cru.ForEachSiacoinElement(func(se types.SiacoinElement, spent bool) {
 		if se.SiacoinOutput.Address != address {
 			return
 		}
 
-		if !spent {
+		if spent {
 			unspentUTXOs = append(unspentUTXOs, se)
+		} else {
+			removedUTXOs = append(removedUTXOs, se)
 		}
 	})
+
+	// remove any existing events that were added in the reverted block
+	if err := tx.RevertIndex(revertedIndex, removedUTXOs, unspentUTXOs); err != nil {
+		return fmt.Errorf("failed to revert block: %w", err)
+	}
+
+	// update the remaining state elements
+	stateElements, err := tx.WalletStateElements()
+	if err != nil {
+		return fmt.Errorf("failed to get state elements: %w", err)
+	}
 
 	for i := range stateElements {
 		cru.UpdateElementProof(&stateElements[i])
 	}
 
-	if err := tx.RevertIndex(revertedIndex, unspentUTXOs); err != nil {
-		return fmt.Errorf("failed to revert block: %w", err)
-	} else if err := tx.UpdateStateElements(stateElements); err != nil {
+	if err := tx.UpdateStateElements(stateElements); err != nil {
 		return fmt.Errorf("failed to update state elements: %w", err)
 	}
 	return nil
@@ -251,19 +257,19 @@ func revertChainUpdate(tx UpdateTx, revertedIndex types.ChainIndex, address type
 // UpdateChainState atomically applies and reverts chain updates to a single
 // wallet store.
 func UpdateChainState(tx UpdateTx, address types.Address, applied []chain.ApplyUpdate, reverted []chain.RevertUpdate) error {
-	for _, cau := range applied {
-		if err := applyChainState(tx, address, cau); err != nil {
-			return fmt.Errorf("failed to apply chain update %q: %w", cau.State.Index, err)
-		}
-	}
-
 	for _, cru := range reverted {
 		revertedIndex := types.ChainIndex{
-			ID:     cru.Block.ParentID,
+			ID:     cru.Block.ID(),
 			Height: cru.State.Index.Height + 1,
 		}
 		if err := revertChainUpdate(tx, revertedIndex, address, cru); err != nil {
 			return err
+		}
+	}
+
+	for _, cau := range applied {
+		if err := applyChainState(tx, address, cau); err != nil {
+			return fmt.Errorf("failed to apply chain update %q: %w", cau.State.Index, err)
 		}
 	}
 
