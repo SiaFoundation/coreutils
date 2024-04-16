@@ -166,7 +166,7 @@ func applyChainState(tx UpdateTx, address types.Address, cau chain.ApplyUpdate) 
 		utxoValues[types.SiacoinOutputID(se.ID)] = se.SiacoinOutput.Value
 
 		// ignore ephemeral elements
-		if ephemeral[types.Hash256(se.ID)] {
+		if ephemeral[se.ID] {
 			return
 		}
 
