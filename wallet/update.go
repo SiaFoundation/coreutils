@@ -158,12 +158,18 @@ func applyChainState(tx UpdateTx, address types.Address, cau chain.ApplyUpdate) 
 	utxoValues := make(map[types.SiacoinOutputID]types.Currency)
 
 	cau.ForEachSiacoinElement(func(se types.SiacoinElement, spent bool) {
-		if se.SiacoinOutput.Address != address || ephemeral[types.Hash256(se.ID)] {
+		if se.SiacoinOutput.Address != address {
 			return
 		}
 
 		// cache the value of the utxo to use when calculating outflow
 		utxoValues[types.SiacoinOutputID(se.ID)] = se.SiacoinOutput.Value
+
+		// ignore ephemeral elements
+		if ephemeral[types.Hash256(se.ID)] {
+			return
+		}
+
 		if spent {
 			spentUTXOs = append(spentUTXOs, se)
 		} else {
