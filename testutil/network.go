@@ -28,18 +28,19 @@ func Network() (*consensus.Network, types.Block) {
 // MineBlock mines a block with the given transactions, transaction fees are
 // added to the miner payout.
 func MineBlock(cm *chain.Manager, minerAddress types.Address) types.Block {
-	var minerFees types.Currency
-	for _, txn := range cm.PoolTransactions() {
-		minerFees = minerFees.Add(txn.TotalFees())
-	}
-
 	state := cm.TipState()
 	b := types.Block{
 		ParentID:     state.Index.ID,
 		Timestamp:    types.CurrentTimestamp(),
 		Transactions: cm.PoolTransactions(),
-		MinerPayouts: []types.SiacoinOutput{{Address: minerAddress, Value: state.BlockReward().Add(minerFees)}},
+		MinerPayouts: []types.SiacoinOutput{{Address: minerAddress, Value: state.BlockReward()}},
 	}
+
+	// add txn fees to miner payout
+	for _, txn := range b.Transactions {
+		b.MinerPayouts[0].Value = b.MinerPayouts[0].Value.Add(txn.TotalFees())
+	}
+
 	if !coreutils.FindBlockNonce(state, &b, 5*time.Second) {
 		panic("failed to find nonce")
 	}
