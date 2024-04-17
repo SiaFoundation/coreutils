@@ -37,7 +37,9 @@ func syncDB(cm *chain.Manager, store wallet.SingleAddressStore) error {
 func mineAndSync(cm *chain.Manager, ws wallet.SingleAddressStore, address types.Address, n uint64) error {
 	// mine n blocks
 	for i := uint64(0); i < n; i++ {
-		if err := cm.AddBlocks([]types.Block{testutil.MineBlock(cm, address)}); err != nil {
+		if block, found := coreutils.MineBlock(cm, address, 5*time.Second); !found {
+			panic("failed to mine block")
+		} else if err := cm.AddBlocks([]types.Block{block}); err != nil {
 			return fmt.Errorf("failed to add blocks: %w", err)
 		}
 	}

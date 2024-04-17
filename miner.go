@@ -38,7 +38,14 @@ func FindBlockNonce(cs consensus.State, b *types.Block, timeout time.Duration) b
 // MineBlock constructs a block from the provided address and the transactions
 // in the txpool, and attempts to find a nonce for it that meets the PoW target.
 func MineBlock(cm *chain.Manager, addr types.Address, timeout time.Duration) (types.Block, bool) {
+retry:
 	cs := cm.TipState()
+	txns := cm.PoolTransactions()
+	v2Txns := cm.V2PoolTransactions()
+	if cs.Index != cm.Tip() {
+		goto retry
+	}
+
 	b := types.Block{
 		ParentID:  cs.Index.ID,
 		Timestamp: types.CurrentTimestamp(),
@@ -48,14 +55,14 @@ func MineBlock(cm *chain.Manager, addr types.Address, timeout time.Duration) (ty
 		}},
 	}
 	var weight uint64
-	for _, txn := range cm.PoolTransactions() {
+	for _, txn := range txns {
 		if weight += cs.TransactionWeight(txn); weight > cs.MaxBlockWeight() {
 			break
 		}
 		b.Transactions = append(b.Transactions, txn)
 		b.MinerPayouts[0].Value = b.MinerPayouts[0].Value.Add(txn.TotalFees())
 	}
-	for _, txn := range cm.V2PoolTransactions() {
+	for _, txn := range v2Txns {
 		if weight += cs.V2TransactionWeight(txn); weight > cs.MaxBlockWeight() {
 			break
 		}
