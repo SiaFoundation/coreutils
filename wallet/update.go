@@ -24,8 +24,14 @@ type (
 		// removed.
 		ApplyIndex(index types.ChainIndex, created, spent []types.SiacoinElement, events []Event) error
 		// RevertIndex is called with the chain index that is being reverted.
-		// Any transactions and siacoin elements that were created by the index
-		// should be removed.
+		// Any transactions that were added by the index should be removed
+		//
+		// removed contains the siacoin elements that were created by the index
+		// and should be deleted.
+		//
+		// unspent contains the siacoin elements that were spent and should be
+		// recreated. They are not necessarily created by the index and should
+		// not be associated with it.
 		RevertIndex(index types.ChainIndex, removed, unspent []types.SiacoinElement) error
 	}
 )
