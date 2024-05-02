@@ -229,9 +229,7 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 	}
 
 	// if this chain is now the best chain, trigger a reorg
-	//
-	// TODO: SurpassThreshold?
-	if cs.Depth.CmpWork(m.tipState.Depth) > 0 {
+	if cs.SufficientlyHeavierThan(m.tipState) {
 		oldTip := m.tipState.Index
 		if err := m.reorgTo(cs.Index); err != nil {
 			if err := m.reorgTo(oldTip); err != nil {
