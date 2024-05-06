@@ -163,7 +163,7 @@ func (m *Manager) History() ([32]types.BlockID, error) {
 // present in the best chain (or, if no match is found, genesis). It also
 // returns the number of blocks between the end of the returned slice and the
 // current tip.
-func (m *Manager) BlocksForHistory(history []types.BlockID, max uint64) ([]types.Block, uint64, error) {
+func (m *Manager) BlocksForHistory(history []types.BlockID, maxBlocks uint64) ([]types.Block, uint64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var attachHeight uint64
@@ -175,10 +175,10 @@ func (m *Manager) BlocksForHistory(history []types.BlockID, max uint64) ([]types
 			break
 		}
 	}
-	if max > m.tipState.Index.Height-attachHeight {
-		max = m.tipState.Index.Height - attachHeight
+	if maxBlocks > m.tipState.Index.Height-attachHeight {
+		maxBlocks = m.tipState.Index.Height - attachHeight
 	}
-	blocks := make([]types.Block, max)
+	blocks := make([]types.Block, maxBlocks)
 	for i := range blocks {
 		index, _ := m.store.BestIndex(attachHeight + uint64(i) + 1)
 		b, _, ok := m.store.Block(index.ID)
@@ -187,7 +187,7 @@ func (m *Manager) BlocksForHistory(history []types.BlockID, max uint64) ([]types
 		}
 		blocks[i] = b
 	}
-	return blocks, m.tipState.Index.Height - (attachHeight + max), nil
+	return blocks, m.tipState.Index.Height - (attachHeight + maxBlocks), nil
 }
 
 // AddBlocks adds a sequence of blocks to a tracked chain. If the blocks are
@@ -395,7 +395,7 @@ func (m *Manager) reorgTo(index types.ChainIndex) error {
 
 // UpdatesSince returns at most max updates on the path between index and the
 // Manager's current tip.
-func (m *Manager) UpdatesSince(index types.ChainIndex, max int) (rus []RevertUpdate, aus []ApplyUpdate, err error) {
+func (m *Manager) UpdatesSince(index types.ChainIndex, maxBlocks int) (rus []RevertUpdate, aus []ApplyUpdate, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	onBestChain := func(index types.ChainIndex) bool {
@@ -403,7 +403,7 @@ func (m *Manager) UpdatesSince(index types.ChainIndex, max int) (rus []RevertUpd
 		return bi.ID == index.ID || index == types.ChainIndex{}
 	}
 
-	for index != m.tipState.Index && len(rus)+len(aus) <= max {
+	for index != m.tipState.Index && len(rus)+len(aus) <= maxBlocks {
 		// revert until we are on the best chain, then apply
 		if !onBestChain(index) {
 			b, bs, cs, ok := blockAndParent(m.store, index.ID)
