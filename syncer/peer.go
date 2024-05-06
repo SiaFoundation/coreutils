@@ -199,8 +199,8 @@ func (p *Peer) RelayV2TransactionSet(index types.ChainIndex, txns []types.V2Tran
 // SendV2Blocks requests up to n blocks from p, starting from the most recent
 // element of history known to p. The peer also returns the number of remaining
 // blocks left to sync.
-func (p *Peer) SendV2Blocks(history []types.BlockID, max uint64, timeout time.Duration) ([]types.Block, uint64, error) {
-	r := &gateway.RPCSendV2Blocks{History: history, Max: max}
+func (p *Peer) SendV2Blocks(history []types.BlockID, maxBlocks uint64, timeout time.Duration) ([]types.Block, uint64, error) {
+	r := &gateway.RPCSendV2Blocks{History: history, Max: maxBlocks}
 	err := p.callRPC(r, timeout)
 	return r.Blocks, r.Remaining, err
 }
