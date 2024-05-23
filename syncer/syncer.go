@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"sync"
 	"time"
 
@@ -529,9 +530,13 @@ func (s *Syncer) syncLoop() error {
 			if p.Synced() {
 				continue
 			}
-			if peers = append(peers, p); len(peers) >= 3 {
-				break
-			}
+			peers = append(peers, p)
+		}
+		sort.Slice(peers, func(i, j int) bool {
+			return peers[i].t.SupportsV2() && !peers[j].t.SupportsV2()
+		})
+		if len(peers) > 3 {
+			peers = peers[:3]
 		}
 		return
 	}
