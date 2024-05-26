@@ -101,8 +101,8 @@ func TestWallet(t *testing.T) {
 		t.Fatal(err)
 	} else if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %v", len(events))
-	} else if events[0].Source != wallet.EventSourceMinerPayout {
-		t.Fatalf("expected miner payout, got %v", events[0].Source)
+	} else if events[0].Type != wallet.EventTypeMinerPayout {
+		t.Fatalf("expected miner payout, got %v", events[0].Type)
 	} else if events[0].MaturityHeight != maturityHeight {
 		t.Fatalf("expected maturity height %v, got %v", maturityHeight, events[0].MaturityHeight)
 	}
@@ -152,8 +152,8 @@ func TestWallet(t *testing.T) {
 		t.Fatal(err)
 	} else if len(events) != 1 {
 		t.Fatalf("expected 1 transaction, got %v", len(events))
-	} else if events[0].Source != wallet.EventSourceMinerPayout {
-		t.Fatalf("expected miner payout, got %v", events[0].Source)
+	} else if events[0].Type != wallet.EventTypeMinerPayout {
+		t.Fatalf("expected miner payout, got %v", events[0].Type)
 	}
 
 	// fund and sign the transaction
@@ -185,10 +185,10 @@ func TestWallet(t *testing.T) {
 		t.Fatal(err)
 	} else if len(poolTxns) != 1 {
 		t.Fatalf("expected 1 unconfirmed transaction, got %v", len(poolTxns))
-	} else if poolTxns[0].Transaction.ID() != txn.ID() {
-		t.Fatalf("expected transaction %v, got %v", txn.ID(), poolTxns[0].Transaction.ID())
-	} else if poolTxns[0].Source != wallet.EventSourceTransaction {
-		t.Fatalf("expected wallet source, got %v", poolTxns[0].Source)
+	} else if poolTxns[0].ID != types.Hash256(txn.ID()) {
+		t.Fatalf("expected transaction %v, got %v", txn.ID(), poolTxns[0].ID)
+	} else if poolTxns[0].Type != wallet.EventTypeV1Transaction {
+		t.Fatalf("expected wallet source, got %v", poolTxns[0].Type)
 	} else if !poolTxns[0].Inflow.Equals(initialReward) {
 		t.Fatalf("expected %v inflow, got %v", initialReward, poolTxns[0].Inflow)
 	} else if !poolTxns[0].Outflow.Equals(initialReward) {
@@ -223,8 +223,8 @@ func TestWallet(t *testing.T) {
 		t.Fatalf("expected 2 transactions, got %v", len(events))
 	} else if events[0].ID != types.Hash256(txn.ID()) {
 		t.Fatalf("expected transaction %v, got %v", txn.ID(), events[1].ID)
-	} else if len(events[0].Transaction.SiacoinOutputs) != 20 {
-		t.Fatalf("expected 20 outputs, got %v", len(events[1].Transaction.SiacoinOutputs))
+	} else if n := len((events[0].Data.(types.Transaction)).SiacoinOutputs); n != 20 {
+		t.Fatalf("expected 20 outputs, got %v", n)
 	}
 
 	// send all the outputs to the burn address individually
@@ -498,8 +498,8 @@ func TestReorg(t *testing.T) {
 		t.Fatal(err)
 	} else if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %v", len(events))
-	} else if events[0].Source != wallet.EventSourceMinerPayout {
-		t.Fatalf("expected miner payout, got %v", events[0].Source)
+	} else if events[0].Type != wallet.EventTypeMinerPayout {
+		t.Fatalf("expected miner payout, got %v", events[0].Type)
 	} else if events[0].MaturityHeight != maturityHeight {
 		t.Fatalf("expected maturity height %v, got %v", maturityHeight, events[0].MaturityHeight)
 	}
@@ -549,8 +549,8 @@ func TestReorg(t *testing.T) {
 		t.Fatal(err)
 	} else if len(events) != 1 {
 		t.Fatalf("expected 1 transaction, got %v", len(events))
-	} else if events[0].Source != wallet.EventSourceMinerPayout {
-		t.Fatalf("expected miner payout, got %v", events[0].Source)
+	} else if events[0].Type != wallet.EventTypeMinerPayout {
+		t.Fatalf("expected miner payout, got %v", events[0].Type)
 	}
 
 	// fund and sign the transaction
@@ -582,10 +582,10 @@ func TestReorg(t *testing.T) {
 		t.Fatal(err)
 	} else if len(poolTxns) != 1 {
 		t.Fatalf("expected 1 unconfirmed transaction, got %v", len(poolTxns))
-	} else if poolTxns[0].Transaction.ID() != txn.ID() {
-		t.Fatalf("expected transaction %v, got %v", txn.ID(), poolTxns[0].Transaction.ID())
-	} else if poolTxns[0].Source != wallet.EventSourceTransaction {
-		t.Fatalf("expected wallet source, got %v", poolTxns[0].Source)
+	} else if poolTxns[0].ID != types.Hash256(txn.ID()) {
+		t.Fatalf("expected transaction %v, got %v", txn.ID(), poolTxns[0].ID)
+	} else if poolTxns[0].Type != wallet.EventTypeV1Transaction {
+		t.Fatalf("expected wallet source, got %v", poolTxns[0].Type)
 	} else if !poolTxns[0].Inflow.Equals(initialReward) {
 		t.Fatalf("expected %v inflow, got %v", initialReward, poolTxns[0].Inflow)
 	} else if !poolTxns[0].Outflow.Equals(initialReward) {
@@ -621,8 +621,8 @@ func TestReorg(t *testing.T) {
 		t.Fatalf("expected 2 transactions, got %v", len(events))
 	} else if events[0].ID != types.Hash256(txn.ID()) {
 		t.Fatalf("expected transaction %v, got %v", txn.ID(), events[1].ID)
-	} else if len(events[0].Transaction.SiacoinOutputs) != 20 {
-		t.Fatalf("expected 20 outputs, got %v", len(events[1].Transaction.SiacoinOutputs))
+	} else if n := len((events[0].Data.(types.Transaction)).SiacoinOutputs); n != 20 {
+		t.Fatalf("expected 20 outputs, got %v", n)
 	}
 
 	txn2 := types.Transaction{
@@ -729,7 +729,7 @@ func TestReorg(t *testing.T) {
 		t.Fatalf("expected transaction %v, got %v", txn2.ID(), events[0].ID)
 	} else if events[1].ID != types.Hash256(txn.ID()) { // split transaction second
 		t.Fatalf("expected transaction %v, got %v", txn.ID(), events[1].ID)
-	} else if events[2].Source != wallet.EventSourceMinerPayout { // payout transaction last
-		t.Fatalf("expected miner payout, got %v", events[0].Source)
+	} else if events[2].Type != wallet.EventTypeMinerPayout { // payout transaction last
+		t.Fatalf("expected miner payout, got %v", events[0].Type)
 	}
 }

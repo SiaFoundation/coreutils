@@ -8,6 +8,15 @@ import (
 )
 
 type (
+	// A ChainUpdate is an interface for iterating over the elements in a chain
+	// update.
+	ChainUpdate interface {
+		ForEachSiacoinElement(func(sce types.SiacoinElement, spent bool))
+		ForEachSiafundElement(func(sfe types.SiafundElement, spent bool))
+		ForEachFileContractElement(func(fce types.FileContractElement, rev *types.FileContractElement, resolved, valid bool))
+		ForEachV2FileContractElement(func(fce types.V2FileContractElement, rev *types.V2FileContractElement, res types.V2FileContractResolutionType))
+	}
+
 	// UpdateTx is an interface for atomically applying chain updates to a
 	// single address wallet.
 	UpdateTx interface {
@@ -36,98 +45,207 @@ type (
 	}
 )
 
-// addressPayoutEvents is a helper to add all payout transactions from an
-// apply update to a slice of transactions.
-func addressPayoutEvents(addr types.Address, cau chain.ApplyUpdate) (events []Event) {
-	index := cau.State.Index
-	state := cau.State
+// appliedEvents returns a slice of events that are relevant to the wallet
+// in the chain update.
+func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events []Event) {
+	cs := cau.State
 	block := cau.Block
+	index := cs.Index
+	siacoinElements := make(map[types.SiacoinOutputID]types.SiacoinElement)
 
-	// cache the source of new immature outputs to show payout transactions
-	if state.FoundationPrimaryAddress == addr {
-		events = append(events, Event{
-			ID:    types.Hash256(index.ID.FoundationOutputID()),
-			Index: index,
-			Transaction: types.Transaction{
-				SiacoinOutputs: []types.SiacoinOutput{
-					state.FoundationSubsidy(),
-				},
-			},
-			Inflow:    state.FoundationSubsidy().Value,
-			Source:    EventSourceFoundationPayout,
+	// cache the value of spent siacoin elements to use when calculating outflow
+	cau.ForEachSiacoinElement(func(se types.SiacoinElement, spent bool) {
+		if spent {
+			siacoinElements[types.SiacoinOutputID(se.ID)] = se
+		}
+	})
+
+	addEvent := func(id types.Hash256, data any) {
+		ev := Event{
+			ID:        id,
+			Index:     index,
+			Data:      data,
 			Timestamp: block.Timestamp,
-		})
-	}
-
-	// add the miner payouts
-	for i := range block.MinerPayouts {
-		if block.MinerPayouts[i].Address != addr {
-			continue
 		}
 
-		events = append(events, Event{
-			ID:    types.Hash256(index.ID.MinerOutputID(i)),
-			Index: index,
-			Transaction: types.Transaction{
-				SiacoinOutputs: []types.SiacoinOutput{
-					block.MinerPayouts[i],
-				},
-			},
-			Inflow:         block.MinerPayouts[i].Value,
-			MaturityHeight: state.MaturityHeight(),
-			Source:         EventSourceMinerPayout,
-			Timestamp:      block.Timestamp,
-		})
+		switch data := data.(type) {
+		case EventMinerPayout:
+			ev.Inflow = data.SiacoinElement.SiacoinOutput.Value
+			ev.Type = EventTypeMinerPayout
+			ev.MaturityHeight = cs.MaturityHeight()
+		case EventFoundationSubsidy:
+			ev.Inflow = data.SiacoinElement.SiacoinOutput.Value
+			ev.Type = EventTypeFoundationSubsidy
+			ev.MaturityHeight = cs.MaturityHeight()
+		case types.Transaction:
+			for _, si := range data.SiacoinInputs {
+				if si.UnlockConditions.UnlockHash() == walletAddress {
+					ev.Outflow = ev.Outflow.Add(siacoinElements[si.ParentID].SiacoinOutput.Value)
+				}
+			}
+
+			for _, so := range data.SiacoinOutputs {
+				if so.Address == walletAddress {
+					ev.Inflow = ev.Inflow.Add(so.Value)
+				}
+			}
+			ev.MaturityHeight = index.Height
+			ev.Type = EventTypeV1Transaction
+		case EventV1ContractPayout:
+			ev.Inflow = data.SiacoinElement.SiacoinOutput.Value
+			ev.Type = EventTypeV1Contract
+			ev.MaturityHeight = cs.MaturityHeight()
+		case types.V2Transaction:
+			for _, si := range data.SiacoinInputs {
+				if si.SatisfiedPolicy.Policy.Address() == walletAddress {
+					ev.Outflow = ev.Outflow.Add(siacoinElements[types.SiacoinOutputID(si.Parent.ID)].SiacoinOutput.Value)
+				}
+			}
+
+			for _, so := range data.SiacoinOutputs {
+				if so.Address == walletAddress {
+					ev.Inflow = ev.Inflow.Add(so.Value)
+				}
+			}
+			ev.Type = EventTypeV2Transaction
+			ev.MaturityHeight = index.Height
+		case EventV2ContractPayout:
+			ev.Inflow = data.SiacoinElement.SiacoinOutput.Value
+			ev.Type = EventTypeV2Contract
+			ev.MaturityHeight = cs.MaturityHeight()
+		}
+
+		events = append(events, ev)
 	}
 
-	// add the file contract outputs
+	relevantV1Txn := func(txn types.Transaction) bool {
+		for _, so := range txn.SiacoinOutputs {
+			if so.Address == walletAddress {
+				return true
+			}
+		}
+		for _, si := range txn.SiacoinInputs {
+			if si.UnlockConditions.UnlockHash() == walletAddress {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, txn := range block.Transactions {
+		if !relevantV1Txn(txn) {
+			continue
+		}
+		addEvent(types.Hash256(txn.ID()), txn)
+	}
+
+	relevantV2Txn := func(txn types.V2Transaction) bool {
+		for _, so := range txn.SiacoinOutputs {
+			if so.Address == walletAddress {
+				return true
+			}
+		}
+		for _, si := range txn.SiacoinInputs {
+			if si.Parent.SiacoinOutput.Address == walletAddress {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, txn := range block.V2Transactions() {
+		if !relevantV2Txn(txn) {
+			continue
+		}
+		addEvent(types.Hash256(txn.ID()), txn)
+	}
+
 	cau.ForEachFileContractElement(func(fce types.FileContractElement, rev *types.FileContractElement, resolved bool, valid bool) {
 		if !resolved {
 			return
 		}
 
 		if valid {
-			for i, output := range fce.FileContract.ValidProofOutputs {
-				if output.Address != addr {
+			for i, so := range fce.FileContract.ValidProofOutputs {
+				if so.Address != walletAddress {
 					continue
 				}
 
 				outputID := types.FileContractID(fce.ID).ValidOutputID(i)
-				events = append(events, Event{
-					ID:    types.Hash256(outputID),
-					Index: index,
-					Transaction: types.Transaction{
-						SiacoinOutputs: []types.SiacoinOutput{output},
-						FileContracts:  []types.FileContract{fce.FileContract},
-					},
-					Inflow:         fce.FileContract.ValidProofOutputs[i].Value,
-					MaturityHeight: state.MaturityHeight(),
-					Source:         EventSourceValidContract,
-					Timestamp:      block.Timestamp,
+				addEvent(types.Hash256(types.FileContractID(fce.ID).ValidOutputID(0)), EventV1ContractPayout{
+					FileContract:   fce,
+					SiacoinElement: siacoinElements[outputID],
+					Missed:         false,
 				})
 			}
 		} else {
-			for i, output := range fce.FileContract.MissedProofOutputs {
-				if output.Address != addr {
+			for i, so := range fce.FileContract.MissedProofOutputs {
+				if so.Address != walletAddress {
 					continue
 				}
 
 				outputID := types.FileContractID(fce.ID).MissedOutputID(i)
-				events = append(events, Event{
-					ID:    types.Hash256(outputID),
-					Index: index,
-					Transaction: types.Transaction{
-						SiacoinOutputs: []types.SiacoinOutput{output},
-						FileContracts:  []types.FileContract{fce.FileContract},
-					},
-					Inflow:         fce.FileContract.ValidProofOutputs[i].Value,
-					MaturityHeight: state.MaturityHeight(),
-					Source:         EventSourceMissedContract,
-					Timestamp:      block.Timestamp,
+				addEvent(types.Hash256(types.FileContractID(fce.ID).MissedOutputID(0)), EventV1ContractPayout{
+					FileContract:   fce,
+					SiacoinElement: siacoinElements[outputID],
+					Missed:         true,
 				})
 			}
 		}
 	})
+
+	cau.ForEachV2FileContractElement(func(fce types.V2FileContractElement, rev *types.V2FileContractElement, res types.V2FileContractResolutionType) {
+		if res == nil {
+			return
+		}
+
+		var missed bool
+		if _, ok := res.(*types.V2FileContractExpiration); ok {
+			missed = true
+		}
+
+		if fce.V2FileContract.HostOutput.Address == walletAddress {
+			outputID := types.FileContractID(fce.ID).V2HostOutputID()
+			addEvent(types.Hash256(outputID), EventV2ContractPayout{
+				FileContract:   fce,
+				Resolution:     res,
+				SiacoinElement: siacoinElements[outputID],
+				Missed:         missed,
+			})
+		}
+
+		if fce.V2FileContract.RenterOutput.Address == walletAddress {
+			outputID := types.FileContractID(fce.ID).V2RenterOutputID()
+			addEvent(types.Hash256(outputID), EventV2ContractPayout{
+				FileContract:   fce,
+				Resolution:     res,
+				SiacoinElement: siacoinElements[outputID],
+				Missed:         missed,
+			})
+		}
+	})
+
+	blockID := block.ID()
+	for i, so := range block.MinerPayouts {
+		if so.Address != walletAddress {
+			continue
+		}
+
+		outputID := blockID.MinerOutputID(i)
+		addEvent(types.Hash256(outputID), EventMinerPayout{
+			SiacoinElement: siacoinElements[outputID],
+		})
+	}
+
+	outputID := blockID.FoundationOutputID()
+	se, ok := siacoinElements[outputID]
+	if !ok || se.SiacoinOutput.Address != walletAddress {
+		return
+	}
+	addEvent(types.Hash256(outputID), EventFoundationSubsidy{
+		SiacoinElement: se,
+	})
+
 	return
 }
 
@@ -160,7 +278,6 @@ func applyChainState(tx UpdateTx, address types.Address, cau chain.ApplyUpdate) 
 	}
 
 	var createdUTXOs, spentUTXOs []types.SiacoinElement
-	events := addressPayoutEvents(address, cau)
 	utxoValues := make(map[types.SiacoinOutputID]types.Currency)
 
 	cau.ForEachSiacoinElement(func(se types.SiacoinElement, spent bool) {
@@ -183,46 +300,11 @@ func applyChainState(tx UpdateTx, address types.Address, cau chain.ApplyUpdate) 
 		}
 	})
 
-	for _, txn := range cau.Block.Transactions {
-		ev := Event{
-			ID:             types.Hash256(txn.ID()),
-			Index:          cau.State.Index,
-			Transaction:    txn,
-			Source:         EventSourceTransaction,
-			MaturityHeight: cau.State.Index.Height, // regular transactions "mature" immediately
-			Timestamp:      cau.Block.Timestamp,
-		}
-
-		for _, si := range txn.SiacoinInputs {
-			if si.UnlockConditions.UnlockHash() == address {
-				value, ok := utxoValues[si.ParentID]
-				if !ok {
-					panic("missing utxo") // this should never happen
-				}
-				ev.Inflow = ev.Inflow.Add(value)
-			}
-		}
-
-		for _, so := range txn.SiacoinOutputs {
-			if so.Address != address {
-				continue
-			}
-			ev.Outflow = ev.Outflow.Add(so.Value)
-		}
-
-		// skip irrelevant transactions
-		if ev.Inflow.IsZero() && ev.Outflow.IsZero() {
-			continue
-		}
-
-		events = append(events, ev)
-	}
-
 	for i := range stateElements {
 		cau.UpdateElementProof(&stateElements[i])
 	}
 
-	if err := tx.ApplyIndex(cau.State.Index, createdUTXOs, spentUTXOs, events); err != nil {
+	if err := tx.ApplyIndex(cau.State.Index, createdUTXOs, spentUTXOs, appliedEvents(cau, address)); err != nil {
 		return fmt.Errorf("failed to apply index: %w", err)
 	} else if err := tx.UpdateStateElements(stateElements); err != nil {
 		return fmt.Errorf("failed to update state elements: %w", err)

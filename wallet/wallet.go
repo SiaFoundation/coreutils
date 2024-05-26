@@ -13,18 +13,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// transaction sources indicate the source of a transaction. Transactions can
-// either be created by sending Siacoins between unlock hashes or they can be
-// created by consensus (e.g. a miner payout, a siafund claim, or a contract).
-const (
-	EventSourceTransaction      EventSource = "transaction"
-	EventSourceMinerPayout      EventSource = "miner"
-	EventSourceSiafundClaim     EventSource = "siafundClaim"
-	EventSourceValidContract    EventSource = "validContract"
-	EventSourceMissedContract   EventSource = "missedContract"
-	EventSourceFoundationPayout EventSource = "foundation"
-)
-
 const (
 	// bytesPerInput is the encoded size of a SiacoinInput and corresponding
 	// TransactionSignature, assuming standard UnlockConditions.
@@ -42,22 +30,6 @@ var (
 )
 
 type (
-	// An EventSource is a string indicating the source of a transaction.
-	EventSource string
-
-	// An Event is a transaction or other event that affects the wallet including
-	// miner payouts, siafund claims, and file contract payouts.
-	Event struct {
-		ID             types.Hash256     `json:"id"`
-		Index          types.ChainIndex  `json:"index"`
-		Inflow         types.Currency    `json:"inflow"`
-		Outflow        types.Currency    `json:"outflow"`
-		Transaction    types.Transaction `json:"transaction"`
-		Source         EventSource       `json:"source"`
-		MaturityHeight uint64            `json:"maturityHeight"`
-		Timestamp      time.Time         `json:"timestamp"`
-	}
-
 	// Balance is the balance of a wallet.
 	Balance struct {
 		Spendable   types.Currency `json:"spendable"`
@@ -71,6 +43,7 @@ type (
 		TipState() consensus.State
 		BestIndex(height uint64) (types.ChainIndex, bool)
 		PoolTransactions() []types.Transaction
+		V2PoolTransactions() []types.V2Transaction
 		OnReorg(func(types.ChainIndex)) func()
 	}
 
@@ -118,28 +91,6 @@ type (
 // ErrDifferentSeed is returned when a different seed is provided to
 // NewSingleAddressWallet than was used to initialize the wallet
 var ErrDifferentSeed = errors.New("seed differs from wallet seed")
-
-// EncodeTo implements types.EncoderTo.
-func (t Event) EncodeTo(e *types.Encoder) {
-	t.ID.EncodeTo(e)
-	t.Index.EncodeTo(e)
-	t.Transaction.EncodeTo(e)
-	types.V2Currency(t.Inflow).EncodeTo(e)
-	types.V2Currency(t.Outflow).EncodeTo(e)
-	e.WriteString(string(t.Source))
-	e.WriteTime(t.Timestamp)
-}
-
-// DecodeFrom implements types.DecoderFrom.
-func (t *Event) DecodeFrom(d *types.Decoder) {
-	t.ID.DecodeFrom(d)
-	t.Index.DecodeFrom(d)
-	t.Transaction.DecodeFrom(d)
-	(*types.V2Currency)(&t.Inflow).DecodeFrom(d)
-	(*types.V2Currency)(&t.Outflow).DecodeFrom(d)
-	t.Source = EventSource(d.ReadString())
-	t.Timestamp = d.ReadTime()
-}
 
 // Close closes the wallet
 func (sw *SingleAddressWallet) Close() error {
@@ -434,15 +385,14 @@ func (sw *SingleAddressWallet) UnconfirmedTransactions() ([]Event, error) {
 		utxos[types.Hash256(se.ID)] = se.SiacoinOutput
 	}
 
-	poolTxns := sw.cm.PoolTransactions()
-
 	var annotated []Event
-	for _, txn := range poolTxns {
+	for _, txn := range sw.cm.PoolTransactions() {
 		wt := Event{
-			ID:          types.Hash256(txn.ID()),
-			Transaction: txn,
-			Source:      EventSourceTransaction,
-			Timestamp:   time.Now(),
+			ID:             types.Hash256(txn.ID()),
+			Type:           EventTypeV1Transaction,
+			Data:           txn,
+			MaturityHeight: sw.cm.TipState().Index.Height + 1,
+			Timestamp:      time.Now(),
 		}
 
 		for _, sci := range txn.SiacoinInputs {
@@ -458,10 +408,41 @@ func (sw *SingleAddressWallet) UnconfirmedTransactions() ([]Event, error) {
 			}
 		}
 
+		// skip transactions that don't affect the wallet
 		if wt.Inflow.IsZero() && wt.Outflow.IsZero() {
 			continue
 		}
 
+		annotated = append(annotated, wt)
+	}
+
+	for _, txn := range sw.cm.V2PoolTransactions() {
+		wt := Event{
+			ID:             types.Hash256(txn.ID()),
+			Type:           EventTypeV2Transaction,
+			Data:           txn,
+			MaturityHeight: sw.cm.TipState().Index.Height + 1,
+			Timestamp:      time.Now(),
+		}
+
+		for _, sci := range txn.SiacoinInputs {
+			if sci.Parent.SiacoinOutput.Address != sw.addr {
+				continue
+			}
+			wt.Outflow = wt.Outflow.Add(sci.Parent.SiacoinOutput.Value)
+		}
+
+		for _, sco := range txn.SiacoinOutputs {
+			if sco.Address != sw.addr {
+				continue
+			}
+			wt.Inflow = wt.Inflow.Add(sco.Value)
+		}
+
+		// skip transactions that don't affect the wallet
+		if wt.Inflow.IsZero() && wt.Outflow.IsZero() {
+			continue
+		}
 		annotated = append(annotated, wt)
 	}
 	return annotated, nil
