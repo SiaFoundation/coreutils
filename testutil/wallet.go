@@ -46,6 +46,9 @@ func (et *ephemeralWalletUpdateTxn) UpdateStateElements(elements []types.StateEl
 
 func (et *ephemeralWalletUpdateTxn) AddEvents(events []wallet.Event) error {
 	et.store.events = append(events, et.store.events...)
+	sort.Slice(et.store.events, func(i, j int) bool {
+		return et.store.events[i].MaturityHeight < et.store.events[j].MaturityHeight
+	})
 	return nil
 }
 
@@ -137,6 +140,7 @@ func (es *EphemeralWalletStore) UnspentSiacoinElements() (utxos []types.SiacoinE
 	defer es.mu.Unlock()
 
 	for _, se := range es.utxos {
+		se.MerkleProof = append([]types.Hash256(nil), se.MerkleProof...)
 		utxos = append(utxos, se)
 	}
 	return utxos, nil
