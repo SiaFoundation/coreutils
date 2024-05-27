@@ -464,7 +464,7 @@ func (sw *SingleAddressWallet) Tip() (types.ChainIndex, error) {
 
 // UnconfirmedTransactions returns all unconfirmed transactions relevant to the
 // wallet.
-func (sw *SingleAddressWallet) UnconfirmedTransactions() ([]Event, error) {
+func (sw *SingleAddressWallet) UnconfirmedTransactions() (annotated []Event, err error) {
 	confirmed, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get unspent outputs: %w", err)
@@ -475,65 +475,70 @@ func (sw *SingleAddressWallet) UnconfirmedTransactions() ([]Event, error) {
 		utxos[types.Hash256(se.ID)] = se.SiacoinOutput
 	}
 
-	var annotated []Event
-	for _, txn := range sw.cm.PoolTransactions() {
-		wt := Event{
-			ID:             types.Hash256(txn.ID()),
-			Type:           EventTypeV1Transaction,
-			Data:           txn,
-			MaturityHeight: sw.cm.TipState().Index.Height + 1,
-			Timestamp:      time.Now(),
-		}
+	index := types.ChainIndex{
+		Height: sw.cm.TipState().Index.Height + 1,
+	}
+	timestamp := time.Now().Truncate(time.Second)
 
+	addEvent := func(id types.Hash256, eventType string, data any, inflow, outflow types.Currency) {
+		ev := Event{
+			ID:             id,
+			Index:          index,
+			MaturityHeight: index.Height,
+			Timestamp:      timestamp,
+			Inflow:         inflow,
+			Outflow:        outflow,
+			Type:           eventType,
+			Data:           data,
+		}
+		annotated = append(annotated, ev)
+	}
+
+	for _, txn := range sw.cm.PoolTransactions() {
+		var inflow, outflow types.Currency
 		for _, sci := range txn.SiacoinInputs {
 			if sco, ok := utxos[types.Hash256(sci.ParentID)]; ok {
-				wt.Outflow = wt.Outflow.Add(sco.Value)
+				outflow = outflow.Add(sco.Value)
 			}
 		}
 
 		for i, sco := range txn.SiacoinOutputs {
 			if sco.Address == sw.addr {
-				wt.Inflow = wt.Inflow.Add(sco.Value)
+				inflow = inflow.Add(sco.Value)
 				utxos[types.Hash256(txn.SiacoinOutputID(i))] = sco
 			}
 		}
 
 		// skip transactions that don't affect the wallet
-		if wt.Inflow.IsZero() && wt.Outflow.IsZero() {
+		if inflow.IsZero() && outflow.IsZero() {
 			continue
 		}
 
-		annotated = append(annotated, wt)
+		addEvent(types.Hash256(txn.ID()), EventTypeV1Transaction, txn, inflow, outflow)
 	}
 
 	for _, txn := range sw.cm.V2PoolTransactions() {
-		wt := Event{
-			ID:             types.Hash256(txn.ID()),
-			Type:           EventTypeV2Transaction,
-			Data:           txn,
-			MaturityHeight: sw.cm.TipState().Index.Height + 1,
-			Timestamp:      time.Now(),
-		}
-
+		var inflow, outflow types.Currency
 		for _, sci := range txn.SiacoinInputs {
 			if sci.Parent.SiacoinOutput.Address != sw.addr {
 				continue
 			}
-			wt.Outflow = wt.Outflow.Add(sci.Parent.SiacoinOutput.Value)
+			outflow = outflow.Add(sci.Parent.SiacoinOutput.Value)
 		}
 
 		for _, sco := range txn.SiacoinOutputs {
 			if sco.Address != sw.addr {
 				continue
 			}
-			wt.Inflow = wt.Inflow.Add(sco.Value)
+			inflow = inflow.Add(sco.Value)
 		}
 
 		// skip transactions that don't affect the wallet
-		if wt.Inflow.IsZero() && wt.Outflow.IsZero() {
+		if inflow.IsZero() && outflow.IsZero() {
 			continue
 		}
-		annotated = append(annotated, wt)
+
+		addEvent(types.Hash256(txn.ID()), EventTypeV2Transaction, txn, inflow, outflow)
 	}
 	return annotated, nil
 }
