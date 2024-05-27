@@ -884,11 +884,11 @@ func TestWalletV2(t *testing.T) {
 	}
 
 	// fund and sign the transaction
-	state, toSign, err := w.FundTransactionV2(&v2Txn, types.Siacoins(100), false)
+	state, toSignV2, err := w.FundV2Transaction(&v2Txn, types.Siacoins(100), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.SignTransactionV2(state, &v2Txn, toSign)
+	w.SignV2Inputs(state, &v2Txn, toSignV2)
 
 	// add the transaction to the pool
 	if _, err := cm.AddV2PoolTransactions(state.Index, []types.V2Transaction{v2Txn}); err != nil {
@@ -992,7 +992,7 @@ func TestReorgV2(t *testing.T) {
 	}
 
 	// try funding the transaction, expect it to fail since the outputs are immature
-	_, _, err = w.FundTransactionV2(&txn, initialReward, false)
+	_, _, err = w.FundV2Transaction(&txn, initialReward, false)
 	if !errors.Is(err, wallet.ErrNotEnoughFunds) {
 		t.Fatal("expected ErrNotEnoughFunds, got", err)
 	}
@@ -1024,11 +1024,11 @@ func TestReorgV2(t *testing.T) {
 	}
 
 	// fund and sign the transaction
-	state, toSign, err := w.FundTransactionV2(&txn, initialReward, false)
+	state, toSign, err := w.FundV2Transaction(&txn, initialReward, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.SignTransactionV2(state, &txn, toSign)
+	w.SignV2Inputs(state, &txn, toSign)
 
 	// check that wallet now has no spendable balance
 	assertBalance(t, w, types.ZeroCurrency, initialReward, types.ZeroCurrency, types.ZeroCurrency)
@@ -1100,11 +1100,11 @@ func TestReorgV2(t *testing.T) {
 			{Address: types.VoidAddress, Value: initialReward},
 		},
 	}
-	state, toSign, err = w.FundTransactionV2(&txn2, initialReward, false)
+	state, toSign, err = w.FundV2Transaction(&txn2, initialReward, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.SignTransactionV2(state, &txn2, toSign)
+	w.SignV2Inputs(state, &txn2, toSign)
 
 	// release the inputs to construct a double spend
 	w.ReleaseInputs(nil, []types.V2Transaction{txn2})
@@ -1114,11 +1114,11 @@ func TestReorgV2(t *testing.T) {
 			{Address: types.VoidAddress, Value: initialReward.Div64(2)},
 		},
 	}
-	state, toSign, err = w.FundTransactionV2(&txn1, initialReward.Div64(2), false)
+	state, toSign, err = w.FundV2Transaction(&txn1, initialReward.Div64(2), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.SignTransactionV2(state, &txn1, toSign)
+	w.SignV2Inputs(state, &txn1, toSign)
 
 	// add the first transaction to the pool
 	if _, err := cm.AddV2PoolTransactions(state.Index, []types.V2Transaction{txn1}); err != nil {

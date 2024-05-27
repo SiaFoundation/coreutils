@@ -400,11 +400,14 @@ func (sw *SingleAddressWallet) SignTransaction(txn *types.Transaction, toSign []
 	}
 }
 
-// FundTransactionV2 adds siacoin inputs worth at least amount to the provided
+// FundV2Transaction adds siacoin inputs worth at least amount to the provided
 // transaction. If necessary, a change output will also be added. The inputs
 // will not be available to future calls to FundTransaction unless ReleaseInputs
 // is called.
-func (sw *SingleAddressWallet) FundTransactionV2(txn *types.V2Transaction, amount types.Currency, useUnconfirmed bool) (consensus.State, []types.Hash256, error) {
+//
+// The returned consensus state should be used to calculate the input signature
+// hash and as the basis for AddV2PoolTransactions.
+func (sw *SingleAddressWallet) FundV2Transaction(txn *types.V2Transaction, amount types.Currency, useUnconfirmed bool) (consensus.State, []int, error) {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
@@ -421,38 +424,33 @@ func (sw *SingleAddressWallet) FundTransactionV2(txn *types.V2Transaction, amoun
 		})
 	}
 
-	toSign := make([]types.Hash256, len(selected))
-	for i, sce := range selected {
+	toSign := make([]int, 0, len(selected))
+	for _, sce := range selected {
+		toSign = append(toSign, len(txn.SiacoinInputs))
 		txn.SiacoinInputs = append(txn.SiacoinInputs, types.V2SiacoinInput{
 			Parent: sce,
 		})
-		toSign[i] = types.Hash256(sce.ID)
 		sw.locked[sce.ID] = time.Now().Add(sw.cfg.ReservationDuration)
 	}
 
 	return sw.cm.TipState(), toSign, nil
 }
 
-// SignTransactionV2 adds a signature to each of the specified inputs.
-func (sw *SingleAddressWallet) SignTransactionV2(state consensus.State, txn *types.V2Transaction, toSign []types.Hash256) {
+// SignV2Inputs adds a signature to each of the specified siacoin inputs.
+func (sw *SingleAddressWallet) SignV2Inputs(state consensus.State, txn *types.V2Transaction, toSign []int) {
+	if len(toSign) == 0 {
+		return
+	}
+
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
-	signMap := make(map[types.Hash256]bool)
-	for _, id := range toSign {
-		signMap[id] = true
-	}
-
-	policy := types.SpendPolicy{Type: types.PolicyTypeUnlockConditions(types.StandardUnlockConditions(sw.priv.PublicKey()))}
-	for i, se := range txn.SiacoinInputs {
-		if !signMap[types.Hash256(se.Parent.ID)] {
-			continue
-		}
-
-		sigHash := state.InputSigHash(*txn)
+	policy := sw.SpendPolicy()
+	sigHash := state.InputSigHash(*txn)
+	for _, i := range toSign {
 		txn.SiacoinInputs[i].SatisfiedPolicy = types.SatisfiedPolicy{
 			Policy:     policy,
-			Signatures: []types.Signature{sw.priv.SignHash(sigHash)},
+			Signatures: []types.Signature{sw.SignHash(sigHash)},
 		}
 	}
 }
@@ -460,6 +458,16 @@ func (sw *SingleAddressWallet) SignTransactionV2(state consensus.State, txn *typ
 // Tip returns the block height the wallet has scanned to.
 func (sw *SingleAddressWallet) Tip() (types.ChainIndex, error) {
 	return sw.store.Tip()
+}
+
+// SpendPolicy returns the wallet's default spend policy.
+func (sw *SingleAddressWallet) SpendPolicy() types.SpendPolicy {
+	return types.SpendPolicy{Type: types.PolicyTypeUnlockConditions(sw.UnlockConditions())}
+}
+
+// SignHash signs the hash with the wallet's private key.
+func (sw *SingleAddressWallet) SignHash(h types.Hash256) types.Signature {
+	return sw.priv.SignHash(h)
 }
 
 // UnconfirmedTransactions returns all unconfirmed transactions relevant to the
