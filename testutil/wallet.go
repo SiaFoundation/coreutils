@@ -44,14 +44,6 @@ func (et *ephemeralWalletUpdateTxn) UpdateStateElements(elements []types.StateEl
 	return nil
 }
 
-func (et *ephemeralWalletUpdateTxn) AddEvents(events []wallet.Event) error {
-	et.store.events = append(events, et.store.events...)
-	sort.Slice(et.store.events, func(i, j int) bool {
-		return et.store.events[i].MaturityHeight < et.store.events[j].MaturityHeight
-	})
-	return nil
-}
-
 func (et *ephemeralWalletUpdateTxn) ApplyIndex(index types.ChainIndex, created, spent []types.SiacoinElement, events []wallet.Event) error {
 	for _, se := range spent {
 		if _, ok := et.store.utxos[types.SiacoinOutputID(se.ID)]; !ok {

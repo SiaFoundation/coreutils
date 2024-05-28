@@ -51,6 +51,7 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 	cs := cau.State
 	block := cau.Block
 	index := cs.Index
+	maturityHeight := cs.MaturityHeight()
 	siacoinElements := make(map[types.SiacoinOutputID]types.SiacoinElement)
 
 	// cache the value of spent siacoin elements to use when calculating outflow
@@ -60,7 +61,7 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 		}
 	})
 
-	addEvent := func(id types.Hash256, data any) {
+	addEvent := func(id types.Hash256, data EventData) {
 		ev := Event{
 			ID:        id,
 			Index:     index,
@@ -72,12 +73,12 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 		case EventMinerPayout:
 			ev.Inflow = data.SiacoinElement.SiacoinOutput.Value
 			ev.Type = EventTypeMinerPayout
-			ev.MaturityHeight = cs.MaturityHeight()
+			ev.MaturityHeight = maturityHeight
 		case EventFoundationSubsidy:
 			ev.Inflow = data.SiacoinElement.SiacoinOutput.Value
 			ev.Type = EventTypeFoundationSubsidy
-			ev.MaturityHeight = cs.MaturityHeight()
-		case types.Transaction:
+			ev.MaturityHeight = maturityHeight
+		case EventV1Transaction:
 			for _, si := range data.SiacoinInputs {
 				if si.UnlockConditions.UnlockHash() == walletAddress {
 					ev.Outflow = ev.Outflow.Add(siacoinElements[si.ParentID].SiacoinOutput.Value)
@@ -95,7 +96,7 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 			ev.Inflow = data.SiacoinElement.SiacoinOutput.Value
 			ev.Type = EventTypeV1Contract
 			ev.MaturityHeight = cs.MaturityHeight()
-		case types.V2Transaction:
+		case EventV2Transaction:
 			for _, si := range data.SiacoinInputs {
 				if si.SatisfiedPolicy.Policy.Address() == walletAddress {
 					ev.Outflow = ev.Outflow.Add(siacoinElements[types.SiacoinOutputID(si.Parent.ID)].SiacoinOutput.Value)
@@ -136,7 +137,7 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 		if !relevantV1Txn(txn) {
 			continue
 		}
-		addEvent(types.Hash256(txn.ID()), txn)
+		addEvent(types.Hash256(txn.ID()), EventV1Transaction(txn))
 	}
 
 	relevantV2Txn := func(txn types.V2Transaction) bool {
@@ -157,7 +158,7 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 		if !relevantV2Txn(txn) {
 			continue
 		}
-		addEvent(types.Hash256(txn.ID()), txn)
+		addEvent(types.Hash256(txn.ID()), EventV2Transaction(txn))
 	}
 
 	cau.ForEachFileContractElement(func(fce types.FileContractElement, rev *types.FileContractElement, resolved bool, valid bool) {

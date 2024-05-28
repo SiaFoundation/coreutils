@@ -48,6 +48,17 @@ type (
 		Missed         bool                               `json:"missed"`
 	}
 
+	// EventV1Transaction is a transaction event that includes the transaction
+	EventV1Transaction types.Transaction
+
+	// EventV2Transaction is a transaction event that includes the transaction
+	EventV2Transaction types.V2Transaction
+
+	// EventData contains the data associated with an event.
+	EventData interface {
+		isEvent() bool
+	}
+
 	// An Event is a transaction or other event that affects the wallet including
 	// miner payouts, siafund claims, and file contract payouts.
 	Event struct {
@@ -56,8 +67,15 @@ type (
 		Inflow         types.Currency   `json:"inflow"`
 		Outflow        types.Currency   `json:"outflow"`
 		Type           string           `json:"type"`
-		Data           any              `json:"data"`
+		Data           EventData        `json:"data"`
 		MaturityHeight uint64           `json:"maturityHeight"`
 		Timestamp      time.Time        `json:"timestamp"`
 	}
 )
+
+func (EventMinerPayout) isEvent() bool       { return true }
+func (EventFoundationSubsidy) isEvent() bool { return true }
+func (EventV1ContractPayout) isEvent() bool  { return true }
+func (EventV2ContractPayout) isEvent() bool  { return true }
+func (EventV1Transaction) isEvent() bool     { return true }
+func (EventV2Transaction) isEvent() bool     { return true }

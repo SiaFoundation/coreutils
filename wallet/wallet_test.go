@@ -222,7 +222,7 @@ func TestWallet(t *testing.T) {
 		t.Fatalf("expected 2 transactions, got %v", len(events))
 	} else if events[0].ID != types.Hash256(txn.ID()) {
 		t.Fatalf("expected transaction %v, got %v", txn.ID(), events[1].ID)
-	} else if n := len((events[0].Data.(types.Transaction)).SiacoinOutputs); n != 20 {
+	} else if n := len((events[0].Data.(wallet.EventV1Transaction)).SiacoinOutputs); n != 20 {
 		t.Fatalf("expected 20 outputs, got %v", n)
 	}
 
@@ -606,7 +606,7 @@ func TestReorg(t *testing.T) {
 		t.Fatalf("expected 2 transactions, got %v", len(events))
 	} else if events[0].ID != types.Hash256(txn.ID()) {
 		t.Fatalf("expected transaction %v, got %v", txn.ID(), events[1].ID)
-	} else if n := len((events[0].Data.(types.Transaction)).SiacoinOutputs); n != 20 {
+	} else if n := len((events[0].Data.(wallet.EventV1Transaction)).SiacoinOutputs); n != 20 {
 		t.Fatalf("expected 20 outputs, got %v", n)
 	}
 
@@ -870,7 +870,7 @@ func TestWalletV2(t *testing.T) {
 		t.Fatalf("expected 2 transactions, got %v", len(events))
 	} else if events[0].ID != types.Hash256(txn.ID()) {
 		t.Fatalf("expected transaction %v, got %v", txn.ID(), events[1].ID)
-	} else if n := len((events[0].Data.(types.Transaction)).SiacoinOutputs); n != 20 {
+	} else if n := len((events[0].Data.(wallet.EventV1Transaction)).SiacoinOutputs); n != 20 {
 		t.Fatalf("expected 20 outputs, got %v", n)
 	}
 
@@ -1091,7 +1091,7 @@ func TestReorgV2(t *testing.T) {
 		t.Fatalf("expected 2 transactions, got %v", len(events))
 	} else if events[0].ID != types.Hash256(txn.ID()) {
 		t.Fatalf("expected transaction %v, got %v", txn.ID(), events[1].ID)
-	} else if n := len((events[0].Data.(types.V2Transaction)).SiacoinOutputs); n != 20 {
+	} else if n := len((events[0].Data.(wallet.EventV2Transaction)).SiacoinOutputs); n != 20 {
 		t.Fatalf("expected 20 outputs, got %v", n)
 	}
 

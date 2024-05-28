@@ -347,6 +347,10 @@ func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, us
 // will not be available to future calls to FundTransaction unless ReleaseInputs
 // is called.
 func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount types.Currency, useUnconfirmed bool) ([]types.Hash256, error) {
+	if amount.IsZero() {
+		return nil, nil
+	}
+
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
@@ -408,6 +412,10 @@ func (sw *SingleAddressWallet) SignTransaction(txn *types.Transaction, toSign []
 // The returned consensus state should be used to calculate the input signature
 // hash and as the basis for AddV2PoolTransactions.
 func (sw *SingleAddressWallet) FundV2Transaction(txn *types.V2Transaction, amount types.Currency, useUnconfirmed bool) (consensus.State, []int, error) {
+	if amount.IsZero() {
+		return sw.cm.TipState(), nil, nil
+	}
+
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
@@ -488,7 +496,7 @@ func (sw *SingleAddressWallet) UnconfirmedTransactions() (annotated []Event, err
 	}
 	timestamp := time.Now().Truncate(time.Second)
 
-	addEvent := func(id types.Hash256, eventType string, data any, inflow, outflow types.Currency) {
+	addEvent := func(id types.Hash256, eventType string, data EventData, inflow, outflow types.Currency) {
 		ev := Event{
 			ID:             id,
 			Index:          index,
@@ -522,7 +530,7 @@ func (sw *SingleAddressWallet) UnconfirmedTransactions() (annotated []Event, err
 			continue
 		}
 
-		addEvent(types.Hash256(txn.ID()), EventTypeV1Transaction, txn, inflow, outflow)
+		addEvent(types.Hash256(txn.ID()), EventTypeV1Transaction, EventV1Transaction(txn), inflow, outflow)
 	}
 
 	for _, txn := range sw.cm.V2PoolTransactions() {
@@ -546,7 +554,7 @@ func (sw *SingleAddressWallet) UnconfirmedTransactions() (annotated []Event, err
 			continue
 		}
 
-		addEvent(types.Hash256(txn.ID()), EventTypeV2Transaction, txn, inflow, outflow)
+		addEvent(types.Hash256(txn.ID()), EventTypeV2Transaction, EventV2Transaction(txn), inflow, outflow)
 	}
 	return annotated, nil
 }
