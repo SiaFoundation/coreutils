@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils"
 	"go.sia.tech/coreutils/chain"
@@ -34,17 +35,21 @@ func syncDB(cm *chain.Manager, store wallet.SingleAddressStore) error {
 	}
 }
 
-func mineAndSync(cm *chain.Manager, ws wallet.SingleAddressStore, address types.Address, n uint64) error {
+func mineAndSync(t *testing.T, cm *chain.Manager, ws wallet.SingleAddressStore, address types.Address, n uint64) {
+	t.Helper()
+
 	// mine n blocks
 	for i := uint64(0); i < n; i++ {
 		if block, found := coreutils.MineBlock(cm, address, 5*time.Second); !found {
-			panic("failed to mine block")
+			t.Fatal("failed to mine block")
 		} else if err := cm.AddBlocks([]types.Block{block}); err != nil {
-			return fmt.Errorf("failed to add blocks: %w", err)
+			t.Fatal(err)
 		}
 	}
 	// wait for the wallet to sync
-	return syncDB(cm, ws)
+	if err := syncDB(cm, ws); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // assertBalance compares the wallet's balance to the expected values.
@@ -91,9 +96,7 @@ func TestWallet(t *testing.T) {
 	assertBalance(t, w, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency)
 
 	// mine a block to fund the wallet
-	if err := mineAndSync(cm, ws, w.Address(), 1); err != nil {
-		t.Fatal(err)
-	}
+	mineAndSync(t, cm, ws, w.Address(), 1)
 	maturityHeight := cm.TipState().MaturityHeight()
 
 	// check that the wallet has a single event
@@ -101,8 +104,8 @@ func TestWallet(t *testing.T) {
 		t.Fatal(err)
 	} else if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %v", len(events))
-	} else if events[0].Source != wallet.EventSourceMinerPayout {
-		t.Fatalf("expected miner payout, got %v", events[0].Source)
+	} else if events[0].Type != wallet.EventTypeMinerPayout {
+		t.Fatalf("expected miner payout, got %v", events[0].Type)
 	} else if events[0].MaturityHeight != maturityHeight {
 		t.Fatalf("expected maturity height %v, got %v", maturityHeight, events[0].MaturityHeight)
 	}
@@ -131,9 +134,7 @@ func TestWallet(t *testing.T) {
 	// mine until the payout matures
 	tip := cm.TipState()
 	target := tip.MaturityHeight()
-	if err := mineAndSync(cm, ws, types.VoidAddress, target-tip.Index.Height); err != nil {
-		t.Fatal(err)
-	}
+	mineAndSync(t, cm, ws, types.VoidAddress, target-tip.Index.Height)
 
 	// check that one payout has matured
 	assertBalance(t, w, initialReward, initialReward, types.ZeroCurrency, types.ZeroCurrency)
@@ -152,8 +153,8 @@ func TestWallet(t *testing.T) {
 		t.Fatal(err)
 	} else if len(events) != 1 {
 		t.Fatalf("expected 1 transaction, got %v", len(events))
-	} else if events[0].Source != wallet.EventSourceMinerPayout {
-		t.Fatalf("expected miner payout, got %v", events[0].Source)
+	} else if events[0].Type != wallet.EventTypeMinerPayout {
+		t.Fatalf("expected miner payout, got %v", events[0].Type)
 	}
 
 	// fund and sign the transaction
@@ -185,10 +186,10 @@ func TestWallet(t *testing.T) {
 		t.Fatal(err)
 	} else if len(poolTxns) != 1 {
 		t.Fatalf("expected 1 unconfirmed transaction, got %v", len(poolTxns))
-	} else if poolTxns[0].Transaction.ID() != txn.ID() {
-		t.Fatalf("expected transaction %v, got %v", txn.ID(), poolTxns[0].Transaction.ID())
-	} else if poolTxns[0].Source != wallet.EventSourceTransaction {
-		t.Fatalf("expected wallet source, got %v", poolTxns[0].Source)
+	} else if poolTxns[0].ID != types.Hash256(txn.ID()) {
+		t.Fatalf("expected transaction %v, got %v", txn.ID(), poolTxns[0].ID)
+	} else if poolTxns[0].Type != wallet.EventTypeV1Transaction {
+		t.Fatalf("expected wallet source, got %v", poolTxns[0].Type)
 	} else if !poolTxns[0].Inflow.Equals(initialReward) {
 		t.Fatalf("expected %v inflow, got %v", initialReward, poolTxns[0].Inflow)
 	} else if !poolTxns[0].Outflow.Equals(initialReward) {
@@ -200,9 +201,7 @@ func TestWallet(t *testing.T) {
 	// transaction is not yet confirmed.
 	assertBalance(t, w, types.ZeroCurrency, initialReward, types.ZeroCurrency, initialReward)
 	// mine a block to confirm the transaction
-	if err := mineAndSync(cm, ws, types.VoidAddress, 1); err != nil {
-		t.Fatal(err)
-	}
+	mineAndSync(t, cm, ws, types.VoidAddress, 1)
 
 	// check that the balance was confirmed and the other values reset
 	assertBalance(t, w, initialReward, initialReward, types.ZeroCurrency, types.ZeroCurrency)
@@ -223,8 +222,8 @@ func TestWallet(t *testing.T) {
 		t.Fatalf("expected 2 transactions, got %v", len(events))
 	} else if events[0].ID != types.Hash256(txn.ID()) {
 		t.Fatalf("expected transaction %v, got %v", txn.ID(), events[1].ID)
-	} else if len(events[0].Transaction.SiacoinOutputs) != 20 {
-		t.Fatalf("expected 20 outputs, got %v", len(events[1].Transaction.SiacoinOutputs))
+	} else if n := len((events[0].Data.(wallet.EventV1Transaction)).SiacoinOutputs); n != 20 {
+		t.Fatalf("expected 20 outputs, got %v", n)
 	}
 
 	// send all the outputs to the burn address individually
@@ -244,9 +243,8 @@ func TestWallet(t *testing.T) {
 	// add the transactions to the pool
 	if _, err := cm.AddPoolTransactions(sent); err != nil {
 		t.Fatal(err)
-	} else if err := mineAndSync(cm, ws, types.VoidAddress, 1); err != nil {
-		t.Fatal(err)
 	}
+	mineAndSync(t, cm, ws, types.VoidAddress, 1)
 
 	// check that the wallet now has 22 transactions, the initial payout
 	// transaction, the split transaction, and 20 void transactions
@@ -300,11 +298,8 @@ func TestWalletUnconfirmed(t *testing.T) {
 	defer w.Close()
 
 	// fund the wallet
-	if err := mineAndSync(cm, ws, w.Address(), 1); err != nil {
-		t.Fatal(err)
-	} else if err := mineAndSync(cm, ws, types.VoidAddress, cm.TipState().MaturityHeight()-1); err != nil {
-		t.Fatal(err)
-	}
+	mineAndSync(t, cm, ws, w.Address(), 1)
+	mineAndSync(t, cm, ws, types.VoidAddress, cm.TipState().MaturityHeight()-1)
 
 	// check that one payout has matured
 	initialReward := cm.TipState().BlockReward()
@@ -387,11 +382,8 @@ func TestWalletRedistribute(t *testing.T) {
 	defer w.Close()
 
 	// fund the wallet
-	if err := mineAndSync(cm, ws, w.Address(), 1); err != nil {
-		t.Fatal(err)
-	} else if err := mineAndSync(cm, ws, types.VoidAddress, cm.TipState().MaturityHeight()-1); err != nil {
-		t.Fatal(err)
-	}
+	mineAndSync(t, cm, ws, w.Address(), 1)
+	mineAndSync(t, cm, ws, types.VoidAddress, cm.TipState().MaturityHeight()-1)
 
 	redistribute := func(amount types.Currency, n int) error {
 		txns, toSign, err := w.Redistribute(n, amount, types.ZeroCurrency)
@@ -406,9 +398,8 @@ func TestWalletRedistribute(t *testing.T) {
 		}
 		if _, err := cm.AddPoolTransactions(txns); err != nil {
 			return fmt.Errorf("failed to add transactions to pool: %w", err)
-		} else if err := mineAndSync(cm, ws, types.VoidAddress, 1); err != nil {
-			return fmt.Errorf("failed to mine and sync: %w", err)
 		}
+		mineAndSync(t, cm, ws, types.VoidAddress, 1)
 		return nil
 	}
 
@@ -488,9 +479,7 @@ func TestReorg(t *testing.T) {
 	assertBalance(t, w, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency)
 
 	// mine a block to fund the wallet
-	if err := mineAndSync(cm, ws, w.Address(), 1); err != nil {
-		t.Fatal(err)
-	}
+	mineAndSync(t, cm, ws, w.Address(), 1)
 	maturityHeight := cm.TipState().MaturityHeight()
 
 	// check that the wallet has a single event
@@ -498,8 +487,8 @@ func TestReorg(t *testing.T) {
 		t.Fatal(err)
 	} else if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %v", len(events))
-	} else if events[0].Source != wallet.EventSourceMinerPayout {
-		t.Fatalf("expected miner payout, got %v", events[0].Source)
+	} else if events[0].Type != wallet.EventTypeMinerPayout {
+		t.Fatalf("expected miner payout, got %v", events[0].Type)
 	} else if events[0].MaturityHeight != maturityHeight {
 		t.Fatalf("expected maturity height %v, got %v", maturityHeight, events[0].MaturityHeight)
 	}
@@ -528,9 +517,7 @@ func TestReorg(t *testing.T) {
 	// mine until the payout matures
 	tip := cm.TipState()
 	target := tip.MaturityHeight()
-	if err := mineAndSync(cm, ws, types.VoidAddress, target-tip.Index.Height); err != nil {
-		t.Fatal(err)
-	}
+	mineAndSync(t, cm, ws, types.VoidAddress, target-tip.Index.Height)
 
 	// check that one payout has matured
 	assertBalance(t, w, initialReward, initialReward, types.ZeroCurrency, types.ZeroCurrency)
@@ -549,8 +536,8 @@ func TestReorg(t *testing.T) {
 		t.Fatal(err)
 	} else if len(events) != 1 {
 		t.Fatalf("expected 1 transaction, got %v", len(events))
-	} else if events[0].Source != wallet.EventSourceMinerPayout {
-		t.Fatalf("expected miner payout, got %v", events[0].Source)
+	} else if events[0].Type != wallet.EventTypeMinerPayout {
+		t.Fatalf("expected miner payout, got %v", events[0].Type)
 	}
 
 	// fund and sign the transaction
@@ -582,10 +569,10 @@ func TestReorg(t *testing.T) {
 		t.Fatal(err)
 	} else if len(poolTxns) != 1 {
 		t.Fatalf("expected 1 unconfirmed transaction, got %v", len(poolTxns))
-	} else if poolTxns[0].Transaction.ID() != txn.ID() {
-		t.Fatalf("expected transaction %v, got %v", txn.ID(), poolTxns[0].Transaction.ID())
-	} else if poolTxns[0].Source != wallet.EventSourceTransaction {
-		t.Fatalf("expected wallet source, got %v", poolTxns[0].Source)
+	} else if poolTxns[0].ID != types.Hash256(txn.ID()) {
+		t.Fatalf("expected transaction %v, got %v", txn.ID(), poolTxns[0].ID)
+	} else if poolTxns[0].Type != wallet.EventTypeV1Transaction {
+		t.Fatalf("expected wallet source, got %v", poolTxns[0].Type)
 	} else if !poolTxns[0].Inflow.Equals(initialReward) {
 		t.Fatalf("expected %v inflow, got %v", initialReward, poolTxns[0].Inflow)
 	} else if !poolTxns[0].Outflow.Equals(initialReward) {
@@ -597,9 +584,7 @@ func TestReorg(t *testing.T) {
 	// transaction is not yet confirmed.
 	assertBalance(t, w, types.ZeroCurrency, initialReward, types.ZeroCurrency, initialReward)
 	// mine a block to confirm the transaction
-	if err := mineAndSync(cm, ws, types.VoidAddress, 1); err != nil {
-		t.Fatal(err)
-	}
+	mineAndSync(t, cm, ws, types.VoidAddress, 1)
 	rollbackState := cm.TipState()
 
 	// check that the balance was confirmed and the other values reset
@@ -621,8 +606,8 @@ func TestReorg(t *testing.T) {
 		t.Fatalf("expected 2 transactions, got %v", len(events))
 	} else if events[0].ID != types.Hash256(txn.ID()) {
 		t.Fatalf("expected transaction %v, got %v", txn.ID(), events[1].ID)
-	} else if len(events[0].Transaction.SiacoinOutputs) != 20 {
-		t.Fatalf("expected 20 outputs, got %v", len(events[1].Transaction.SiacoinOutputs))
+	} else if n := len((events[0].Data.(wallet.EventV1Transaction)).SiacoinOutputs); n != 20 {
+		t.Fatalf("expected 20 outputs, got %v", n)
 	}
 
 	txn2 := types.Transaction{
@@ -637,7 +622,7 @@ func TestReorg(t *testing.T) {
 	w.SignTransaction(&txn2, toSign, types.CoveredFields{WholeTransaction: true})
 
 	// release the inputs to construct a double spend
-	w.ReleaseInputs(txn2)
+	w.ReleaseInputs([]types.Transaction{txn2}, nil)
 
 	txn1 := types.Transaction{
 		SiacoinOutputs: []types.SiacoinOutput{
@@ -653,9 +638,8 @@ func TestReorg(t *testing.T) {
 	// add the first transaction to the pool
 	if _, err := cm.AddPoolTransactions([]types.Transaction{txn1}); err != nil {
 		t.Fatal(err)
-	} else if err := mineAndSync(cm, ws, types.VoidAddress, 1); err != nil {
-		t.Fatal(err)
 	}
+	mineAndSync(t, cm, ws, types.VoidAddress, 1)
 
 	// check that the wallet now has 3 transactions: the initial payout
 	// transaction, the split transaction, and a void transaction
@@ -729,7 +713,510 @@ func TestReorg(t *testing.T) {
 		t.Fatalf("expected transaction %v, got %v", txn2.ID(), events[0].ID)
 	} else if events[1].ID != types.Hash256(txn.ID()) { // split transaction second
 		t.Fatalf("expected transaction %v, got %v", txn.ID(), events[1].ID)
-	} else if events[2].Source != wallet.EventSourceMinerPayout { // payout transaction last
-		t.Fatalf("expected miner payout, got %v", events[0].Source)
+	} else if events[2].Type != wallet.EventTypeMinerPayout { // payout transaction last
+		t.Fatalf("expected miner payout, got %v", events[0].Type)
+	}
+}
+
+func TestWalletV2(t *testing.T) {
+	// create wallet store
+	pk := types.GeneratePrivateKey()
+	ws := testutil.NewEphemeralWalletStore(pk)
+
+	// create chain store
+	network, genesis := testutil.Network()
+	cs, tipState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// create chain manager and subscribe the wallet
+	cm := chain.NewManager(cs, tipState)
+	// create wallet
+	l := zaptest.NewLogger(t)
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(l.Named("wallet")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	// check balance
+	assertBalance(t, w, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency)
+
+	// mine a block to fund the wallet
+	mineAndSync(t, cm, ws, w.Address(), 1)
+	maturityHeight := cm.TipState().MaturityHeight()
+
+	// check that the wallet has a single event
+	if events, err := w.Events(0, 100); err != nil {
+		t.Fatal(err)
+	} else if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %v", len(events))
+	} else if events[0].Type != wallet.EventTypeMinerPayout {
+		t.Fatalf("expected miner payout, got %v", events[0].Type)
+	} else if events[0].MaturityHeight != maturityHeight {
+		t.Fatalf("expected maturity height %v, got %v", maturityHeight, events[0].MaturityHeight)
+	}
+
+	// check that the wallet has an immature balance
+	initialReward := cm.TipState().BlockReward()
+	assertBalance(t, w, types.ZeroCurrency, types.ZeroCurrency, initialReward, types.ZeroCurrency)
+
+	// create a transaction that splits the wallet's balance into 20 outputs
+	txn := types.Transaction{
+		SiacoinOutputs: make([]types.SiacoinOutput, 20),
+	}
+	for i := range txn.SiacoinOutputs {
+		txn.SiacoinOutputs[i] = types.SiacoinOutput{
+			Value:   initialReward.Div64(20),
+			Address: w.Address(),
+		}
+	}
+
+	// try funding the transaction, expect it to fail since the outputs are immature
+	_, err = w.FundTransaction(&txn, initialReward, false)
+	if !errors.Is(err, wallet.ErrNotEnoughFunds) {
+		t.Fatal("expected ErrNotEnoughFunds, got", err)
+	}
+
+	// mine until the payout matures
+	tip := cm.TipState()
+	target := tip.MaturityHeight()
+	mineAndSync(t, cm, ws, types.VoidAddress, target-tip.Index.Height)
+
+	// check that one payout has matured
+	assertBalance(t, w, initialReward, initialReward, types.ZeroCurrency, types.ZeroCurrency)
+
+	// check that the wallet has a single event
+	count, err := w.EventCount()
+	if err != nil {
+		t.Fatal(err)
+	} else if count != 1 {
+		t.Fatalf("expected 1 transaction, got %v", count)
+	}
+
+	// check that the payout transaction was created
+	events, err := w.Events(0, 100)
+	if err != nil {
+		t.Fatal(err)
+	} else if len(events) != 1 {
+		t.Fatalf("expected 1 transaction, got %v", len(events))
+	} else if events[0].Type != wallet.EventTypeMinerPayout {
+		t.Fatalf("expected miner payout, got %v", events[0].Type)
+	}
+
+	// fund and sign the transaction
+	toSign, err := w.FundTransaction(&txn, initialReward, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SignTransaction(&txn, toSign, types.CoveredFields{WholeTransaction: true})
+
+	// check that wallet now has no spendable balance
+	assertBalance(t, w, types.ZeroCurrency, initialReward, types.ZeroCurrency, types.ZeroCurrency)
+
+	// check the wallet has no unconfirmed transactions
+	poolTxns, err := w.UnconfirmedTransactions()
+	if err != nil {
+		t.Fatal(err)
+	} else if len(poolTxns) != 0 {
+		t.Fatalf("expected 0 unconfirmed transaction, got %v", len(poolTxns))
+	}
+
+	// add the transaction to the pool
+	if _, err := cm.AddPoolTransactions([]types.Transaction{txn}); err != nil {
+		t.Fatal(err)
+	}
+
+	// check that the wallet has one unconfirmed transaction
+	poolTxns, err = w.UnconfirmedTransactions()
+	if err != nil {
+		t.Fatal(err)
+	} else if len(poolTxns) != 1 {
+		t.Fatalf("expected 1 unconfirmed transaction, got %v", len(poolTxns))
+	} else if poolTxns[0].ID != types.Hash256(txn.ID()) {
+		t.Fatalf("expected transaction %v, got %v", txn.ID(), poolTxns[0].ID)
+	} else if poolTxns[0].Type != wallet.EventTypeV1Transaction {
+		t.Fatalf("expected wallet source, got %v", poolTxns[0].Type)
+	} else if !poolTxns[0].Inflow.Equals(initialReward) {
+		t.Fatalf("expected %v inflow, got %v", initialReward, poolTxns[0].Inflow)
+	} else if !poolTxns[0].Outflow.Equals(initialReward) {
+		t.Fatalf("expected %v outflow, got %v", types.ZeroCurrency, poolTxns[0].Outflow)
+	}
+
+	// check that the wallet now has an unconfirmed balance
+	// note: the wallet should still have a "confirmed" balance since the pool
+	// transaction is not yet confirmed.
+	assertBalance(t, w, types.ZeroCurrency, initialReward, types.ZeroCurrency, initialReward)
+	// mine a block to confirm the transaction
+	mineAndSync(t, cm, ws, types.VoidAddress, 1)
+
+	// check that the balance was confirmed and the other values reset
+	assertBalance(t, w, initialReward, initialReward, types.ZeroCurrency, types.ZeroCurrency)
+
+	// check that the wallet has two events
+	count, err = w.EventCount()
+	if err != nil {
+		t.Fatal(err)
+	} else if count != 2 {
+		t.Fatalf("expected 2 transactions, got %v", count)
+	}
+
+	// check that the paginated transactions are in the proper order
+	events, err = w.Events(0, 100)
+	if err != nil {
+		t.Fatal(err)
+	} else if len(events) != 2 {
+		t.Fatalf("expected 2 transactions, got %v", len(events))
+	} else if events[0].ID != types.Hash256(txn.ID()) {
+		t.Fatalf("expected transaction %v, got %v", txn.ID(), events[1].ID)
+	} else if n := len((events[0].Data.(wallet.EventV1Transaction)).SiacoinOutputs); n != 20 {
+		t.Fatalf("expected 20 outputs, got %v", n)
+	}
+
+	// mine until the v2 require height
+	mineAndSync(t, cm, ws, types.VoidAddress, network.HardforkV2.RequireHeight-cm.Tip().Height)
+
+	v2Txn := types.V2Transaction{
+		SiacoinOutputs: []types.SiacoinOutput{
+			{Address: types.VoidAddress, Value: types.Siacoins(100)},
+		},
+	}
+
+	// fund and sign the transaction
+	state, toSignV2, err := w.FundV2Transaction(&v2Txn, types.Siacoins(100), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SignV2Inputs(state, &v2Txn, toSignV2)
+
+	// add the transaction to the pool
+	if _, err := cm.AddV2PoolTransactions(state.Index, []types.V2Transaction{v2Txn}); err != nil {
+		t.Fatal(err)
+	}
+
+	// check that the wallet has one unconfirmed transaction
+	poolTxns, err = w.UnconfirmedTransactions()
+	if err != nil {
+		t.Fatal(err)
+	} else if len(poolTxns) != 1 {
+		t.Fatalf("expected 1 unconfirmed transaction, got %v", len(poolTxns))
+	} else if poolTxns[0].ID != types.Hash256(v2Txn.ID()) {
+		t.Fatalf("expected transaction %v, got %v", v2Txn.ID(), poolTxns[0].ID)
+	} else if poolTxns[0].Type != wallet.EventTypeV2Transaction {
+		t.Fatalf("expected v2 transaction type, got %v", poolTxns[0].Type)
+	}
+
+	// confirm the transaction
+	mineAndSync(t, cm, ws, types.VoidAddress, 1)
+
+	// check that the wallet has three events
+	count, err = w.EventCount()
+	if err != nil {
+		t.Fatal(err)
+	} else if count != 3 {
+		t.Fatalf("expected 3 events, got %v", count)
+	}
+
+	// check that the new transaction is the first event
+	events, err = w.Events(0, 100)
+	if err != nil {
+		t.Fatal(err)
+	} else if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %v", len(events))
+	} else if events[0].ID != types.Hash256(v2Txn.ID()) {
+		t.Fatalf("expected transaction %v, got %v", v2Txn.ID(), events[0].ID)
+	} else if events[0].Type != wallet.EventTypeV2Transaction {
+		t.Fatalf("expected v2 transaction type, got %v", events[0].Type)
+	}
+}
+
+func TestReorgV2(t *testing.T) {
+	// create wallet store
+	pk := types.GeneratePrivateKey()
+	ws := testutil.NewEphemeralWalletStore(pk)
+
+	// create chain store
+	network, genesis := testutil.Network()
+	network.HardforkV2.AllowHeight = 10
+	network.HardforkV2.RequireHeight = 20
+	cs, tipState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// create chain manager and subscribe the wallet
+	cm := chain.NewManager(cs, tipState)
+
+	// create wallet
+	l := zaptest.NewLogger(t)
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(l.Named("wallet")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	// check balance
+	assertBalance(t, w, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency)
+
+	// mine a block to fund the wallet
+	mineAndSync(t, cm, ws, w.Address(), 1)
+	maturityHeight := cm.TipState().MaturityHeight()
+	// mine until the require height
+	mineAndSync(t, cm, ws, types.VoidAddress, network.HardforkV2.RequireHeight-cm.Tip().Height)
+
+	// check that the wallet has a single event
+	if events, err := w.Events(0, 100); err != nil {
+		t.Fatal(err)
+	} else if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %v", len(events))
+	} else if events[0].Type != wallet.EventTypeMinerPayout {
+		t.Fatalf("expected miner payout, got %v", events[0].Type)
+	} else if events[0].MaturityHeight != maturityHeight {
+		t.Fatalf("expected maturity height %v, got %v", maturityHeight, events[0].MaturityHeight)
+	}
+
+	// check that the wallet has an immature balance
+	initialReward := cm.TipState().BlockReward()
+	assertBalance(t, w, types.ZeroCurrency, types.ZeroCurrency, initialReward, types.ZeroCurrency)
+
+	// create a transaction that splits the wallet's balance into 20 outputs
+	txn := types.V2Transaction{
+		SiacoinOutputs: make([]types.SiacoinOutput, 20),
+	}
+	for i := range txn.SiacoinOutputs {
+		txn.SiacoinOutputs[i] = types.SiacoinOutput{
+			Value:   initialReward.Div64(20),
+			Address: w.Address(),
+		}
+	}
+
+	// try funding the transaction, expect it to fail since the outputs are immature
+	_, _, err = w.FundV2Transaction(&txn, initialReward, false)
+	if !errors.Is(err, wallet.ErrNotEnoughFunds) {
+		t.Fatal("expected ErrNotEnoughFunds, got", err)
+	}
+
+	// mine until the payout matures
+	tip := cm.TipState()
+	target := tip.MaturityHeight()
+	mineAndSync(t, cm, ws, types.VoidAddress, target-tip.Index.Height)
+
+	// check that one payout has matured
+	assertBalance(t, w, initialReward, initialReward, types.ZeroCurrency, types.ZeroCurrency)
+
+	// check that the wallet still has a single event
+	count, err := w.EventCount()
+	if err != nil {
+		t.Fatal(err)
+	} else if count != 1 {
+		t.Fatalf("expected 1 transaction, got %v", count)
+	}
+
+	// check that the payout transaction was created
+	events, err := w.Events(0, 100)
+	if err != nil {
+		t.Fatal(err)
+	} else if len(events) != 1 {
+		t.Fatalf("expected 1 transaction, got %v", len(events))
+	} else if events[0].Type != wallet.EventTypeMinerPayout {
+		t.Fatalf("expected miner payout, got %v", events[0].Type)
+	}
+
+	// fund and sign the transaction
+	state, toSign, err := w.FundV2Transaction(&txn, initialReward, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SignV2Inputs(state, &txn, toSign)
+
+	// check that wallet now has no spendable balance
+	assertBalance(t, w, types.ZeroCurrency, initialReward, types.ZeroCurrency, types.ZeroCurrency)
+
+	// check the wallet has no unconfirmed transactions
+	poolTxns, err := w.UnconfirmedTransactions()
+	if err != nil {
+		t.Fatal(err)
+	} else if len(poolTxns) != 0 {
+		t.Fatalf("expected 0 unconfirmed transaction, got %v", len(poolTxns))
+	}
+
+	// add the transaction to the pool
+	if _, err := cm.AddV2PoolTransactions(state.Index, []types.V2Transaction{txn}); err != nil {
+		t.Fatal(err)
+	}
+
+	// check that the wallet has one unconfirmed transaction
+	poolTxns, err = w.UnconfirmedTransactions()
+	if err != nil {
+		t.Fatal(err)
+	} else if len(poolTxns) != 1 {
+		t.Fatalf("expected 1 unconfirmed transaction, got %v", len(poolTxns))
+	} else if poolTxns[0].ID != types.Hash256(txn.ID()) {
+		t.Fatalf("expected transaction %v, got %v", txn.ID(), poolTxns[0].ID)
+	} else if poolTxns[0].Type != wallet.EventTypeV2Transaction {
+		t.Fatalf("expected v2 transaction type, got %v", poolTxns[0].Type)
+	} else if !poolTxns[0].Inflow.Equals(initialReward) {
+		t.Fatalf("expected %v inflow, got %v", initialReward, poolTxns[0].Inflow)
+	} else if !poolTxns[0].Outflow.Equals(initialReward) {
+		t.Fatalf("expected %v outflow, got %v", types.ZeroCurrency, poolTxns[0].Outflow)
+	}
+
+	// check that the wallet now has an unconfirmed balance
+	// note: the wallet should still have a "confirmed" balance since the pool
+	// transaction is not yet confirmed.
+	assertBalance(t, w, types.ZeroCurrency, initialReward, types.ZeroCurrency, initialReward)
+	// mine a block to confirm the transaction
+	mineAndSync(t, cm, ws, types.VoidAddress, 1)
+
+	// save a marker to this state to rollback to later
+	rollbackState := cm.TipState()
+
+	// check that the balance was confirmed and the other values reset
+	assertBalance(t, w, initialReward, initialReward, types.ZeroCurrency, types.ZeroCurrency)
+
+	// check that the wallet has two events
+	count, err = w.EventCount()
+	if err != nil {
+		t.Fatal(err)
+	} else if count != 2 {
+		t.Fatalf("expected 2 transactions, got %v", count)
+	}
+
+	// check that the paginated transactions are in the proper order
+	events, err = w.Events(0, 100)
+	if err != nil {
+		t.Fatal(err)
+	} else if len(events) != 2 {
+		t.Fatalf("expected 2 transactions, got %v", len(events))
+	} else if events[0].ID != types.Hash256(txn.ID()) {
+		t.Fatalf("expected transaction %v, got %v", txn.ID(), events[1].ID)
+	} else if n := len((events[0].Data.(wallet.EventV2Transaction)).SiacoinOutputs); n != 20 {
+		t.Fatalf("expected 20 outputs, got %v", n)
+	}
+
+	txn2 := types.V2Transaction{
+		SiacoinOutputs: []types.SiacoinOutput{
+			{Address: types.VoidAddress, Value: initialReward},
+		},
+	}
+	state, toSign, err = w.FundV2Transaction(&txn2, initialReward, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SignV2Inputs(state, &txn2, toSign)
+
+	// release the inputs to construct a double spend
+	w.ReleaseInputs(nil, []types.V2Transaction{txn2})
+
+	txn1 := types.V2Transaction{
+		SiacoinOutputs: []types.SiacoinOutput{
+			{Address: types.VoidAddress, Value: initialReward.Div64(2)},
+		},
+	}
+	state, toSign, err = w.FundV2Transaction(&txn1, initialReward.Div64(2), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SignV2Inputs(state, &txn1, toSign)
+
+	// add the first transaction to the pool
+	if _, err := cm.AddV2PoolTransactions(state.Index, []types.V2Transaction{txn1}); err != nil {
+		t.Fatal(err)
+	}
+	mineAndSync(t, cm, ws, types.VoidAddress, 1)
+
+	// check that the wallet now has 3 transactions: the initial payout
+	// transaction, the split transaction, and a void transaction
+	count, err = w.EventCount()
+	if err != nil {
+		t.Fatal(err)
+	} else if count != 3 {
+		t.Fatalf("expected 3 transactions, got %v", count)
+	}
+
+	events, err = w.Events(0, 1) // limit of 1 so the original two transactions are not included
+	if err != nil {
+		t.Fatal(err)
+	} else if len(events) != 1 {
+		t.Fatalf("expected 1 transactions, got %v", len(events))
+	} else if events[0].ID != types.Hash256(txn1.ID()) {
+		t.Fatalf("expected transaction %v, got %v", txn1.ID(), events[0].ID)
+	}
+
+	// check that the wallet balance has half the initial reward
+	assertBalance(t, w, initialReward.Div64(2), initialReward.Div64(2), types.ZeroCurrency, types.ZeroCurrency)
+
+	// spend the second transaction to invalidate the confirmed transaction
+	state = rollbackState
+	b := types.Block{
+		ParentID:     state.Index.ID,
+		Timestamp:    types.CurrentTimestamp(),
+		MinerPayouts: []types.SiacoinOutput{{Address: types.VoidAddress, Value: state.BlockReward()}},
+		V2: &types.V2BlockData{
+			Height:       state.Index.Height + 1,
+			Transactions: []types.V2Transaction{txn2},
+		},
+	}
+	b.V2.Commitment = state.Commitment(state.TransactionsCommitment(b.Transactions, b.V2Transactions()), b.MinerPayouts[0].Address)
+	if !coreutils.FindBlockNonce(state, &b, time.Second) {
+		t.Fatal("failed to find nonce")
+	}
+	ancestorTimestamp, _ := cs.AncestorTimestamp(b.ParentID)
+	state, _ = consensus.ApplyBlock(state, b, cs.SupplementTipBlock(b), ancestorTimestamp)
+	reorgBlocks := []types.Block{b}
+	for i := 0; i < 5; i++ {
+		b := types.Block{
+			ParentID:     state.Index.ID,
+			Timestamp:    types.CurrentTimestamp(),
+			MinerPayouts: []types.SiacoinOutput{{Address: types.VoidAddress, Value: state.BlockReward()}},
+			V2: &types.V2BlockData{
+				Height: state.Index.Height + 1,
+			},
+		}
+		b.V2.Commitment = state.Commitment(state.TransactionsCommitment(b.Transactions, b.V2Transactions()), b.MinerPayouts[0].Address)
+		if !coreutils.FindBlockNonce(state, &b, time.Second) {
+			t.Fatal("failed to find nonce")
+		}
+		ancestorTimestamp, _ := cs.AncestorTimestamp(b.ParentID)
+		state, _ = consensus.ApplyBlock(state, b, cs.SupplementTipBlock(b), ancestorTimestamp)
+		reorgBlocks = append(reorgBlocks, b)
+	}
+
+	if err := cm.AddBlocks(reorgBlocks); err != nil {
+		t.Fatal(err)
+	} else if err := syncDB(cm, ws); err != nil {
+		t.Fatal(err)
+	} else if cm.Tip() != state.Index {
+		t.Fatalf("expected tip %v, got %v", state.Index, cm.Tip())
+	}
+
+	// check that the original transaction is now invalid
+	if _, err := cm.AddV2PoolTransactions(state.Index, []types.V2Transaction{txn1}); err == nil {
+		t.Fatalf("expected double-spend error, got nil")
+	}
+
+	// all balances should now be zero
+	assertBalance(t, w, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency)
+
+	// check that the wallet is back to two events
+	count, err = w.EventCount()
+	if err != nil {
+		t.Fatal(err)
+	} else if count != 3 {
+		t.Fatalf("expected 3 transactions, got %v", count)
+	}
+
+	events, err = w.Events(0, 100)
+	if err != nil {
+		t.Fatal(err)
+	} else if len(events) != 3 {
+		t.Fatalf("expected 3 transactions, got %v", len(events))
+	} else if events[0].ID != types.Hash256(txn2.ID()) { // new transaction first
+		t.Fatalf("expected transaction %v, got %v", txn2.ID(), events[0].ID)
+	} else if events[1].ID != types.Hash256(txn.ID()) { // split transaction second
+		t.Fatalf("expected transaction %v, got %v", txn.ID(), events[1].ID)
+	} else if events[2].Type != wallet.EventTypeMinerPayout { // payout transaction last
+		t.Fatalf("expected miner payout, got %v", events[0].Type)
 	}
 }

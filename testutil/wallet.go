@@ -44,11 +44,6 @@ func (et *ephemeralWalletUpdateTxn) UpdateStateElements(elements []types.StateEl
 	return nil
 }
 
-func (et *ephemeralWalletUpdateTxn) AddEvents(events []wallet.Event) error {
-	et.store.events = append(events, et.store.events...)
-	return nil
-}
-
 func (et *ephemeralWalletUpdateTxn) ApplyIndex(index types.ChainIndex, created, spent []types.SiacoinElement, events []wallet.Event) error {
 	for _, se := range spent {
 		if _, ok := et.store.utxos[types.SiacoinOutputID(se.ID)]; !ok {
@@ -137,6 +132,7 @@ func (es *EphemeralWalletStore) UnspentSiacoinElements() (utxos []types.SiacoinE
 	defer es.mu.Unlock()
 
 	for _, se := range es.utxos {
+		se.MerkleProof = append([]types.Hash256(nil), se.MerkleProof...)
 		utxos = append(utxos, se)
 	}
 	return utxos, nil

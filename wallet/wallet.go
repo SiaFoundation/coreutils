@@ -13,18 +13,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// transaction sources indicate the source of a transaction. Transactions can
-// either be created by sending Siacoins between unlock hashes or they can be
-// created by consensus (e.g. a miner payout, a siafund claim, or a contract).
-const (
-	EventSourceTransaction      EventSource = "transaction"
-	EventSourceMinerPayout      EventSource = "miner"
-	EventSourceSiafundClaim     EventSource = "siafundClaim"
-	EventSourceValidContract    EventSource = "validContract"
-	EventSourceMissedContract   EventSource = "missedContract"
-	EventSourceFoundationPayout EventSource = "foundation"
-)
-
 const (
 	// bytesPerInput is the encoded size of a SiacoinInput and corresponding
 	// TransactionSignature, assuming standard UnlockConditions.
@@ -42,22 +30,6 @@ var (
 )
 
 type (
-	// An EventSource is a string indicating the source of a transaction.
-	EventSource string
-
-	// An Event is a transaction or other event that affects the wallet including
-	// miner payouts, siafund claims, and file contract payouts.
-	Event struct {
-		ID             types.Hash256     `json:"id"`
-		Index          types.ChainIndex  `json:"index"`
-		Inflow         types.Currency    `json:"inflow"`
-		Outflow        types.Currency    `json:"outflow"`
-		Transaction    types.Transaction `json:"transaction"`
-		Source         EventSource       `json:"source"`
-		MaturityHeight uint64            `json:"maturityHeight"`
-		Timestamp      time.Time         `json:"timestamp"`
-	}
-
 	// Balance is the balance of a wallet.
 	Balance struct {
 		Spendable   types.Currency `json:"spendable"`
@@ -71,6 +43,7 @@ type (
 		TipState() consensus.State
 		BestIndex(height uint64) (types.ChainIndex, bool)
 		PoolTransactions() []types.Transaction
+		V2PoolTransactions() []types.V2Transaction
 		OnReorg(func(types.ChainIndex)) func()
 	}
 
@@ -119,28 +92,6 @@ type (
 // NewSingleAddressWallet than was used to initialize the wallet
 var ErrDifferentSeed = errors.New("seed differs from wallet seed")
 
-// EncodeTo implements types.EncoderTo.
-func (t Event) EncodeTo(e *types.Encoder) {
-	t.ID.EncodeTo(e)
-	t.Index.EncodeTo(e)
-	t.Transaction.EncodeTo(e)
-	types.V2Currency(t.Inflow).EncodeTo(e)
-	types.V2Currency(t.Outflow).EncodeTo(e)
-	e.WriteString(string(t.Source))
-	e.WriteTime(t.Timestamp)
-}
-
-// DecodeFrom implements types.DecoderFrom.
-func (t *Event) DecodeFrom(d *types.Decoder) {
-	t.ID.DecodeFrom(d)
-	t.Index.DecodeFrom(d)
-	t.Transaction.DecodeFrom(d)
-	(*types.V2Currency)(&t.Inflow).DecodeFrom(d)
-	(*types.V2Currency)(&t.Outflow).DecodeFrom(d)
-	t.Source = EventSource(d.ReadString())
-	t.Timestamp = d.ReadTime()
-}
-
 // Close closes the wallet
 func (sw *SingleAddressWallet) Close() error {
 	// TODO: remove subscription??
@@ -176,9 +127,31 @@ func (sw *SingleAddressWallet) Balance() (balance Balance, err error) {
 				continue
 			}
 
-			tpoolUtxos[types.Hash256(txn.SiacoinOutputID(i))] = types.SiacoinElement{
+			outputID := txn.SiacoinOutputID(i)
+			tpoolUtxos[types.Hash256(outputID)] = types.SiacoinElement{
 				StateElement: types.StateElement{
-					ID: types.Hash256(types.SiacoinOutputID(txn.SiacoinOutputID(i))),
+					ID: types.Hash256(types.SiacoinOutputID(outputID)),
+				},
+				SiacoinOutput: sco,
+			}
+		}
+	}
+
+	for _, txn := range sw.cm.V2PoolTransactions() {
+		for _, si := range txn.SiacoinInputs {
+			tpoolSpent[types.Hash256(si.Parent.ID)] = true
+			delete(tpoolUtxos, types.Hash256(si.Parent.ID))
+		}
+		txnID := txn.ID()
+		for i, sco := range txn.SiacoinOutputs {
+			if sco.Address != sw.addr {
+				continue
+			}
+
+			outputID := txn.SiacoinOutputID(txnID, i)
+			tpoolUtxos[types.Hash256(outputID)] = types.SiacoinElement{
+				StateElement: types.StateElement{
+					ID: types.Hash256(types.SiacoinOutputID(outputID)),
 				},
 				SiacoinOutput: sco,
 			}
@@ -252,18 +225,14 @@ func (sw *SingleAddressWallet) SpendableOutputs() ([]types.SiacoinElement, error
 	return unspent, nil
 }
 
-// FundTransaction adds siacoin inputs worth at least amount to the provided
-// transaction. If necessary, a change output will also be added. The inputs
-// will not be available to future calls to FundTransaction unless ReleaseInputs
-// is called.
-func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount types.Currency, useUnconfirmed bool) ([]types.Hash256, error) {
+func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, useUnconfirmed bool) ([]types.SiacoinElement, types.Currency, error) {
 	if amount.IsZero() {
-		return nil, nil
+		return nil, types.ZeroCurrency, nil
 	}
 
 	elements, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
-		return nil, err
+		return nil, types.ZeroCurrency, err
 	}
 
 	tpoolSpent := make(map[types.Hash256]bool)
@@ -282,9 +251,6 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 			}
 		}
 	}
-
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
 
 	// remove immature, locked and spent outputs
 	cs := sw.cm.TipState()
@@ -348,14 +314,14 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 
 		if inputSum.Cmp(amount) < 0 {
 			// still not enough funds
-			return nil, fmt.Errorf("%w: inputs %v < needed %v (used: %v immature: %v unconfirmed: %v)", ErrNotEnoughFunds, inputSum.String(), amount.String(), usedSum.String(), immatureSum.String(), unconfirmedSum.String())
+			return nil, types.ZeroCurrency, fmt.Errorf("%w: inputs %v < needed %v (used: %v immature: %v unconfirmed: %v)", ErrNotEnoughFunds, inputSum.String(), amount.String(), usedSum.String(), immatureSum.String(), unconfirmedSum.String())
 		}
 	} else if inputSum.Cmp(amount) < 0 {
-		return nil, fmt.Errorf("%w: inputs %v < needed %v (used: %v immature: %v", ErrNotEnoughFunds, inputSum.String(), amount.String(), usedSum.String(), immatureSum.String())
+		return nil, types.ZeroCurrency, fmt.Errorf("%w: inputs %v < needed %v (used: %v immature: %v", ErrNotEnoughFunds, inputSum.String(), amount.String(), usedSum.String(), immatureSum.String())
 	}
 
 	// check if remaining utxos should be defragged
-	txnInputs := len(txn.SiacoinInputs) + len(selected)
+	txnInputs := inputs + len(selected)
 	if len(utxos) > sw.cfg.DefragThreshold && txnInputs < sw.cfg.MaxInputsForDefrag {
 		// add the smallest utxos to the transaction
 		defraggable := utxos
@@ -372,6 +338,25 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 			inputSum = inputSum.Add(sce.SiacoinOutput.Value)
 			txnInputs++
 		}
+	}
+	return selected, inputSum, nil
+}
+
+// FundTransaction adds siacoin inputs worth at least amount to the provided
+// transaction. If necessary, a change output will also be added. The inputs
+// will not be available to future calls to FundTransaction unless ReleaseInputs
+// is called.
+func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount types.Currency, useUnconfirmed bool) ([]types.Hash256, error) {
+	if amount.IsZero() {
+		return nil, nil
+	}
+
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+
+	selected, inputSum, err := sw.selectUTXOs(amount, len(txn.SiacoinInputs), useUnconfirmed)
+	if err != nil {
+		return nil, err
 	}
 
 	// add a change output if necessary
@@ -397,6 +382,9 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 
 // SignTransaction adds a signature to each of the specified inputs.
 func (sw *SingleAddressWallet) SignTransaction(txn *types.Transaction, toSign []types.Hash256, cf types.CoveredFields) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+
 	state := sw.cm.TipState()
 
 	for _, id := range toSign {
@@ -416,14 +404,83 @@ func (sw *SingleAddressWallet) SignTransaction(txn *types.Transaction, toSign []
 	}
 }
 
+// FundV2Transaction adds siacoin inputs worth at least amount to the provided
+// transaction. If necessary, a change output will also be added. The inputs
+// will not be available to future calls to FundTransaction unless ReleaseInputs
+// is called.
+//
+// The returned consensus state should be used to calculate the input signature
+// hash and as the basis for AddV2PoolTransactions.
+func (sw *SingleAddressWallet) FundV2Transaction(txn *types.V2Transaction, amount types.Currency, useUnconfirmed bool) (consensus.State, []int, error) {
+	if amount.IsZero() {
+		return sw.cm.TipState(), nil, nil
+	}
+
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+
+	selected, inputSum, err := sw.selectUTXOs(amount, len(txn.SiacoinInputs), useUnconfirmed)
+	if err != nil {
+		return consensus.State{}, nil, err
+	}
+
+	// add a change output if necessary
+	if inputSum.Cmp(amount) > 0 {
+		txn.SiacoinOutputs = append(txn.SiacoinOutputs, types.SiacoinOutput{
+			Value:   inputSum.Sub(amount),
+			Address: sw.addr,
+		})
+	}
+
+	toSign := make([]int, 0, len(selected))
+	for _, sce := range selected {
+		toSign = append(toSign, len(txn.SiacoinInputs))
+		txn.SiacoinInputs = append(txn.SiacoinInputs, types.V2SiacoinInput{
+			Parent: sce,
+		})
+		sw.locked[sce.ID] = time.Now().Add(sw.cfg.ReservationDuration)
+	}
+
+	return sw.cm.TipState(), toSign, nil
+}
+
+// SignV2Inputs adds a signature to each of the specified siacoin inputs.
+func (sw *SingleAddressWallet) SignV2Inputs(state consensus.State, txn *types.V2Transaction, toSign []int) {
+	if len(toSign) == 0 {
+		return
+	}
+
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+
+	policy := sw.SpendPolicy()
+	sigHash := state.InputSigHash(*txn)
+	for _, i := range toSign {
+		txn.SiacoinInputs[i].SatisfiedPolicy = types.SatisfiedPolicy{
+			Policy:     policy,
+			Signatures: []types.Signature{sw.SignHash(sigHash)},
+		}
+	}
+}
+
 // Tip returns the block height the wallet has scanned to.
 func (sw *SingleAddressWallet) Tip() (types.ChainIndex, error) {
 	return sw.store.Tip()
 }
 
+// SpendPolicy returns the wallet's default spend policy.
+func (sw *SingleAddressWallet) SpendPolicy() types.SpendPolicy {
+	return types.SpendPolicy{Type: types.PolicyTypeUnlockConditions(sw.UnlockConditions())}
+}
+
+// SignHash signs the hash with the wallet's private key.
+func (sw *SingleAddressWallet) SignHash(h types.Hash256) types.Signature {
+	return sw.priv.SignHash(h)
+}
+
 // UnconfirmedTransactions returns all unconfirmed transactions relevant to the
 // wallet.
-func (sw *SingleAddressWallet) UnconfirmedTransactions() ([]Event, error) {
+func (sw *SingleAddressWallet) UnconfirmedTransactions() (annotated []Event, err error) {
 	confirmed, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get unspent outputs: %w", err)
@@ -434,35 +491,70 @@ func (sw *SingleAddressWallet) UnconfirmedTransactions() ([]Event, error) {
 		utxos[types.Hash256(se.ID)] = se.SiacoinOutput
 	}
 
-	poolTxns := sw.cm.PoolTransactions()
+	index := types.ChainIndex{
+		Height: sw.cm.TipState().Index.Height + 1,
+	}
+	timestamp := time.Now().Truncate(time.Second)
 
-	var annotated []Event
-	for _, txn := range poolTxns {
-		wt := Event{
-			ID:          types.Hash256(txn.ID()),
-			Transaction: txn,
-			Source:      EventSourceTransaction,
-			Timestamp:   time.Now(),
+	addEvent := func(id types.Hash256, eventType string, data EventData, inflow, outflow types.Currency) {
+		ev := Event{
+			ID:             id,
+			Index:          index,
+			MaturityHeight: index.Height,
+			Timestamp:      timestamp,
+			Inflow:         inflow,
+			Outflow:        outflow,
+			Type:           eventType,
+			Data:           data,
 		}
+		annotated = append(annotated, ev)
+	}
 
+	for _, txn := range sw.cm.PoolTransactions() {
+		var inflow, outflow types.Currency
 		for _, sci := range txn.SiacoinInputs {
 			if sco, ok := utxos[types.Hash256(sci.ParentID)]; ok {
-				wt.Outflow = wt.Outflow.Add(sco.Value)
+				outflow = outflow.Add(sco.Value)
 			}
 		}
 
 		for i, sco := range txn.SiacoinOutputs {
 			if sco.Address == sw.addr {
-				wt.Inflow = wt.Inflow.Add(sco.Value)
+				inflow = inflow.Add(sco.Value)
 				utxos[types.Hash256(txn.SiacoinOutputID(i))] = sco
 			}
 		}
 
-		if wt.Inflow.IsZero() && wt.Outflow.IsZero() {
+		// skip transactions that don't affect the wallet
+		if inflow.IsZero() && outflow.IsZero() {
 			continue
 		}
 
-		annotated = append(annotated, wt)
+		addEvent(types.Hash256(txn.ID()), EventTypeV1Transaction, EventV1Transaction(txn), inflow, outflow)
+	}
+
+	for _, txn := range sw.cm.V2PoolTransactions() {
+		var inflow, outflow types.Currency
+		for _, sci := range txn.SiacoinInputs {
+			if sci.Parent.SiacoinOutput.Address != sw.addr {
+				continue
+			}
+			outflow = outflow.Add(sci.Parent.SiacoinOutput.Value)
+		}
+
+		for _, sco := range txn.SiacoinOutputs {
+			if sco.Address != sw.addr {
+				continue
+			}
+			inflow = inflow.Add(sco.Value)
+		}
+
+		// skip transactions that don't affect the wallet
+		if inflow.IsZero() && outflow.IsZero() {
+			continue
+		}
+
+		addEvent(types.Hash256(txn.ID()), EventTypeV2Transaction, EventV2Transaction(txn), inflow, outflow)
 	}
 	return annotated, nil
 }
@@ -594,12 +686,17 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 // ReleaseInputs is a helper function that releases the inputs of txn for use in
 // other transactions. It should only be called on transactions that are invalid
 // or will never be broadcast.
-func (sw *SingleAddressWallet) ReleaseInputs(txns ...types.Transaction) {
+func (sw *SingleAddressWallet) ReleaseInputs(txns []types.Transaction, v2txns []types.V2Transaction) {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 	for _, txn := range txns {
 		for _, in := range txn.SiacoinInputs {
 			delete(sw.locked, types.Hash256(in.ParentID))
+		}
+	}
+	for _, txn := range v2txns {
+		for _, in := range txn.SiacoinInputs {
+			delete(sw.locked, in.Parent.ID)
 		}
 	}
 }

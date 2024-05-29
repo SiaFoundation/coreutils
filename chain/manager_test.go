@@ -1,7 +1,6 @@
 package chain
 
 import (
-	"fmt"
 	"reflect"
 	"testing"
 
@@ -94,7 +93,6 @@ func TestManager(t *testing.T) {
 	path = nil
 	for _, ru := range rus {
 		path = append(path, ru.State.Index.Height)
-		fmt.Println(path)
 	}
 	for _, au := range aus {
 		path = append(path, au.State.Index.Height)
