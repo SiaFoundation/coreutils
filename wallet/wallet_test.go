@@ -222,8 +222,6 @@ func TestWallet(t *testing.T) {
 		t.Fatalf("expected 2 transactions, got %v", len(events))
 	} else if events[0].ID != types.Hash256(txn.ID()) {
 		t.Fatalf("expected transaction %v, got %v", txn.ID(), events[1].ID)
-	} else if n := len((events[0].Data.(wallet.EventV1Transaction)).SiacoinOutputs); n != 20 {
-		t.Fatalf("expected 20 outputs, got %v", n)
 	}
 
 	// send all the outputs to the burn address individually
@@ -606,8 +604,6 @@ func TestReorg(t *testing.T) {
 		t.Fatalf("expected 2 transactions, got %v", len(events))
 	} else if events[0].ID != types.Hash256(txn.ID()) {
 		t.Fatalf("expected transaction %v, got %v", txn.ID(), events[1].ID)
-	} else if n := len((events[0].Data.(wallet.EventV1Transaction)).SiacoinOutputs); n != 20 {
-		t.Fatalf("expected 20 outputs, got %v", n)
 	}
 
 	txn2 := types.Transaction{
@@ -870,8 +866,6 @@ func TestWalletV2(t *testing.T) {
 		t.Fatalf("expected 2 transactions, got %v", len(events))
 	} else if events[0].ID != types.Hash256(txn.ID()) {
 		t.Fatalf("expected transaction %v, got %v", txn.ID(), events[1].ID)
-	} else if n := len((events[0].Data.(wallet.EventV1Transaction)).SiacoinOutputs); n != 20 {
-		t.Fatalf("expected 20 outputs, got %v", n)
 	}
 
 	// mine until the v2 require height
@@ -1091,8 +1085,6 @@ func TestReorgV2(t *testing.T) {
 		t.Fatalf("expected 2 transactions, got %v", len(events))
 	} else if events[0].ID != types.Hash256(txn.ID()) {
 		t.Fatalf("expected transaction %v, got %v", txn.ID(), events[1].ID)
-	} else if n := len((events[0].Data.(wallet.EventV2Transaction)).SiacoinOutputs); n != 20 {
-		t.Fatalf("expected 20 outputs, got %v", n)
 	}
 
 	txn2 := types.V2Transaction{

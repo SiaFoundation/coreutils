@@ -505,7 +505,6 @@ func (sw *SingleAddressWallet) UnconfirmedTransactions() (annotated []Event, err
 			Inflow:         inflow,
 			Outflow:        outflow,
 			Type:           eventType,
-			Data:           data,
 		}
 		annotated = append(annotated, ev)
 	}

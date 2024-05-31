@@ -67,7 +67,6 @@ type (
 		Inflow         types.Currency   `json:"inflow"`
 		Outflow        types.Currency   `json:"outflow"`
 		Type           string           `json:"type"`
-		Data           EventData        `json:"data"`
 		MaturityHeight uint64           `json:"maturityHeight"`
 		Timestamp      time.Time        `json:"timestamp"`
 	}

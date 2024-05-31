@@ -65,7 +65,6 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 		ev := Event{
 			ID:        id,
 			Index:     index,
-			Data:      data,
 			Timestamp: block.Timestamp,
 		}
 
