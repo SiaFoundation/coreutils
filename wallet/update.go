@@ -55,7 +55,7 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 	siacoinElements := make(map[types.SiacoinOutputID]types.SiacoinElement)
 
 	// cache the value of siacoin elements to use when calculating v1 outflow
-	cau.ForEachSiacoinElement(func(se types.SiacoinElement, spent bool) {
+	cau.ForEachSiacoinElement(func(se types.SiacoinElement, created, spent bool) {
 		siacoinElements[types.SiacoinOutputID(se.ID)] = se
 	})
 
@@ -187,7 +187,8 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 		addEvent(types.Hash256(txn.ID()), EventTypeV2Transaction, EventV2Transaction(txn))
 	}
 
-	cau.ForEachFileContractElement(func(fce types.FileContractElement, rev *types.FileContractElement, resolved bool, valid bool) {
+	// add the file contract outputs
+	cau.ForEachFileContractElement(func(fce types.FileContractElement, created bool, rev *types.FileContractElement, resolved bool, valid bool) {
 		if !resolved {
 			return
 		}
@@ -221,7 +222,7 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 		}
 	})
 
-	cau.ForEachV2FileContractElement(func(fce types.V2FileContractElement, rev *types.V2FileContractElement, res types.V2FileContractResolutionType) {
+	cau.ForEachV2FileContractElement(func(fce types.V2FileContractElement, created bool, rev *types.V2FileContractElement, res types.V2FileContractResolutionType) {
 		if res == nil {
 			return
 		}
@@ -287,31 +288,10 @@ func applyChainState(tx UpdateTx, address types.Address, cau chain.ApplyUpdate) 
 		return fmt.Errorf("failed to get state elements: %w", err)
 	}
 
-	// determine which siacoin and siafund elements are ephemeral
-	//
-	// note: I thought we could use LeafIndex == EphemeralLeafIndex, but
-	// it seems to be set before the subscriber is called.
-	created := make(map[types.Hash256]bool)
-	ephemeral := make(map[types.Hash256]bool)
-	for _, txn := range cau.Block.Transactions {
-		for i := range txn.SiacoinOutputs {
-			created[types.Hash256(txn.SiacoinOutputID(i))] = true
-		}
-		for _, input := range txn.SiacoinInputs {
-			ephemeral[types.Hash256(input.ParentID)] = created[types.Hash256(input.ParentID)]
-		}
-		for i := range txn.SiafundOutputs {
-			created[types.Hash256(txn.SiafundOutputID(i))] = true
-		}
-		for _, input := range txn.SiafundInputs {
-			ephemeral[types.Hash256(input.ParentID)] = created[types.Hash256(input.ParentID)]
-		}
-	}
-
 	var createdUTXOs, spentUTXOs []types.SiacoinElement
 	utxoValues := make(map[types.SiacoinOutputID]types.Currency)
 
-	cau.ForEachSiacoinElement(func(se types.SiacoinElement, spent bool) {
+	cau.ForEachSiacoinElement(func(se types.SiacoinElement, created, spent bool) {
 		if se.SiacoinOutput.Address != address {
 			return
 		}
@@ -320,7 +300,7 @@ func applyChainState(tx UpdateTx, address types.Address, cau chain.ApplyUpdate) 
 		utxoValues[types.SiacoinOutputID(se.ID)] = se.SiacoinOutput.Value
 
 		// ignore ephemeral elements
-		if ephemeral[se.ID] {
+		if created && spent {
 			return
 		}
 
@@ -346,11 +326,10 @@ func applyChainState(tx UpdateTx, address types.Address, cau chain.ApplyUpdate) 
 // revertChainUpdate atomically reverts a chain update from a wallet
 func revertChainUpdate(tx UpdateTx, revertedIndex types.ChainIndex, address types.Address, cru chain.RevertUpdate) error {
 	var removedUTXOs, unspentUTXOs []types.SiacoinElement
-	cru.ForEachSiacoinElement(func(se types.SiacoinElement, spent bool) {
-		if se.SiacoinOutput.Address != address {
+	cru.ForEachSiacoinElement(func(se types.SiacoinElement, created, spent bool) {
+		if se.SiacoinOutput.Address != address || (created && spent) {
 			return
 		}
-
 		if spent {
 			unspentUTXOs = append(unspentUTXOs, se)
 		} else {

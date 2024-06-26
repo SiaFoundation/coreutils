@@ -331,6 +331,9 @@ func (db *DBStore) treeKey(row, col uint64) []byte {
 }
 
 func (db *DBStore) getElementProof(leafIndex, numLeaves uint64) (proof []types.Hash256) {
+	if leafIndex >= numLeaves {
+		panic(fmt.Sprintf("leafIndex %v exceeds accumulator size %v", leafIndex, numLeaves)) // should never happen
+	}
 	// The size of the proof is the mergeHeight of leafIndex and numLeaves. To
 	// see why, imagine a tree large enough to contain both leafIndex and
 	// numLeaves within the same subtree; the height at which the paths to those
@@ -348,7 +351,9 @@ func (db *DBStore) getElementProof(leafIndex, numLeaves uint64) (proof []types.H
 
 func (db *DBStore) getSiacoinElement(id types.SiacoinOutputID, numLeaves uint64) (sce types.SiacoinElement, ok bool) {
 	ok = db.bucket(bSiacoinElements).get(id[:], &sce)
-	sce.MerkleProof = db.getElementProof(sce.LeafIndex, numLeaves)
+	if ok {
+		sce.MerkleProof = db.getElementProof(sce.LeafIndex, numLeaves)
+	}
 	return
 }
 
@@ -363,7 +368,9 @@ func (db *DBStore) deleteSiacoinElement(id types.SiacoinOutputID) {
 
 func (db *DBStore) getSiafundElement(id types.SiafundOutputID, numLeaves uint64) (sfe types.SiafundElement, ok bool) {
 	ok = db.bucket(bSiafundElements).get(id[:], &sfe)
-	sfe.MerkleProof = db.getElementProof(sfe.LeafIndex, numLeaves)
+	if ok {
+		sfe.MerkleProof = db.getElementProof(sfe.LeafIndex, numLeaves)
+	}
 	return
 }
 
@@ -378,7 +385,9 @@ func (db *DBStore) deleteSiafundElement(id types.SiafundOutputID) {
 
 func (db *DBStore) getFileContractElement(id types.FileContractID, numLeaves uint64) (fce types.FileContractElement, ok bool) {
 	ok = db.bucket(bFileContractElements).get(id[:], &fce)
-	fce.MerkleProof = db.getElementProof(fce.LeafIndex, numLeaves)
+	if ok {
+		fce.MerkleProof = db.getElementProof(fce.LeafIndex, numLeaves)
+	}
 	return
 }
 
@@ -428,17 +437,17 @@ func (db *DBStore) applyElements(cau consensus.ApplyUpdate) {
 		db.bucket(bTree).put(db.treeKey(row, col), h)
 	})
 
-	cau.ForEachSiacoinElement(func(sce types.SiacoinElement, spent bool) {
-		if sce.LeafIndex == types.EphemeralLeafIndex {
-			return
+	cau.ForEachSiacoinElement(func(sce types.SiacoinElement, created, spent bool) {
+		if created && spent {
+			return // ephemeral
 		} else if spent {
 			db.deleteSiacoinElement(types.SiacoinOutputID(sce.ID))
 		} else {
 			db.putSiacoinElement(sce)
 		}
 	})
-	cau.ForEachSiafundElement(func(sfe types.SiafundElement, spent bool) {
-		if sfe.LeafIndex == types.EphemeralLeafIndex {
+	cau.ForEachSiafundElement(func(sfe types.SiafundElement, created, spent bool) {
+		if created && spent {
 			return
 		} else if spent {
 			db.deleteSiafundElement(types.SiafundOutputID(sfe.ID))
@@ -446,8 +455,10 @@ func (db *DBStore) applyElements(cau consensus.ApplyUpdate) {
 			db.putSiafundElement(sfe)
 		}
 	})
-	cau.ForEachFileContractElement(func(fce types.FileContractElement, rev *types.FileContractElement, resolved, valid bool) {
-		if resolved {
+	cau.ForEachFileContractElement(func(fce types.FileContractElement, created bool, rev *types.FileContractElement, resolved, valid bool) {
+		if created && resolved {
+			return
+		} else if resolved {
 			db.deleteFileContractElement(types.FileContractID(fce.ID))
 			db.deleteFileContractExpiration(types.FileContractID(fce.ID), fce.FileContract.WindowEnd)
 		} else if rev != nil {
@@ -464,8 +475,10 @@ func (db *DBStore) applyElements(cau consensus.ApplyUpdate) {
 }
 
 func (db *DBStore) revertElements(cru consensus.RevertUpdate) {
-	cru.ForEachFileContractElement(func(fce types.FileContractElement, rev *types.FileContractElement, resolved, valid bool) {
-		if resolved {
+	cru.ForEachFileContractElement(func(fce types.FileContractElement, created bool, rev *types.FileContractElement, resolved, valid bool) {
+		if created && resolved {
+			return
+		} else if resolved {
 			// contract no longer resolved; restore it
 			db.putFileContractElement(fce)
 			db.putFileContractExpiration(types.FileContractID(fce.ID), fce.FileContract.WindowEnd)
@@ -482,8 +495,8 @@ func (db *DBStore) revertElements(cru consensus.RevertUpdate) {
 			db.deleteFileContractExpiration(types.FileContractID(fce.ID), fce.FileContract.WindowEnd)
 		}
 	})
-	cru.ForEachSiafundElement(func(sfe types.SiafundElement, spent bool) {
-		if sfe.LeafIndex == types.EphemeralLeafIndex {
+	cru.ForEachSiafundElement(func(sfe types.SiafundElement, created, spent bool) {
+		if created && spent {
 			return
 		} else if spent {
 			// output no longer spent; restore it
@@ -493,8 +506,8 @@ func (db *DBStore) revertElements(cru consensus.RevertUpdate) {
 			db.deleteSiafundElement(types.SiafundOutputID(sfe.ID))
 		}
 	})
-	cru.ForEachSiacoinElement(func(sce types.SiacoinElement, spent bool) {
-		if sce.LeafIndex == types.EphemeralLeafIndex {
+	cru.ForEachSiacoinElement(func(sce types.SiacoinElement, created, spent bool) {
+		if created && spent {
 			return
 		} else if spent {
 			// output no longer spent; restore it
