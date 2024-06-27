@@ -614,7 +614,7 @@ func updateTxnProofs(txn *types.V2Transaction, updateElementProof func(*types.St
 	valid = true
 	updateProof := func(e *types.StateElement) {
 		valid = valid && e.LeafIndex < numLeaves
-		if !valid || e.LeafIndex == types.EphemeralLeafIndex {
+		if !valid || e.LeafIndex == types.UnassignedLeafIndex {
 			return
 		}
 		updateElementProof(e)
@@ -638,36 +638,37 @@ func updateTxnProofs(txn *types.V2Transaction, updateElementProof func(*types.St
 }
 
 func (m *Manager) revertPoolUpdate(cru consensus.RevertUpdate, cs consensus.State) {
-	// restore ephemeral elements, if necessary
+	// applying a block can make ephemeral elements in the txpool non-ephemeral;
+	// here, we undo that
 	var uncreated map[types.Hash256]bool
 	replaceEphemeral := func(e *types.StateElement) {
-		if e.LeafIndex != types.EphemeralLeafIndex {
+		if e.LeafIndex == types.UnassignedLeafIndex {
 			return
 		} else if uncreated == nil {
 			uncreated = make(map[types.Hash256]bool)
-			cru.ForEachSiacoinElement(func(sce types.SiacoinElement, spent bool) {
-				if !spent {
+			cru.ForEachSiacoinElement(func(sce types.SiacoinElement, created, spent bool) {
+				if created {
 					uncreated[sce.ID] = true
 				}
 			})
-			cru.ForEachSiafundElement(func(sfe types.SiafundElement, spent bool) {
-				if !spent {
+			cru.ForEachSiafundElement(func(sfe types.SiafundElement, created, spent bool) {
+				if created {
 					uncreated[sfe.ID] = true
 				}
 			})
-			cru.ForEachFileContractElement(func(fce types.FileContractElement, rev *types.FileContractElement, resolved, valid bool) {
-				if !resolved {
+			cru.ForEachFileContractElement(func(fce types.FileContractElement, created bool, rev *types.FileContractElement, resolved, valid bool) {
+				if created {
 					uncreated[fce.ID] = true
 				}
 			})
-			cru.ForEachV2FileContractElement(func(fce types.V2FileContractElement, rev *types.V2FileContractElement, res types.V2FileContractResolutionType) {
-				if res != nil {
+			cru.ForEachV2FileContractElement(func(fce types.V2FileContractElement, created bool, rev *types.V2FileContractElement, res types.V2FileContractResolutionType) {
+				if created {
 					uncreated[fce.ID] = true
 				}
 			})
 		}
 		if uncreated[e.ID] {
-			*e = types.StateElement{ID: e.ID, LeafIndex: types.EphemeralLeafIndex}
+			*e = types.StateElement{ID: e.ID, LeafIndex: types.UnassignedLeafIndex}
 		}
 	}
 	for _, txn := range m.txpool.v2txns {
@@ -695,35 +696,37 @@ func (m *Manager) revertPoolUpdate(cru consensus.RevertUpdate, cs consensus.Stat
 }
 
 func (m *Manager) applyPoolUpdate(cau consensus.ApplyUpdate, cs consensus.State) {
-	// replace ephemeral elements, if necessary
+	// applying a block can make ephemeral elements in the txpool non-ephemeral
 	var newElements map[types.Hash256]types.StateElement
 	replaceEphemeral := func(e *types.StateElement) {
-		if e.LeafIndex != types.EphemeralLeafIndex {
+		if e.LeafIndex != types.UnassignedLeafIndex {
 			return
 		} else if newElements == nil {
 			newElements = make(map[types.Hash256]types.StateElement)
-			cau.ForEachSiacoinElement(func(sce types.SiacoinElement, spent bool) {
-				if !spent {
+			cau.ForEachSiacoinElement(func(sce types.SiacoinElement, created, spent bool) {
+				if created {
 					newElements[sce.ID] = sce.StateElement
 				}
 			})
-			cau.ForEachSiafundElement(func(sfe types.SiafundElement, spent bool) {
-				if !spent {
+			cau.ForEachSiafundElement(func(sfe types.SiafundElement, created, spent bool) {
+				if created {
 					newElements[sfe.ID] = sfe.StateElement
 				}
 			})
-			cau.ForEachFileContractElement(func(fce types.FileContractElement, rev *types.FileContractElement, resolved, valid bool) {
-				if !resolved {
+			cau.ForEachFileContractElement(func(fce types.FileContractElement, created bool, rev *types.FileContractElement, resolved, valid bool) {
+				if created {
 					newElements[fce.ID] = fce.StateElement
 				}
 			})
-			cau.ForEachV2FileContractElement(func(fce types.V2FileContractElement, rev *types.V2FileContractElement, res types.V2FileContractResolutionType) {
-				if res != nil {
+			cau.ForEachV2FileContractElement(func(fce types.V2FileContractElement, created bool, rev *types.V2FileContractElement, res types.V2FileContractResolutionType) {
+				if created {
 					newElements[fce.ID] = fce.StateElement
 				}
 			})
 		}
-		*e = newElements[e.ID]
+		if se, ok := newElements[e.ID]; ok {
+			*e = se
+		}
 	}
 	for _, txn := range m.txpool.v2txns {
 		for i := range txn.SiacoinInputs {
