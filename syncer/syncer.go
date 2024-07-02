@@ -501,6 +501,7 @@ func (s *Syncer) peerLoop() error {
 		}
 		candidates := peersForConnect()
 		if len(candidates) == 0 {
+			log.Debug("no peers to connect to")
 			discoverPeers()
 			continue
 		}
@@ -512,8 +513,10 @@ func (s *Syncer) peerLoop() error {
 			// NOTE: we don't bother logging failure here, since it's common and
 			// not particularly interesting or actionable
 			ctx, cancel := context.WithTimeout(s.shutdownCtx, s.config.ConnectTimeout)
-			if _, err := s.Connect(ctx, p); err == nil {
-				s.log.Debug("connected to peer", zap.String("peer", p))
+			if _, err := s.Connect(ctx, p); err != nil {
+				log.Debug("connected to peer", zap.String("peer", p))
+			} else {
+				log.Debug("failed to connect to peer", zap.String("peer", p), zap.Error(err))
 			}
 			cancel()
 			lastTried[p] = time.Now()
