@@ -360,10 +360,18 @@ func (s *Syncer) allowConnect(peer string, inbound bool) error {
 	if s.l == nil {
 		return errors.New("syncer is shutting down")
 	}
-	if banned, err := s.pm.Banned(peer); err != nil {
-		return err
-	} else if banned {
-		return ErrPeerBanned
+	addrs, err := (&net.Resolver{}).LookupIPAddr(s.shutdownCtx, peer)
+	if err != nil {
+		return fmt.Errorf("failed to resolve peer address: %w", err)
+	} else if len(addrs) == 0 {
+		return fmt.Errorf("peer didn't resolve to any addresses")
+	}
+	for _, addr := range addrs {
+		if banned, err := s.pm.Banned(addr.String()); err != nil {
+			return err
+		} else if banned {
+			return ErrPeerBanned
+		}
 	}
 	var in, out int
 	for _, p := range s.peers {
