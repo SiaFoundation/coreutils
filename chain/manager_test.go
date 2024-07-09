@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -49,7 +50,10 @@ func TestManager(t *testing.T) {
 	}
 
 	var reorgs []uint64
-	cm.OnReorg(func(index types.ChainIndex) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cm.OnReorg(ctx, func(index types.ChainIndex) {
 		reorgs = append(reorgs, index.Height)
 	})
 

@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -440,18 +441,23 @@ func (m *Manager) UpdatesSince(index types.ChainIndex, maxBlocks int) (rus []Rev
 }
 
 // OnReorg adds fn to the set of functions that are called whenever the best
-// chain changes. It returns a function that removes fn from the set.
+// chain changes. The function is removed from the set when the context is
+// canceled.
 //
 // The supplied function must not block or call any Manager methods.
-func (m *Manager) OnReorg(fn func(types.ChainIndex)) (cancel func()) {
+func (m *Manager) OnReorg(ctx context.Context, fn func(types.ChainIndex)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := frand.Entropy128()
-	m.onReorg[key] = fn
-	return func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		delete(m.onReorg, key)
+	m.onReorg[key] = func(index types.ChainIndex) {
+		select {
+		case <-ctx.Done():
+			m.mu.Lock()
+			delete(m.onReorg, key)
+			m.mu.Unlock()
+		default:
+			fn(index)
+		}
 	}
 }
 
