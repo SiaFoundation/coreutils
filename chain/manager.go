@@ -28,6 +28,7 @@ type ApplyUpdate struct {
 	State consensus.State // post-application
 }
 
+// MarshalJSON implements the json.Marshaler interface.
 func (au ApplyUpdate) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		ApplyUpdate consensus.ApplyUpdate `json:"applyUpdate"`
@@ -40,6 +41,7 @@ func (au ApplyUpdate) MarshalJSON() ([]byte, error) {
 	})
 }
 
+// UnmarshalJSON implements the json.Unmarshaler interface.
 func (au *ApplyUpdate) UnmarshalJSON(b []byte) error {
 	var v struct {
 		ApplyUpdate consensus.ApplyUpdate `json:"applyUpdate"`
@@ -66,6 +68,7 @@ type RevertUpdate struct {
 	State consensus.State // post-reversion, i.e. pre-application
 }
 
+// MarshalJSON implements the json.Marshaler interface.
 func (ru RevertUpdate) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		RevertUpdate consensus.RevertUpdate `json:"revertUpdate"`
@@ -78,6 +81,7 @@ func (ru RevertUpdate) MarshalJSON() ([]byte, error) {
 	})
 }
 
+// UnmarshalJSON implements the json.Unmarshaler interface.
 func (ru *RevertUpdate) UnmarshalJSON(b []byte) error {
 	var v struct {
 		RevertUpdate consensus.RevertUpdate `json:"revertUpdate"`
