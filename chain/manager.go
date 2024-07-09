@@ -2,6 +2,7 @@ package chain
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -27,6 +28,35 @@ type ApplyUpdate struct {
 	State consensus.State // post-application
 }
 
+func (au ApplyUpdate) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		ApplyUpdate consensus.ApplyUpdate `json:"applyUpdate"`
+		Block       types.Block           `json:"block"`
+		State       consensus.State       `json:"state"`
+	}{
+		ApplyUpdate: au.ApplyUpdate,
+		Block:       au.Block,
+		State:       au.State,
+	})
+}
+
+func (au *ApplyUpdate) UnmarshalJSON(b []byte) error {
+	var v struct {
+		ApplyUpdate consensus.ApplyUpdate `json:"applyUpdate"`
+		Block       types.Block           `json:"block"`
+		State       consensus.State       `json:"state"`
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*au = ApplyUpdate{
+		ApplyUpdate: v.ApplyUpdate,
+		Block:       v.Block,
+		State:       v.State,
+	}
+	return nil
+}
+
 // A RevertUpdate reflects the changes to the blockchain resulting from the
 // removal of a block.
 type RevertUpdate struct {
@@ -34,6 +64,35 @@ type RevertUpdate struct {
 
 	Block types.Block
 	State consensus.State // post-reversion, i.e. pre-application
+}
+
+func (ru RevertUpdate) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		RevertUpdate consensus.RevertUpdate `json:"revertUpdate"`
+		Block        types.Block            `json:"block"`
+		State        consensus.State        `json:"state"`
+	}{
+		RevertUpdate: ru.RevertUpdate,
+		Block:        ru.Block,
+		State:        ru.State,
+	})
+}
+
+func (ru *RevertUpdate) UnmarshalJSON(b []byte) error {
+	var v struct {
+		RevertUpdate consensus.RevertUpdate `json:"revertUpdate"`
+		Block        types.Block            `json:"block"`
+		State        consensus.State        `json:"state"`
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*ru = RevertUpdate{
+		RevertUpdate: v.RevertUpdate,
+		Block:        v.Block,
+		State:        v.State,
+	}
+	return nil
 }
 
 // A Store durably commits Manager-related data to storage. I/O errors must be
