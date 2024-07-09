@@ -44,7 +44,6 @@ type (
 		BestIndex(height uint64) (types.ChainIndex, bool)
 		PoolTransactions() []types.Transaction
 		V2PoolTransactions() []types.V2Transaction
-		OnReorg(func(types.ChainIndex)) func()
 	}
 
 	// A SingleAddressStore stores the state of a single-address wallet.
