@@ -360,8 +360,11 @@ func (s *Syncer) allowConnect(peer string, inbound bool) error {
 	if s.l == nil {
 		return errors.New("syncer is shutting down")
 	}
-	addrs, err := (&net.Resolver{}).LookupIPAddr(s.shutdownCtx, peer)
-	if err != nil {
+
+	var addrs []net.IPAddr
+	if peerHost, _, err := net.SplitHostPort(peer); err != nil {
+		return fmt.Errorf("failed to split peer host and port: %w", err)
+	} else if addrs, err = (&net.Resolver{}).LookupIPAddr(s.shutdownCtx, peerHost); err != nil {
 		return fmt.Errorf("failed to resolve peer address: %w", err)
 	} else if len(addrs) == 0 {
 		return fmt.Errorf("peer didn't resolve to any addresses")
