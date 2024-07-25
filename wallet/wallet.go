@@ -9,7 +9,6 @@ import (
 
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/types"
-	"go.sia.tech/coreutils/chain"
 	"go.uber.org/zap"
 )
 
@@ -63,9 +62,6 @@ type (
 		// WalletEventCount returns the total number of events relevant to the
 		// wallet.
 		WalletEventCount() (uint64, error)
-
-		// UpdateChainState applies and reverts chain updates to the wallet.
-		UpdateChainState([]chain.RevertUpdate, []chain.ApplyUpdate) error
 	}
 
 	// A SingleAddressWallet is a hot wallet that manages the outputs controlled

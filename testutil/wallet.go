@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"go.sia.tech/core/types"
-	"go.sia.tech/coreutils/chain"
 	"go.sia.tech/coreutils/wallet"
 )
 
@@ -35,7 +34,7 @@ func (et *ephemeralWalletUpdateTxn) WalletStateElements() (elements []types.Stat
 	return
 }
 
-func (et *ephemeralWalletUpdateTxn) UpdateStateElements(elements []types.StateElement) error {
+func (et *ephemeralWalletUpdateTxn) UpdateWalletStateElements(elements []types.StateElement) error {
 	for _, se := range elements {
 		utxo := et.store.utxos[types.SiacoinOutputID(se.ID)]
 		utxo.StateElement = se
@@ -44,7 +43,7 @@ func (et *ephemeralWalletUpdateTxn) UpdateStateElements(elements []types.StateEl
 	return nil
 }
 
-func (et *ephemeralWalletUpdateTxn) ApplyIndex(index types.ChainIndex, created, spent []types.SiacoinElement, events []wallet.Event) error {
+func (et *ephemeralWalletUpdateTxn) WalletApplyIndex(index types.ChainIndex, created, spent []types.SiacoinElement, events []wallet.Event) error {
 	for _, se := range spent {
 		if _, ok := et.store.utxos[types.SiacoinOutputID(se.ID)]; !ok {
 			panic(fmt.Sprintf("siacoin element %q does not exist", se.ID))
@@ -61,10 +60,11 @@ func (et *ephemeralWalletUpdateTxn) ApplyIndex(index types.ChainIndex, created, 
 
 	// add events
 	et.store.events = append(et.store.events, events...)
+	et.store.tip = index
 	return nil
 }
 
-func (et *ephemeralWalletUpdateTxn) RevertIndex(index types.ChainIndex, removed, unspent []types.SiacoinElement) error {
+func (et *ephemeralWalletUpdateTxn) WalletRevertIndex(index types.ChainIndex, removed, unspent []types.SiacoinElement) error {
 	// remove any events that were added in the reverted block
 	filtered := et.store.events[:0]
 	for i := range et.store.events {
@@ -84,16 +84,13 @@ func (et *ephemeralWalletUpdateTxn) RevertIndex(index types.ChainIndex, removed,
 	for _, se := range unspent {
 		et.store.utxos[types.SiacoinOutputID(se.ID)] = se
 	}
+	et.store.tip = index
 	return nil
 }
 
 // UpdateChainState applies and reverts chain updates to the wallet.
-func (es *EphemeralWalletStore) UpdateChainState(reverted []chain.RevertUpdate, applied []chain.ApplyUpdate) error {
-	if err := wallet.UpdateChainState(&ephemeralWalletUpdateTxn{store: es}, types.StandardUnlockHash(es.privateKey.PublicKey()), applied, reverted); err != nil {
-		return fmt.Errorf("failed to update chain state: %w", err)
-	}
-	es.tip = applied[len(applied)-1].State.Index
-	return nil
+func (es *EphemeralWalletStore) UpdateChainState(fn func(ux wallet.UpdateTx) error) error {
+	return fn(&ephemeralWalletUpdateTxn{store: es})
 }
 
 // WalletEvents returns the wallet's events.
