@@ -23,16 +23,16 @@ type (
 		// WalletStateElements returns all state elements related to the wallet. It is used
 		// to update the proofs of all state elements affected by the update.
 		WalletStateElements() ([]types.StateElement, error)
-		// UpdateStateElements updates the proofs of all state elements affected by the
+		// UpdateWalletStateElements updates the proofs of all state elements affected by the
 		// update.
-		UpdateStateElements([]types.StateElement) error
+		UpdateWalletStateElements([]types.StateElement) error
 
-		// ApplyIndex is called with the chain index that is being applied.
+		// WalletApplyIndex is called with the chain index that is being applied.
 		// Any transactions and siacoin elements that were created by the index
 		// should be added and any siacoin elements that were spent should be
 		// removed.
-		ApplyIndex(index types.ChainIndex, created, spent []types.SiacoinElement, events []Event) error
-		// RevertIndex is called with the chain index that is being reverted.
+		WalletApplyIndex(index types.ChainIndex, created, spent []types.SiacoinElement, events []Event) error
+		// WalletRevertIndex is called with the chain index that is being reverted.
 		// Any transactions that were added by the index should be removed
 		//
 		// removed contains the siacoin elements that were created by the index
@@ -41,7 +41,7 @@ type (
 		// unspent contains the siacoin elements that were spent and should be
 		// recreated. They are not necessarily created by the index and should
 		// not be associated with it.
-		RevertIndex(index types.ChainIndex, removed, unspent []types.SiacoinElement) error
+		WalletRevertIndex(index types.ChainIndex, removed, unspent []types.SiacoinElement) error
 	}
 )
 
@@ -315,9 +315,9 @@ func applyChainState(tx UpdateTx, address types.Address, cau chain.ApplyUpdate) 
 		cau.UpdateElementProof(&stateElements[i])
 	}
 
-	if err := tx.ApplyIndex(cau.State.Index, createdUTXOs, spentUTXOs, appliedEvents(cau, address)); err != nil {
+	if err := tx.WalletApplyIndex(cau.State.Index, createdUTXOs, spentUTXOs, appliedEvents(cau, address)); err != nil {
 		return fmt.Errorf("failed to apply index: %w", err)
-	} else if err := tx.UpdateStateElements(stateElements); err != nil {
+	} else if err := tx.UpdateWalletStateElements(stateElements); err != nil {
 		return fmt.Errorf("failed to update state elements: %w", err)
 	}
 	return nil
@@ -338,7 +338,7 @@ func revertChainUpdate(tx UpdateTx, revertedIndex types.ChainIndex, address type
 	})
 
 	// remove any existing events that were added in the reverted block
-	if err := tx.RevertIndex(revertedIndex, removedUTXOs, unspentUTXOs); err != nil {
+	if err := tx.WalletRevertIndex(revertedIndex, removedUTXOs, unspentUTXOs); err != nil {
 		return fmt.Errorf("failed to revert block: %w", err)
 	}
 
@@ -352,7 +352,7 @@ func revertChainUpdate(tx UpdateTx, revertedIndex types.ChainIndex, address type
 		cru.UpdateElementProof(&stateElements[i])
 	}
 
-	if err := tx.UpdateStateElements(stateElements); err != nil {
+	if err := tx.UpdateWalletStateElements(stateElements); err != nil {
 		return fmt.Errorf("failed to update state elements: %w", err)
 	}
 	return nil
@@ -360,22 +360,21 @@ func revertChainUpdate(tx UpdateTx, revertedIndex types.ChainIndex, address type
 
 // UpdateChainState atomically applies and reverts chain updates to a single
 // wallet store.
-func UpdateChainState(tx UpdateTx, address types.Address, applied []chain.ApplyUpdate, reverted []chain.RevertUpdate) error {
+func (sw *SingleAddressWallet) UpdateChainState(tx UpdateTx, reverted []chain.RevertUpdate, applied []chain.ApplyUpdate) error {
 	for _, cru := range reverted {
 		revertedIndex := types.ChainIndex{
 			ID:     cru.Block.ID(),
 			Height: cru.State.Index.Height + 1,
 		}
-		if err := revertChainUpdate(tx, revertedIndex, address, cru); err != nil {
+		if err := revertChainUpdate(tx, revertedIndex, sw.addr, cru); err != nil {
 			return err
 		}
 	}
 
 	for _, cau := range applied {
-		if err := applyChainState(tx, address, cau); err != nil {
+		if err := applyChainState(tx, sw.addr, cau); err != nil {
 			return fmt.Errorf("failed to apply chain update %q: %w", cau.State.Index, err)
 		}
 	}
-
 	return nil
 }

@@ -15,7 +15,7 @@ import (
 	"go.uber.org/zap/zaptest"
 )
 
-func syncDB(cm *chain.Manager, store wallet.SingleAddressStore) error {
+func syncDB(cm *chain.Manager, store *testutil.EphemeralWalletStore, w *wallet.SingleAddressWallet) error {
 	for {
 		tip, err := store.Tip()
 		if err != nil {
@@ -29,13 +29,16 @@ func syncDB(cm *chain.Manager, store wallet.SingleAddressStore) error {
 			return fmt.Errorf("failed to get updates: %w", err)
 		}
 
-		if err := store.UpdateChainState(reverted, applied); err != nil {
+		err = store.UpdateChainState(func(tx wallet.UpdateTx) error {
+			return w.UpdateChainState(tx, reverted, applied)
+		})
+		if err != nil {
 			return fmt.Errorf("failed to update chain state: %w", err)
 		}
 	}
 }
 
-func mineAndSync(t *testing.T, cm *chain.Manager, ws wallet.SingleAddressStore, address types.Address, n uint64) {
+func mineAndSync(t *testing.T, cm *chain.Manager, ws *testutil.EphemeralWalletStore, w *wallet.SingleAddressWallet, address types.Address, n uint64) {
 	t.Helper()
 
 	// mine n blocks
@@ -47,7 +50,7 @@ func mineAndSync(t *testing.T, cm *chain.Manager, ws wallet.SingleAddressStore, 
 		}
 	}
 	// wait for the wallet to sync
-	if err := syncDB(cm, ws); err != nil {
+	if err := syncDB(cm, ws, w); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -96,7 +99,7 @@ func TestWallet(t *testing.T) {
 	assertBalance(t, w, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency)
 
 	// mine a block to fund the wallet
-	mineAndSync(t, cm, ws, w.Address(), 1)
+	mineAndSync(t, cm, ws, w, w.Address(), 1)
 	maturityHeight := cm.TipState().MaturityHeight()
 
 	// check that the wallet has a single event
@@ -134,7 +137,7 @@ func TestWallet(t *testing.T) {
 	// mine until the payout matures
 	tip := cm.TipState()
 	target := tip.MaturityHeight()
-	mineAndSync(t, cm, ws, types.VoidAddress, target-tip.Index.Height)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, target-tip.Index.Height)
 
 	// check that one payout has matured
 	assertBalance(t, w, initialReward, initialReward, types.ZeroCurrency, types.ZeroCurrency)
@@ -201,7 +204,7 @@ func TestWallet(t *testing.T) {
 	// transaction is not yet confirmed.
 	assertBalance(t, w, types.ZeroCurrency, initialReward, types.ZeroCurrency, initialReward)
 	// mine a block to confirm the transaction
-	mineAndSync(t, cm, ws, types.VoidAddress, 1)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
 
 	// check that the balance was confirmed and the other values reset
 	assertBalance(t, w, initialReward, initialReward, types.ZeroCurrency, types.ZeroCurrency)
@@ -244,7 +247,7 @@ func TestWallet(t *testing.T) {
 	if _, err := cm.AddPoolTransactions(sent); err != nil {
 		t.Fatal(err)
 	}
-	mineAndSync(t, cm, ws, types.VoidAddress, 1)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
 
 	// check that the wallet now has 22 transactions, the initial payout
 	// transaction, the split transaction, and 20 void transactions
@@ -298,8 +301,8 @@ func TestWalletUnconfirmed(t *testing.T) {
 	defer w.Close()
 
 	// fund the wallet
-	mineAndSync(t, cm, ws, w.Address(), 1)
-	mineAndSync(t, cm, ws, types.VoidAddress, cm.TipState().MaturityHeight()-1)
+	mineAndSync(t, cm, ws, w, w.Address(), 1)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, cm.TipState().MaturityHeight()-1)
 
 	// check that one payout has matured
 	initialReward := cm.TipState().BlockReward()
@@ -382,8 +385,8 @@ func TestWalletRedistribute(t *testing.T) {
 	defer w.Close()
 
 	// fund the wallet
-	mineAndSync(t, cm, ws, w.Address(), 1)
-	mineAndSync(t, cm, ws, types.VoidAddress, cm.TipState().MaturityHeight()-1)
+	mineAndSync(t, cm, ws, w, w.Address(), 1)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, cm.TipState().MaturityHeight()-1)
 
 	redistribute := func(amount types.Currency, n int) error {
 		txns, toSign, err := w.Redistribute(n, amount, types.ZeroCurrency)
@@ -399,7 +402,7 @@ func TestWalletRedistribute(t *testing.T) {
 		if _, err := cm.AddPoolTransactions(txns); err != nil {
 			return fmt.Errorf("failed to add transactions to pool: %w", err)
 		}
-		mineAndSync(t, cm, ws, types.VoidAddress, 1)
+		mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
 		return nil
 	}
 
@@ -479,7 +482,7 @@ func TestReorg(t *testing.T) {
 	assertBalance(t, w, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency)
 
 	// mine a block to fund the wallet
-	mineAndSync(t, cm, ws, w.Address(), 1)
+	mineAndSync(t, cm, ws, w, w.Address(), 1)
 	maturityHeight := cm.TipState().MaturityHeight()
 
 	// check that the wallet has a single event
@@ -517,7 +520,7 @@ func TestReorg(t *testing.T) {
 	// mine until the payout matures
 	tip := cm.TipState()
 	target := tip.MaturityHeight()
-	mineAndSync(t, cm, ws, types.VoidAddress, target-tip.Index.Height)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, target-tip.Index.Height)
 
 	// check that one payout has matured
 	assertBalance(t, w, initialReward, initialReward, types.ZeroCurrency, types.ZeroCurrency)
@@ -584,7 +587,7 @@ func TestReorg(t *testing.T) {
 	// transaction is not yet confirmed.
 	assertBalance(t, w, types.ZeroCurrency, initialReward, types.ZeroCurrency, initialReward)
 	// mine a block to confirm the transaction
-	mineAndSync(t, cm, ws, types.VoidAddress, 1)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
 	rollbackState := cm.TipState()
 
 	// check that the balance was confirmed and the other values reset
@@ -639,7 +642,7 @@ func TestReorg(t *testing.T) {
 	if _, err := cm.AddPoolTransactions([]types.Transaction{txn1}); err != nil {
 		t.Fatal(err)
 	}
-	mineAndSync(t, cm, ws, types.VoidAddress, 1)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
 
 	// check that the wallet now has 3 transactions: the initial payout
 	// transaction, the split transaction, and a void transaction
@@ -689,7 +692,7 @@ func TestReorg(t *testing.T) {
 	reorgBlocks = append(reorgBlocks, b)
 	if err := cm.AddBlocks(reorgBlocks); err != nil {
 		t.Fatal(err)
-	} else if err := syncDB(cm, ws); err != nil {
+	} else if err := syncDB(cm, ws, w); err != nil {
 		t.Fatal(err)
 	}
 
@@ -744,7 +747,7 @@ func TestWalletV2(t *testing.T) {
 	assertBalance(t, w, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency)
 
 	// mine a block to fund the wallet
-	mineAndSync(t, cm, ws, w.Address(), 1)
+	mineAndSync(t, cm, ws, w, w.Address(), 1)
 	maturityHeight := cm.TipState().MaturityHeight()
 
 	// check that the wallet has a single event
@@ -782,7 +785,7 @@ func TestWalletV2(t *testing.T) {
 	// mine until the payout matures
 	tip := cm.TipState()
 	target := tip.MaturityHeight()
-	mineAndSync(t, cm, ws, types.VoidAddress, target-tip.Index.Height)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, target-tip.Index.Height)
 
 	// check that one payout has matured
 	assertBalance(t, w, initialReward, initialReward, types.ZeroCurrency, types.ZeroCurrency)
@@ -849,7 +852,7 @@ func TestWalletV2(t *testing.T) {
 	// transaction is not yet confirmed.
 	assertBalance(t, w, types.ZeroCurrency, initialReward, types.ZeroCurrency, initialReward)
 	// mine a block to confirm the transaction
-	mineAndSync(t, cm, ws, types.VoidAddress, 1)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
 
 	// check that the balance was confirmed and the other values reset
 	assertBalance(t, w, initialReward, initialReward, types.ZeroCurrency, types.ZeroCurrency)
@@ -875,7 +878,7 @@ func TestWalletV2(t *testing.T) {
 	}
 
 	// mine until the v2 require height
-	mineAndSync(t, cm, ws, types.VoidAddress, network.HardforkV2.RequireHeight-cm.Tip().Height)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, network.HardforkV2.RequireHeight-cm.Tip().Height)
 
 	v2Txn := types.V2Transaction{
 		SiacoinOutputs: []types.SiacoinOutput{
@@ -908,7 +911,7 @@ func TestWalletV2(t *testing.T) {
 	}
 
 	// confirm the transaction
-	mineAndSync(t, cm, ws, types.VoidAddress, 1)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
 
 	// check that the wallet has three events
 	count, err = w.EventCount()
@@ -960,10 +963,10 @@ func TestReorgV2(t *testing.T) {
 	assertBalance(t, w, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency, types.ZeroCurrency)
 
 	// mine a block to fund the wallet
-	mineAndSync(t, cm, ws, w.Address(), 1)
+	mineAndSync(t, cm, ws, w, w.Address(), 1)
 	maturityHeight := cm.TipState().MaturityHeight()
 	// mine until the require height
-	mineAndSync(t, cm, ws, types.VoidAddress, network.HardforkV2.RequireHeight-cm.Tip().Height)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, network.HardforkV2.RequireHeight-cm.Tip().Height)
 
 	// check that the wallet has a single event
 	if events, err := w.Events(0, 100); err != nil {
@@ -1000,7 +1003,7 @@ func TestReorgV2(t *testing.T) {
 	// mine until the payout matures
 	tip := cm.TipState()
 	target := tip.MaturityHeight()
-	mineAndSync(t, cm, ws, types.VoidAddress, target-tip.Index.Height)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, target-tip.Index.Height)
 
 	// check that one payout has matured
 	assertBalance(t, w, initialReward, initialReward, types.ZeroCurrency, types.ZeroCurrency)
@@ -1067,7 +1070,7 @@ func TestReorgV2(t *testing.T) {
 	// transaction is not yet confirmed.
 	assertBalance(t, w, types.ZeroCurrency, initialReward, types.ZeroCurrency, initialReward)
 	// mine a block to confirm the transaction
-	mineAndSync(t, cm, ws, types.VoidAddress, 1)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
 
 	// save a marker to this state to rollback to later
 	rollbackState := cm.TipState()
@@ -1124,7 +1127,7 @@ func TestReorgV2(t *testing.T) {
 	if _, err := cm.AddV2PoolTransactions(state.Index, []types.V2Transaction{txn1}); err != nil {
 		t.Fatal(err)
 	}
-	mineAndSync(t, cm, ws, types.VoidAddress, 1)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
 
 	// check that the wallet now has 3 transactions: the initial payout
 	// transaction, the split transaction, and a void transaction
@@ -1185,7 +1188,7 @@ func TestReorgV2(t *testing.T) {
 
 	if err := cm.AddBlocks(reorgBlocks); err != nil {
 		t.Fatal(err)
-	} else if err := syncDB(cm, ws); err != nil {
+	} else if err := syncDB(cm, ws, w); err != nil {
 		t.Fatal(err)
 	} else if cm.Tip() != state.Index {
 		t.Fatalf("expected tip %v, got %v", state.Index, cm.Tip())
