@@ -95,9 +95,12 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 
 	e.ID = je.ID
 	e.Index = je.Index
-	e.Timestamp = je.Timestamp
-	e.MaturityHeight = je.MaturityHeight
+	e.Inflow = je.Inflow
+	e.Outflow = je.Outflow
 	e.Type = je.Type
+	// Data is unmarshaled based on the event type below
+	e.MaturityHeight = je.MaturityHeight
+	e.Timestamp = je.Timestamp
 
 	var err error
 	switch je.Type {
