@@ -2,6 +2,7 @@ package wallet
 
 import (
 	"fmt"
+	"time"
 
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/chain"
@@ -31,7 +32,9 @@ type (
 		// Any transactions and siacoin elements that were created by the index
 		// should be added and any siacoin elements that were spent should be
 		// removed.
-		WalletApplyIndex(index types.ChainIndex, created, spent []types.SiacoinElement, events []Event) error
+		//
+		// timestamp is the timestamp of the block being applied.
+		WalletApplyIndex(index types.ChainIndex, created, spent []types.SiacoinElement, events []Event, timestamp time.Time) error
 		// WalletRevertIndex is called with the chain index that is being reverted.
 		// Any transactions that were added by the index should be removed
 		//
@@ -41,7 +44,9 @@ type (
 		// unspent contains the siacoin elements that were spent and should be
 		// recreated. They are not necessarily created by the index and should
 		// not be associated with it.
-		WalletRevertIndex(index types.ChainIndex, removed, unspent []types.SiacoinElement) error
+		//
+		// timestamp is the timestamp of the block being reverted
+		WalletRevertIndex(index types.ChainIndex, removed, unspent []types.SiacoinElement, timestamp time.Time) error
 	}
 )
 
@@ -315,7 +320,7 @@ func applyChainState(tx UpdateTx, address types.Address, cau chain.ApplyUpdate) 
 		cau.UpdateElementProof(&stateElements[i])
 	}
 
-	if err := tx.WalletApplyIndex(cau.State.Index, createdUTXOs, spentUTXOs, appliedEvents(cau, address)); err != nil {
+	if err := tx.WalletApplyIndex(cau.State.Index, createdUTXOs, spentUTXOs, appliedEvents(cau, address), cau.Block.Timestamp); err != nil {
 		return fmt.Errorf("failed to apply index: %w", err)
 	} else if err := tx.UpdateWalletStateElements(stateElements); err != nil {
 		return fmt.Errorf("failed to update state elements: %w", err)
@@ -338,7 +343,7 @@ func revertChainUpdate(tx UpdateTx, revertedIndex types.ChainIndex, address type
 	})
 
 	// remove any existing events that were added in the reverted block
-	if err := tx.WalletRevertIndex(revertedIndex, removedUTXOs, unspentUTXOs); err != nil {
+	if err := tx.WalletRevertIndex(revertedIndex, removedUTXOs, unspentUTXOs, cru.Block.Timestamp); err != nil {
 		return fmt.Errorf("failed to revert block: %w", err)
 	}
 
