@@ -54,6 +54,13 @@ retry:
 			Address: addr,
 		}},
 	}
+
+	if cs.Index.Height >= cs.Network.HardforkV2.AllowHeight {
+		b.V2 = &types.V2BlockData{
+			Height: cs.Index.Height + 1,
+		}
+	}
+
 	var weight uint64
 	for _, txn := range txns {
 		if weight += cs.TransactionWeight(txn); weight > cs.MaxBlockWeight() {
@@ -65,11 +72,6 @@ retry:
 	for _, txn := range v2Txns {
 		if weight += cs.V2TransactionWeight(txn); weight > cs.MaxBlockWeight() {
 			break
-		}
-		if b.V2 == nil {
-			b.V2 = &types.V2BlockData{
-				Height: cs.Index.Height + 1,
-			}
 		}
 		b.V2.Transactions = append(b.V2.Transactions, txn)
 		b.MinerPayouts[0].Value = b.MinerPayouts[0].Value.Add(txn.MinerFee)
