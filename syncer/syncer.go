@@ -276,6 +276,8 @@ func (s *Syncer) runPeer(p *Peer) error {
 	}()
 
 	inflight := make(chan struct{}, s.config.MaxInflightRPCs)
+	var wg sync.WaitGroup
+	defer wg.Wait()
 	for {
 		if p.Err() != nil {
 			return fmt.Errorf("peer error: %w", p.Err())
@@ -286,7 +288,9 @@ func (s *Syncer) runPeer(p *Peer) error {
 			return fmt.Errorf("failed to accept rpc: %w", err)
 		}
 		inflight <- struct{}{}
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			defer stream.Close()
 			// NOTE: we do not set any deadlines on the stream. If a peer is
 			// slow, fine; we don't need to worry about resource exhaustion
@@ -405,12 +409,16 @@ func (s *Syncer) alreadyConnected(id gateway.UniqueID) bool {
 }
 
 func (s *Syncer) acceptLoop() error {
+	var wg sync.WaitGroup
+	defer wg.Wait()
 	for {
 		conn, err := s.l.Accept()
 		if err != nil {
 			return err
 		}
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			defer conn.Close()
 			if err := s.allowConnect(conn.RemoteAddr().String(), true); err != nil {
 				s.log.Debug("rejected inbound connection", zap.Stringer("remoteAddress", conn.RemoteAddr()), zap.Error(err))
@@ -426,15 +434,6 @@ func (s *Syncer) acceptLoop() error {
 				})
 			}
 		}()
-	}
-}
-
-func (s *Syncer) isStopped() bool {
-	select {
-	case <-s.shutdownCtx.Done():
-		return true
-	default:
-		return false
 	}
 }
 
@@ -517,12 +516,9 @@ func (s *Syncer) peerLoop() error {
 			continue
 		}
 		for _, p := range candidates {
-			if numOutbound() >= s.config.MaxOutboundPeers || s.isStopped() {
+			if numOutbound() >= s.config.MaxOutboundPeers {
 				break
 			}
-
-			// NOTE: we don't bother logging failure here, since it's common and
-			// not particularly interesting or actionable
 			ctx, cancel := context.WithTimeout(s.shutdownCtx, s.config.ConnectTimeout)
 			if _, err := s.Connect(ctx, p); err != nil {
 				log.Debug("connected to peer", zap.String("peer", p))
@@ -632,7 +628,7 @@ func (s *Syncer) syncLoop() error {
 // Run spawns goroutines for accepting inbound connections, forming outbound
 // connections, and syncing the blockchain from active peers. It blocks until an
 // error occurs, upon which all connections are closed and goroutines are
-// terminated. To gracefully shutdown a Syncer, close its net.Listener.
+// terminated.
 func (s *Syncer) Run() error {
 	errChan := make(chan error)
 	go func() { errChan <- s.acceptLoop() }()
@@ -644,7 +640,6 @@ func (s *Syncer) Run() error {
 	s.shutdownCtxCancel()
 	s.l.Close()
 	s.mu.Lock()
-	s.l = nil
 	for _, p := range s.peers {
 		p.Close()
 	}
@@ -668,6 +663,11 @@ func (s *Syncer) Run() error {
 	return err
 }
 
+// Close closes the Syncer's net.Listener.
+func (s *Syncer) Close() error {
+	return s.l.Close()
+}
+
 // Connect forms an outbound connection to a peer.
 func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
 	if err := s.allowConnect(addr, false); err != nil {
@@ -683,11 +683,11 @@ func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
 			cancel()
 		}
 	}()
-
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
+	cancel()
 	conn.SetDeadline(time.Now().Add(s.config.ConnectTimeout))
 	defer conn.SetDeadline(time.Time{})
 	t, err := gateway.Dial(conn, s.header)
