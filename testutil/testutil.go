@@ -1,8 +1,12 @@
 package testutil
 
 import (
+	"testing"
+	"time"
+
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils"
 	"go.sia.tech/coreutils/chain"
 )
 
@@ -20,4 +24,16 @@ func Network() (*consensus.Network, types.Block) {
 	n.HardforkV2.AllowHeight = 200 // comfortably above MaturityHeight
 	n.HardforkV2.RequireHeight = 250
 	return n, genesisBlock
+}
+
+// MineBlocks mines n blocks with the reward going to the given address.
+func MineBlocks(t *testing.T, cm *chain.Manager, addr types.Address, n int) {
+	for ; n > 0; n-- {
+		b, ok := coreutils.MineBlock(cm, addr, time.Second)
+		if !ok {
+			t.Fatal("failed to mine block")
+		} else if err := cm.AddBlocks([]types.Block{b}); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
