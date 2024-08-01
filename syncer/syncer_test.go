@@ -91,7 +91,7 @@ func TestSyncer(t *testing.T) {
 		if cm1.Tip() == cm2.Tip() {
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	if cm1.Tip() != cm2.Tip() {
