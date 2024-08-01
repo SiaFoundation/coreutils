@@ -65,6 +65,7 @@ func (ps *MemPeerStore) Ban(addr string, duration time.Duration, reason string) 
 	return nil
 }
 
+// Banned returns false
 func (ps *MemPeerStore) Banned(addr string) (bool, error) { return false, nil }
 
 var _ syncer.PeerStore = (*MemPeerStore)(nil)
