@@ -48,7 +48,7 @@ func TestSyncer(t *testing.T) {
 		NetAddress: l1.Addr().String(),
 	}, syncer.WithLogger(log.Named("syncer1")))
 	defer s1.Close()
-	go s1.Run()
+	go s1.Run(context.Background())
 
 	s2 := syncer.New(l2, cm2, testutil.NewMemPeerStore(), gateway.Header{
 		GenesisID:  genesis.ID(),
@@ -56,7 +56,7 @@ func TestSyncer(t *testing.T) {
 		NetAddress: l2.Addr().String(),
 	}, syncer.WithLogger(log.Named("syncer2")), syncer.WithSyncInterval(10*time.Millisecond))
 	defer s2.Close()
-	go s2.Run()
+	go s2.Run(context.Background())
 
 	// mine a few blocks on cm1
 	testutil.MineBlocks(t, cm1, types.VoidAddress, 10)
