@@ -239,8 +239,9 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 		}
 		// release lock while notifying listeners
 		tip := m.tipState.Index
+		subscribers := m.onReorg
 		m.mu.Unlock()
-		for _, fn := range m.onReorg {
+		for _, fn := range subscribers {
 			fn(tip)
 		}
 		m.mu.Lock()
