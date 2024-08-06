@@ -256,9 +256,6 @@ func (s *Syncer) ban(p *Peer, err error) error {
 }
 
 func (s *Syncer) runPeer(p *Peer) error {
-	s.wg.Add(1)
-	defer s.wg.Done()
-
 	if err := s.pm.AddPeer(p.t.Addr); err != nil {
 		return fmt.Errorf("failed to add peer: %w", err)
 	}
@@ -641,11 +638,16 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 // error occurs, upon which all connections are closed and goroutines are
 // terminated.
 func (s *Syncer) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	s.wg.Add(1)
+	defer s.wg.Done()
 	errChan := make(chan error)
-	go func() { errChan <- s.acceptLoop(ctx) }()
-	go func() { errChan <- s.peerLoop(ctx) }()
-	go func() { errChan <- s.syncLoop(ctx) }()
+	s.wg.Add(3)
+	go func() { errChan <- s.acceptLoop(ctx); s.wg.Done() }()
+	go func() { errChan <- s.peerLoop(ctx); s.wg.Done() }()
+	go func() { errChan <- s.syncLoop(ctx); s.wg.Done() }()
 	err := <-errChan
+	cancel()
 
 	// when one goroutine exits, shutdown and wait for the others
 	s.l.Close()
@@ -705,7 +707,11 @@ func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
 		ConnAddr: conn.RemoteAddr().String(),
 		Inbound:  false,
 	}
-	go s.runPeer(p)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.runPeer(p)
+	}()
 
 	// runPeer does this too, but doing it outside the goroutine prevents a race
 	// where the peer is absent from Peers() despite Connect() having returned
