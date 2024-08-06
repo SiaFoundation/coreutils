@@ -638,6 +638,7 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 // error occurs, upon which all connections are closed and goroutines are
 // terminated.
 func (s *Syncer) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
 	s.wg.Add(1)
 	defer s.wg.Done()
 	errChan := make(chan error)
@@ -646,6 +647,7 @@ func (s *Syncer) Run(ctx context.Context) error {
 	go func() { errChan <- s.peerLoop(ctx); s.wg.Done() }()
 	go func() { errChan <- s.syncLoop(ctx); s.wg.Done() }()
 	err := <-errChan
+	cancel()
 
 	// when one goroutine exits, shutdown and wait for the others
 	s.l.Close()
