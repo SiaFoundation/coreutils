@@ -555,14 +555,11 @@ func (sw *SingleAddressWallet) UnconfirmedTransactions() (annotated []Event, err
 	return annotated, nil
 }
 
-// Redistribute returns a transaction that redistributes money in the wallet by
-// selecting a minimal set of inputs to cover the creation of the requested
-// outputs. It also returns a list of output IDs that need to be signed.
-func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte types.Currency) (txns []types.Transaction, toSign []types.Hash256, err error) {
+func (sw *SingleAddressWallet) selectRedistributeUTXOs(bh uint64, outputs int, amount types.Currency) ([]types.SiacoinElement, int, error) {
 	// fetch outputs from the store
 	elements, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
-		return nil, nil, err
+		return nil, 0, err
 	}
 
 	// fetch outputs currently in the pool
@@ -572,13 +569,6 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 			inPool[types.Hash256(sci.ParentID)] = true
 		}
 	}
-
-	// grab current height
-	state := sw.cm.TipState()
-	bh := state.Index.Height
-
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
 
 	// adjust the number of desired outputs for any output we encounter that is
 	// unused, matured and has the same value
@@ -597,6 +587,25 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 		if !inUse && matured && !sameValue {
 			utxos = append(utxos, sce)
 		}
+	}
+	// desc sort
+	sort.Slice(utxos, func(i, j int) bool {
+		return utxos[i].SiacoinOutput.Value.Cmp(utxos[j].SiacoinOutput.Value) > 0
+	})
+	return utxos, outputs, nil
+}
+
+// Redistribute returns a transaction that redistributes money in the wallet by
+// selecting a minimal set of inputs to cover the creation of the requested
+// outputs. It also returns a list of output IDs that need to be signed.
+func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte types.Currency) (txns []types.Transaction, toSign []types.Hash256, err error) {
+	state := sw.cm.TipState()
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+
+	utxos, outputs, err := sw.selectRedistributeUTXOs(state.Index.Height, outputs, amount)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// return early if we don't have to defrag at all
@@ -676,6 +685,96 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 		txns = append(txns, txn)
 	}
 
+	return
+}
+
+// RedistributeV2 returns a transaction that redistributes money in the wallet
+// by selecting a minimal set of inputs to cover the creation of the requested
+// outputs. It also returns a list of output IDs that need to be signed.
+func (sw *SingleAddressWallet) RedistributeV2(outputs int, amount, feePerByte types.Currency) (txns []types.V2Transaction, toSign [][]int, err error) {
+	state := sw.cm.TipState()
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+
+	utxos, outputs, err := sw.selectRedistributeUTXOs(state.Index.Height, outputs, amount)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// return early if we don't have to defrag at all
+	if outputs <= 0 {
+		return nil, nil, nil
+	}
+
+	// in case of an error we need to free all inputs
+	defer func() {
+		if err != nil {
+			for txnIdx, toSignTxn := range toSign {
+				for i := range toSignTxn {
+					delete(sw.locked, txns[txnIdx].SiacoinInputs[i].Parent.ID)
+				}
+			}
+		}
+	}()
+
+	// prepare defrag transactions
+	for outputs > 0 {
+		var txn types.V2Transaction
+		for i := 0; i < outputs && i < redistributeBatchSize; i++ {
+			txn.SiacoinOutputs = append(txn.SiacoinOutputs, types.SiacoinOutput{
+				Value:   amount,
+				Address: sw.addr,
+			})
+		}
+		outputs -= len(txn.SiacoinOutputs)
+
+		// estimate the fees
+		outputFees := feePerByte.Mul64(state.V2TransactionWeight(txn))
+		feePerInput := feePerByte.Mul64(bytesPerInput)
+
+		// collect outputs that cover the total amount
+		var inputs []types.SiacoinElement
+		want := amount.Mul64(uint64(len(txn.SiacoinOutputs)))
+		for _, sce := range utxos {
+			inputs = append(inputs, sce)
+			fee := feePerInput.Mul64(uint64(len(inputs))).Add(outputFees)
+			if SumOutputs(inputs).Cmp(want.Add(fee)) > 0 {
+				break
+			}
+		}
+
+		// not enough outputs found
+		fee := feePerInput.Mul64(uint64(len(inputs))).Add(outputFees)
+		if sumOut := SumOutputs(inputs); sumOut.Cmp(want.Add(fee)) < 0 {
+			return nil, nil, fmt.Errorf("%w: inputs %v < needed %v + txnFee %v", ErrNotEnoughFunds, sumOut.String(), want.String(), fee.String())
+		}
+
+		// set the miner fee
+		if !fee.IsZero() {
+			txn.MinerFee = fee
+		}
+
+		// add the change output
+		change := SumOutputs(inputs).Sub(want.Add(fee))
+		if !change.IsZero() {
+			txn.SiacoinOutputs = append(txn.SiacoinOutputs, types.SiacoinOutput{
+				Value:   change,
+				Address: sw.addr,
+			})
+		}
+
+		// add the inputs
+		toSignTxn := make([]int, 0, len(inputs))
+		for _, sce := range inputs {
+			toSignTxn = append(toSignTxn, len(txn.SiacoinInputs))
+			txn.SiacoinInputs = append(txn.SiacoinInputs, types.V2SiacoinInput{
+				Parent: sce,
+			})
+			sw.locked[sce.ID] = time.Now().Add(sw.cfg.ReservationDuration)
+		}
+		txns = append(txns, txn)
+		toSign = append(toSign, toSignTxn)
+	}
 	return
 }
 
