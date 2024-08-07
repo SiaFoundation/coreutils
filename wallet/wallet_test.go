@@ -1392,7 +1392,20 @@ func TestFundTransaction(t *testing.T) {
 	}
 
 	// try again using unconfirmed balance, should work
-	_, _, err = w.FundV2Transaction(&txnV2, sendAmt, true)
+	txnV2 = types.V2Transaction{
+		SiacoinOutputs: []types.SiacoinOutput{
+			{
+				Address: w.Address(),
+				Value:   sendAmt,
+			},
+		},
+	}
+	state, toSignV2, err = w.FundV2Transaction(&txnV2, sendAmt, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SignV2Inputs(state, &txnV2, toSignV2)
+	_, err = cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txnV2})
 	if err != nil {
 		t.Fatal(err)
 	}
