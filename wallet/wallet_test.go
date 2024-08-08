@@ -1404,7 +1404,7 @@ func TestFundTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.SignV2Inputs(state, &txnV3, toSignV2)
-	_, err = cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txnV2, txnV3})
+	_, err = cm.AddV2PoolTransactions(cm.Tip(), append(cm.V2UnconfirmedParents(txnV3), txnV3))
 	if err != nil {
 		t.Fatal(err)
 	}

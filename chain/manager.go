@@ -607,6 +607,21 @@ func (m *Manager) computeParentMap() map[types.Hash256]int {
 			m.txpool.parentMap[types.Hash256(txn.FileContractID(i))] = index
 		}
 	}
+	for index, txn := range m.txpool.v2txns {
+		txid := txn.ID()
+		for i := range txn.SiacoinOutputs {
+			m.txpool.parentMap[types.Hash256(txn.SiacoinOutputID(txid, i))] = index
+		}
+		for _, sfi := range txn.SiafundInputs {
+			m.txpool.parentMap[types.Hash256(types.SiafundOutputID(sfi.Parent.ID).V2ClaimOutputID())] = index
+		}
+		for i := range txn.SiafundOutputs {
+			m.txpool.parentMap[types.Hash256(txn.SiafundOutputID(txid, i))] = index
+		}
+		for i := range txn.FileContracts {
+			m.txpool.parentMap[types.Hash256(txn.V2FileContractID(txid, i))] = index
+		}
+	}
 	return m.txpool.parentMap
 }
 
@@ -891,6 +906,56 @@ func (m *Manager) UnconfirmedParents(txn types.Transaction) []types.Transaction 
 		}
 		for _, sp := range txn.StorageProofs {
 			check(types.Hash256(sp.ParentID))
+		}
+	}
+
+	// check txn, then keep checking parents until done
+	addParents(txn)
+	for {
+		n := len(parents)
+		for _, txn := range parents {
+			addParents(txn)
+		}
+		if len(parents) == n {
+			break
+		}
+	}
+	// reverse so that parents always come before children
+	for i := 0; i < len(parents)/2; i++ {
+		j := len(parents) - 1 - i
+		parents[i], parents[j] = parents[j], parents[i]
+	}
+	return parents
+}
+
+// V2UnconfirmedParents returns the v2 transactions in the txpool that are referenced
+// by txn.
+func (m *Manager) V2UnconfirmedParents(txn types.V2Transaction) []types.V2Transaction {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.revalidatePool()
+
+	parentMap := m.computeParentMap()
+	var parents []types.V2Transaction
+	seen := make(map[int]bool)
+	check := func(id types.Hash256) {
+		if index, ok := parentMap[id]; ok && !seen[index] {
+			seen[index] = true
+			parents = append(parents, m.txpool.v2txns[index])
+		}
+	}
+	addParents := func(txn types.V2Transaction) {
+		for _, sci := range txn.SiacoinInputs {
+			check(types.Hash256(sci.Parent.ID))
+		}
+		for _, sfi := range txn.SiafundInputs {
+			check(types.Hash256(sfi.Parent.ID))
+		}
+		for _, fcr := range txn.FileContractRevisions {
+			check(types.Hash256(fcr.Parent.ID))
+		}
+		for _, fcr := range txn.FileContractResolutions {
+			check(types.Hash256(fcr.Parent.ID))
 		}
 	}
 
