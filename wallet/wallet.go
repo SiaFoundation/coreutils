@@ -138,19 +138,12 @@ func (sw *SingleAddressWallet) Balance() (balance Balance, err error) {
 			tpoolSpent[types.Hash256(si.Parent.ID)] = true
 			delete(tpoolUtxos, types.Hash256(si.Parent.ID))
 		}
-		txnID := txn.ID()
 		for i, sco := range txn.SiacoinOutputs {
 			if sco.Address != sw.addr {
 				continue
 			}
-
-			outputID := txn.SiacoinOutputID(txnID, i)
-			tpoolUtxos[types.Hash256(outputID)] = types.SiacoinElement{
-				StateElement: types.StateElement{
-					ID: types.Hash256(types.SiacoinOutputID(outputID)),
-				},
-				SiacoinOutput: sco,
-			}
+			sce := txn.EphemeralSiacoinOutput(i)
+			tpoolUtxos[sce.ID] = sce
 		}
 	}
 
@@ -245,6 +238,16 @@ func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, us
 				},
 				SiacoinOutput: sco,
 			}
+		}
+	}
+	for _, txn := range sw.cm.V2PoolTransactions() {
+		for _, sci := range txn.SiacoinInputs {
+			tpoolSpent[types.Hash256(sci.Parent.ID)] = true
+			delete(tpoolUtxos, types.Hash256(sci.Parent.ID))
+		}
+		for i := range txn.SiacoinOutputs {
+			sce := txn.EphemeralSiacoinOutput(i)
+			tpoolUtxos[sce.ID] = sce
 		}
 	}
 
@@ -567,6 +570,11 @@ func (sw *SingleAddressWallet) selectRedistributeUTXOs(bh uint64, outputs int, a
 	for _, txn := range sw.cm.PoolTransactions() {
 		for _, sci := range txn.SiacoinInputs {
 			inPool[types.Hash256(sci.ParentID)] = true
+		}
+	}
+	for _, txn := range sw.cm.V2PoolTransactions() {
+		for _, sci := range txn.SiacoinInputs {
+			inPool[types.Hash256(sci.Parent.ID)] = true
 		}
 	}
 

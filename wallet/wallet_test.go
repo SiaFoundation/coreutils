@@ -1318,3 +1318,94 @@ func TestReorgV2(t *testing.T) {
 		t.Fatalf("expected miner payout, got %v", events[0].Type)
 	}
 }
+
+func TestFundTransaction(t *testing.T) {
+	// create wallet store
+	pk := types.GeneratePrivateKey()
+	ws := testutil.NewEphemeralWalletStore(pk)
+
+	// use a network that results in coins mined before and after the v2
+	// hardfork
+	network, genesis := testutil.Network()
+	network.HardforkV2.AllowHeight = 2
+	network.HardforkV2.RequireHeight = 3
+
+	// create chain store
+	cs, tipState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// create chain manager and subscribe the wallet
+	cm := chain.NewManager(cs, tipState)
+	// create wallet
+	l := zaptest.NewLogger(t)
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(l.Named("wallet")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	// fund the wallet
+	mineAndSync(t, cm, ws, w, w.Address(), 3)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, 200)
+
+	balance, err := w.Balance()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendAmt := balance.Confirmed
+
+	txnV2 := types.V2Transaction{
+		SiacoinOutputs: []types.SiacoinOutput{
+			{
+				Address: w.Address(),
+				Value:   sendAmt,
+			},
+		},
+	}
+
+	// Send full confirmed balance to the wallet
+	state, toSignV2, err := w.FundV2Transaction(&txnV2, sendAmt, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SignV2Inputs(state, &txnV2, toSignV2)
+
+	_, err = cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txnV2})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	balance, err = w.Balance()
+	if err != nil {
+		t.Fatal(err)
+	} else if !balance.Unconfirmed.Equals(sendAmt) {
+		t.Fatalf("expected %v unconfirmed balance, got %v", sendAmt, balance.Unconfirmed)
+	}
+
+	// try again, should fail since wallet is empty
+	_, _, err = w.FundV2Transaction(&txnV2, sendAmt, false)
+	if !errors.Is(err, wallet.ErrNotEnoughFunds) {
+		t.Fatal(err)
+	}
+
+	// try again using unconfirmed balance, should work
+	txnV3 := types.V2Transaction{
+		SiacoinOutputs: []types.SiacoinOutput{
+			{
+				Address: w.Address(),
+				Value:   sendAmt,
+			},
+		},
+	}
+	state, toSignV2, err = w.FundV2Transaction(&txnV3, sendAmt, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SignV2Inputs(state, &txnV3, toSignV2)
+	_, err = cm.AddV2PoolTransactions(cm.Tip(), append(cm.V2UnconfirmedParents(txnV3), txnV3))
+	if err != nil {
+		t.Fatal(err)
+	}
+}
