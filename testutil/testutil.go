@@ -26,6 +26,7 @@ func Network() (*consensus.Network, types.Block) {
 	return n, genesisBlock
 }
 
+// V2Network returns a test network and genesis block with early V2 hardforks
 func V2Network() (*consensus.Network, types.Block) {
 	// use a modified version of Zen
 	n, genesisBlock := chain.TestnetZen()
