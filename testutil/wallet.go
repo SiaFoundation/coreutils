@@ -15,8 +15,6 @@ import (
 // primarily useful for testing or as a reference implementation.
 type (
 	EphemeralWalletStore struct {
-		privateKey types.PrivateKey
-
 		mu     sync.Mutex
 		tip    types.ChainIndex
 		utxos  map[types.SiacoinOutputID]types.SiacoinElement
@@ -144,10 +142,8 @@ func (es *EphemeralWalletStore) Tip() (types.ChainIndex, error) {
 }
 
 // NewEphemeralWalletStore returns a new EphemeralWalletStore.
-func NewEphemeralWalletStore(pk types.PrivateKey) *EphemeralWalletStore {
+func NewEphemeralWalletStore() *EphemeralWalletStore {
 	return &EphemeralWalletStore{
-		privateKey: pk,
-
 		utxos: make(map[types.SiacoinOutputID]types.SiacoinElement),
 	}
 }
