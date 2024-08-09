@@ -172,6 +172,8 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 			return
 		}
 
+		fce.MerkleProof = nil // clear the proof to save space
+
 		if valid {
 			for i, so := range fce.FileContract.ValidProofOutputs {
 				if so.Address != walletAddress {
@@ -220,6 +222,8 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 		if _, ok := res.(*types.V2FileContractExpiration); ok {
 			missed = true
 		}
+
+		fce.MerkleProof = nil // clear the proof to save space
 
 		if fce.V2FileContract.HostOutput.Address == walletAddress {
 			outputID := types.FileContractID(fce.ID).V2HostOutputID()
