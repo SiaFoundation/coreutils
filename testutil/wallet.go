@@ -15,8 +15,6 @@ import (
 // primarily useful for testing or as a reference implementation.
 type (
 	EphemeralWalletStore struct {
-		privateKey types.PrivateKey
-
 		mu     sync.Mutex
 		tip    types.ChainIndex
 		utxos  map[types.SiacoinOutputID]types.SiacoinElement
@@ -37,7 +35,10 @@ func (et *ephemeralWalletUpdateTxn) WalletStateElements() (elements []types.Stat
 
 func (et *ephemeralWalletUpdateTxn) UpdateWalletStateElements(elements []types.StateElement) error {
 	for _, se := range elements {
-		utxo := et.store.utxos[types.SiacoinOutputID(se.ID)]
+		utxo, ok := et.store.utxos[types.SiacoinOutputID(se.ID)]
+		if !ok {
+			panic(fmt.Sprintf("siacoin element %q does not exist", se.ID))
+		}
 		utxo.StateElement = se
 		et.store.utxos[types.SiacoinOutputID(se.ID)] = utxo
 	}
@@ -54,7 +55,7 @@ func (et *ephemeralWalletUpdateTxn) WalletApplyIndex(index types.ChainIndex, cre
 	// add siacoin elements
 	for _, se := range created {
 		if _, ok := et.store.utxos[types.SiacoinOutputID(se.ID)]; ok {
-			continue
+			panic("duplicate element")
 		}
 		et.store.utxos[types.SiacoinOutputID(se.ID)] = se
 	}
@@ -144,10 +145,8 @@ func (es *EphemeralWalletStore) Tip() (types.ChainIndex, error) {
 }
 
 // NewEphemeralWalletStore returns a new EphemeralWalletStore.
-func NewEphemeralWalletStore(pk types.PrivateKey) *EphemeralWalletStore {
+func NewEphemeralWalletStore() *EphemeralWalletStore {
 	return &EphemeralWalletStore{
-		privateKey: pk,
-
 		utxos: make(map[types.SiacoinOutputID]types.SiacoinElement),
 	}
 }

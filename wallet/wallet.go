@@ -104,6 +104,11 @@ func (sw *SingleAddressWallet) UnlockConditions() types.UnlockConditions {
 	return types.StandardUnlockConditions(sw.priv.PublicKey())
 }
 
+// UnspentSiacoinElements returns the wallet's unspent siacoin outputs.
+func (sw *SingleAddressWallet) UnspentSiacoinElements() ([]types.SiacoinElement, error) {
+	return sw.store.UnspentSiacoinElements()
+}
+
 // Balance returns the balance of the wallet.
 func (sw *SingleAddressWallet) Balance() (balance Balance, err error) {
 	outputs, err := sw.store.UnspentSiacoinElements()
@@ -477,17 +482,17 @@ func (sw *SingleAddressWallet) SignHash(h types.Hash256) types.Signature {
 	return sw.priv.SignHash(h)
 }
 
-// UnconfirmedTransactions returns all unconfirmed transactions relevant to the
+// UnconfirmedEvents returns all unconfirmed transactions relevant to the
 // wallet.
-func (sw *SingleAddressWallet) UnconfirmedTransactions() (annotated []Event, err error) {
+func (sw *SingleAddressWallet) UnconfirmedEvents() (annotated []Event, err error) {
 	confirmed, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get unspent outputs: %w", err)
 	}
 
-	utxos := make(map[types.Hash256]types.SiacoinOutput)
+	utxos := make(map[types.Hash256]types.SiacoinElement)
 	for _, se := range confirmed {
-		utxos[types.Hash256(se.ID)] = se.SiacoinOutput
+		utxos[types.Hash256(se.ID)] = se
 	}
 
 	index := types.ChainIndex{
@@ -495,32 +500,52 @@ func (sw *SingleAddressWallet) UnconfirmedTransactions() (annotated []Event, err
 	}
 	timestamp := time.Now().Truncate(time.Second)
 
-	addEvent := func(id types.Hash256, eventType string, data EventData, inflow, outflow types.Currency) {
+	addEvent := func(id types.Hash256, eventType string, data EventData) {
 		ev := Event{
 			ID:             id,
 			Index:          index,
 			MaturityHeight: index.Height,
 			Timestamp:      timestamp,
-			Inflow:         inflow,
-			Outflow:        outflow,
 			Type:           eventType,
 			Data:           data,
+			Relevant:       []types.Address{sw.addr},
+		}
+
+		if ev.SiacoinInflow().Equals(ev.SiacoinOutflow()) {
+			// ignore events that don't affect the wallet
+			return
 		}
 		annotated = append(annotated, ev)
 	}
 
 	for _, txn := range sw.cm.PoolTransactions() {
-		var inflow, outflow types.Currency
-		for _, sci := range txn.SiacoinInputs {
-			if sco, ok := utxos[types.Hash256(sci.ParentID)]; ok {
-				outflow = outflow.Add(sco.Value)
-			}
+		event := EventV1Transaction{
+			Transaction: txn,
 		}
 
-		for i, sco := range txn.SiacoinOutputs {
-			if sco.Address == sw.addr {
-				inflow = inflow.Add(sco.Value)
-				utxos[types.Hash256(txn.SiacoinOutputID(i))] = sco
+		var outflow types.Currency
+		for _, sci := range txn.SiacoinInputs {
+			sce, ok := utxos[types.Hash256(sci.ParentID)]
+			if !ok {
+				// ignore inputs that don't belong to the wallet
+				continue
+			}
+			outflow = outflow.Add(sce.SiacoinOutput.Value)
+			event.SpentSiacoinElements = append(event.SpentSiacoinElements, sce)
+		}
+
+		var inflow types.Currency
+		for i, so := range txn.SiacoinOutputs {
+			if so.Address == sw.addr {
+				inflow = inflow.Add(so.Value)
+				sce := types.SiacoinElement{
+					StateElement: types.StateElement{
+						ID:        types.Hash256(txn.SiacoinOutputID(i)),
+						LeafIndex: types.UnassignedLeafIndex,
+					},
+					SiacoinOutput: so,
+				}
+				utxos[sce.ID] = sce
 			}
 		}
 
@@ -528,8 +553,7 @@ func (sw *SingleAddressWallet) UnconfirmedTransactions() (annotated []Event, err
 		if inflow.IsZero() && outflow.IsZero() {
 			continue
 		}
-
-		addEvent(types.Hash256(txn.ID()), EventTypeV1Transaction, EventV1Transaction(txn), inflow, outflow)
+		addEvent(types.Hash256(txn.ID()), EventTypeV1Transaction, event)
 	}
 
 	for _, txn := range sw.cm.V2PoolTransactions() {
@@ -553,7 +577,7 @@ func (sw *SingleAddressWallet) UnconfirmedTransactions() (annotated []Event, err
 			continue
 		}
 
-		addEvent(types.Hash256(txn.ID()), EventTypeV2Transaction, EventV2Transaction(txn), inflow, outflow)
+		addEvent(types.Hash256(txn.ID()), EventTypeV2Transaction, EventV2Transaction(txn))
 	}
 	return annotated, nil
 }

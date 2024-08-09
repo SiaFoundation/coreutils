@@ -50,146 +50,120 @@ type (
 	}
 )
 
+// relevantV1Txn returns true if the transaction is relevant to the provided address
+func relevantV1Txn(txn types.Transaction, addr types.Address) bool {
+	for _, so := range txn.SiacoinOutputs {
+		if so.Address == addr {
+			return true
+		}
+	}
+	for _, si := range txn.SiacoinInputs {
+		if si.UnlockConditions.UnlockHash() == addr {
+			return true
+		}
+	}
+	return false
+}
+
+func relevantV2Txn(txn types.V2Transaction, addr types.Address) bool {
+	for _, so := range txn.SiacoinOutputs {
+		if so.Address == addr {
+			return true
+		}
+	}
+	for _, si := range txn.SiacoinInputs {
+		if si.Parent.SiacoinOutput.Address == addr {
+			return true
+		}
+	}
+	return false
+}
+
 // appliedEvents returns a slice of events that are relevant to the wallet
 // in the chain update.
 func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events []Event) {
 	cs := cau.State
 	block := cau.Block
 	index := cs.Index
-	maturityHeight := cs.MaturityHeight()
 	siacoinElements := make(map[types.SiacoinOutputID]types.SiacoinElement)
 
 	// cache the value of siacoin elements to use when calculating v1 outflow
 	cau.ForEachSiacoinElement(func(se types.SiacoinElement, created, spent bool) {
+		se.MerkleProof = nil // clear the proof to save space
 		siacoinElements[types.SiacoinOutputID(se.ID)] = se
 	})
 
-	addEvent := func(id types.Hash256, eventType string, data EventData) {
+	addEvent := func(id types.Hash256, eventType string, data EventData, maturityHeight uint64) {
 		ev := Event{
-			ID:        id,
-			Index:     index,
-			Data:      data,
-			Type:      eventType,
-			Timestamp: block.Timestamp,
+			ID:             id,
+			Index:          index,
+			Data:           data,
+			Type:           eventType,
+			Timestamp:      block.Timestamp,
+			MaturityHeight: maturityHeight,
+			Relevant:       []types.Address{walletAddress},
 		}
 
-		switch data := data.(type) {
-		case EventPayout:
-			ev.Inflow = data.SiacoinElement.SiacoinOutput.Value
-			ev.MaturityHeight = maturityHeight
-		case EventV1Transaction:
-			for _, si := range data.SiacoinInputs {
-				if si.UnlockConditions.UnlockHash() == walletAddress {
-					ev.Outflow = ev.Outflow.Add(siacoinElements[si.ParentID].SiacoinOutput.Value)
-				}
-			}
-
-			for _, so := range data.SiacoinOutputs {
-				if so.Address == walletAddress {
-					ev.Inflow = ev.Inflow.Add(so.Value)
-				}
-			}
-			ev.MaturityHeight = index.Height // maturity height is the current height
-		case EventV1ContractResolution:
-			ev.Inflow = data.SiacoinElement.SiacoinOutput.Value
-			ev.MaturityHeight = maturityHeight
-		case EventV2Transaction:
-			for _, si := range data.SiacoinInputs {
-				if si.SatisfiedPolicy.Policy.Address() == walletAddress {
-					ev.Outflow = ev.Outflow.Add(siacoinElements[types.SiacoinOutputID(si.Parent.ID)].SiacoinOutput.Value)
-				}
-			}
-
-			for _, so := range data.SiacoinOutputs {
-				if so.Address == walletAddress {
-					ev.Inflow = ev.Inflow.Add(so.Value)
-				}
-			}
-			ev.MaturityHeight = index.Height
-		case EventV2ContractResolution:
-			ev.Inflow = data.SiacoinElement.SiacoinOutput.Value
-			ev.MaturityHeight = maturityHeight
+		if ev.SiacoinInflow().Equals(ev.SiacoinOutflow()) {
+			// skip events that don't affect the wallet
+			return
 		}
-
 		events = append(events, ev)
 	}
 
-	relevantV1Txn := func(txn types.Transaction) bool {
-		for _, so := range txn.SiacoinOutputs {
-			if so.Address == walletAddress {
-				return true
-			}
-		}
-		for _, si := range txn.SiacoinInputs {
-			if si.UnlockConditions.UnlockHash() == walletAddress {
-				return true
-			}
-		}
-		for _, si := range txn.SiafundInputs {
-			if si.ClaimAddress == walletAddress {
-				return true
-			}
-		}
-		return false
-	}
-
 	for _, txn := range block.Transactions {
-		if !relevantV1Txn(txn) {
+		if !relevantV1Txn(txn, walletAddress) {
 			continue
 		}
 		for _, si := range txn.SiafundInputs {
 			if si.UnlockConditions.UnlockHash() == walletAddress {
 				outputID := si.ParentID.ClaimOutputID()
-				claimOutput, ok := siacoinElements[outputID]
+				sce, ok := siacoinElements[outputID]
 				if !ok {
-					continue
+					panic("missing claim siacoin element")
 				}
 
 				addEvent(types.Hash256(outputID), EventTypeSiafundClaim, EventPayout{
-					SiacoinElement: claimOutput,
-				})
+					SiacoinElement: sce,
+				}, sce.MaturityHeight)
 			}
 		}
-		addEvent(types.Hash256(txn.ID()), EventTypeV1Transaction, EventV1Transaction(txn))
-	}
 
-	relevantV2Txn := func(txn types.V2Transaction) bool {
-		for _, so := range txn.SiacoinOutputs {
-			if so.Address == walletAddress {
-				return true
-			}
+		event := EventV1Transaction{
+			Transaction: txn,
 		}
+
 		for _, si := range txn.SiacoinInputs {
-			if si.Parent.SiacoinOutput.Address == walletAddress {
-				return true
+			se, ok := siacoinElements[types.SiacoinOutputID(si.ParentID)]
+			if !ok {
+				panic("missing transaction siacoin element")
+			} else if se.SiacoinOutput.Address != walletAddress {
+				continue
 			}
+			event.SpentSiacoinElements = append(event.SpentSiacoinElements, se)
 		}
-		for _, si := range txn.SiafundInputs {
-			if si.ClaimAddress == walletAddress {
-				return true
-			}
-		}
-		return false
+		addEvent(types.Hash256(txn.ID()), EventTypeV1Transaction, event, index.Height)
 	}
 
 	for _, txn := range block.V2Transactions() {
-		if !relevantV2Txn(txn) {
+		if !relevantV2Txn(txn, walletAddress) {
 			continue
 		}
 		for _, si := range txn.SiafundInputs {
 			if si.Parent.SiafundOutput.Address == walletAddress {
 				outputID := types.SiafundOutputID(si.Parent.ID).V2ClaimOutputID()
-				claimOutput, ok := siacoinElements[outputID]
+				sce, ok := siacoinElements[outputID]
 				if !ok {
-					continue
+					panic("missing claim siacoin element")
 				}
 
 				addEvent(types.Hash256(outputID), EventTypeSiafundClaim, EventPayout{
-					SiacoinElement: claimOutput,
-				})
+					SiacoinElement: sce,
+				}, sce.MaturityHeight)
 			}
 		}
-		addEvent(types.Hash256(txn.ID()), EventTypeV2Transaction, EventV2Transaction(txn))
+
+		addEvent(types.Hash256(txn.ID()), EventTypeV2Transaction, EventV2Transaction(txn), index.Height)
 	}
 
 	// add the file contract outputs
@@ -205,11 +179,16 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 				}
 
 				outputID := types.FileContractID(fce.ID).ValidOutputID(i)
+				sce, ok := siacoinElements[outputID]
+				if !ok {
+					panic("missing siacoin element")
+				}
+
 				addEvent(types.Hash256(types.FileContractID(fce.ID).ValidOutputID(0)), EventTypeV1ContractResolution, EventV1ContractResolution{
 					Parent:         fce,
-					SiacoinElement: siacoinElements[outputID],
+					SiacoinElement: sce,
 					Missed:         false,
-				})
+				}, sce.MaturityHeight)
 			}
 		} else {
 			for i, so := range fce.FileContract.MissedProofOutputs {
@@ -218,11 +197,16 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 				}
 
 				outputID := types.FileContractID(fce.ID).MissedOutputID(i)
+				sce, ok := siacoinElements[outputID]
+				if !ok {
+					panic("missing siacoin element")
+				}
+
 				addEvent(types.Hash256(types.FileContractID(fce.ID).MissedOutputID(0)), EventTypeV1ContractResolution, EventV1ContractResolution{
 					Parent:         fce,
-					SiacoinElement: siacoinElements[outputID],
+					SiacoinElement: sce,
 					Missed:         true,
-				})
+				}, sce.MaturityHeight)
 			}
 		}
 	})
@@ -239,26 +223,36 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 
 		if fce.V2FileContract.HostOutput.Address == walletAddress {
 			outputID := types.FileContractID(fce.ID).V2HostOutputID()
+			sce, ok := siacoinElements[outputID]
+			if !ok {
+				panic("missing siacoin element")
+			}
+
 			addEvent(types.Hash256(outputID), EventTypeV2ContractResolution, EventV2ContractResolution{
-				V2FileContractResolution: types.V2FileContractResolution{
+				Resolution: types.V2FileContractResolution{
 					Parent:     fce,
 					Resolution: res,
 				},
-				SiacoinElement: siacoinElements[outputID],
+				SiacoinElement: sce,
 				Missed:         missed,
-			})
+			}, sce.MaturityHeight)
 		}
 
 		if fce.V2FileContract.RenterOutput.Address == walletAddress {
 			outputID := types.FileContractID(fce.ID).V2RenterOutputID()
+			sce, ok := siacoinElements[outputID]
+			if !ok {
+				panic("missing siacoin element")
+			}
+
 			addEvent(types.Hash256(outputID), EventTypeV2ContractResolution, EventV2ContractResolution{
-				V2FileContractResolution: types.V2FileContractResolution{
+				Resolution: types.V2FileContractResolution{
 					Parent:     fce,
 					Resolution: res,
 				},
-				SiacoinElement: siacoinElements[outputID],
+				SiacoinElement: sce,
 				Missed:         missed,
-			})
+			}, sce.MaturityHeight)
 		}
 	})
 
@@ -269,61 +263,59 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 		}
 
 		outputID := blockID.MinerOutputID(i)
+		sce, ok := siacoinElements[outputID]
+		if !ok {
+			panic("missing siacoin element")
+		}
 		addEvent(types.Hash256(outputID), EventTypeMinerPayout, EventPayout{
-			SiacoinElement: siacoinElements[outputID],
-		})
+			SiacoinElement: sce,
+		}, sce.MaturityHeight)
 	}
 
 	outputID := blockID.FoundationOutputID()
-	se, ok := siacoinElements[outputID]
-	if !ok || se.SiacoinOutput.Address != walletAddress {
-		return
+	if sce, ok := siacoinElements[outputID]; ok && sce.SiacoinOutput.Address == walletAddress {
+		addEvent(types.Hash256(outputID), EventTypeFoundationSubsidy, EventPayout{
+			SiacoinElement: sce,
+		}, sce.MaturityHeight)
 	}
-	addEvent(types.Hash256(outputID), EventTypeFoundationSubsidy, EventPayout{
-		SiacoinElement: se,
-	})
-
 	return
 }
 
 // applyChainState atomically applies a chain update
 func applyChainState(tx UpdateTx, address types.Address, cau chain.ApplyUpdate) error {
+	// update current state elements
 	stateElements, err := tx.WalletStateElements()
 	if err != nil {
 		return fmt.Errorf("failed to get state elements: %w", err)
 	}
 
-	var createdUTXOs, spentUTXOs []types.SiacoinElement
-	utxoValues := make(map[types.SiacoinOutputID]types.Currency)
-
-	cau.ForEachSiacoinElement(func(se types.SiacoinElement, created, spent bool) {
-		if se.SiacoinOutput.Address != address {
-			return
-		}
-
-		// cache the value of the utxo to use when calculating outflow
-		utxoValues[types.SiacoinOutputID(se.ID)] = se.SiacoinOutput.Value
-
-		// ignore ephemeral elements
-		if created && spent {
-			return
-		}
-
-		if spent {
-			spentUTXOs = append(spentUTXOs, se)
-		} else {
-			createdUTXOs = append(createdUTXOs, se)
-		}
-	})
-
 	for i := range stateElements {
 		cau.UpdateElementProof(&stateElements[i])
 	}
+	if err := tx.UpdateWalletStateElements(stateElements); err != nil {
+		return fmt.Errorf("failed to update state elements: %w", err)
+	}
+
+	var createdUTXOs, spentUTXOs []types.SiacoinElement
+	cau.ForEachSiacoinElement(func(se types.SiacoinElement, created, spent bool) {
+		switch {
+		case created && spent:
+			// ignore ephemeral elements
+			return
+		case se.SiacoinOutput.Address != address:
+			// ignore elements that are not related to the wallet
+			return
+		case created:
+			createdUTXOs = append(createdUTXOs, se)
+		case spent:
+			spentUTXOs = append(spentUTXOs, se)
+		default:
+			panic("unexpected siacoin element") // developer error
+		}
+	})
 
 	if err := tx.WalletApplyIndex(cau.State.Index, createdUTXOs, spentUTXOs, appliedEvents(cau, address), cau.Block.Timestamp); err != nil {
 		return fmt.Errorf("failed to apply index: %w", err)
-	} else if err := tx.UpdateWalletStateElements(stateElements); err != nil {
-		return fmt.Errorf("failed to update state elements: %w", err)
 	}
 	return nil
 }
@@ -332,13 +324,19 @@ func applyChainState(tx UpdateTx, address types.Address, cau chain.ApplyUpdate) 
 func revertChainUpdate(tx UpdateTx, revertedIndex types.ChainIndex, address types.Address, cru chain.RevertUpdate) error {
 	var removedUTXOs, unspentUTXOs []types.SiacoinElement
 	cru.ForEachSiacoinElement(func(se types.SiacoinElement, created, spent bool) {
-		if se.SiacoinOutput.Address != address || (created && spent) {
+		switch {
+		case created && spent:
+			// ignore ephemeral elements
 			return
-		}
-		if spent {
+		case se.SiacoinOutput.Address != address:
+			// ignore elements that are not related to the wallet
+			return
+		case spent:
 			unspentUTXOs = append(unspentUTXOs, se)
-		} else {
+		case created:
 			removedUTXOs = append(removedUTXOs, se)
+		default:
+			panic("unexpected siacoin element") // developer error
 		}
 	})
 
@@ -352,11 +350,9 @@ func revertChainUpdate(tx UpdateTx, revertedIndex types.ChainIndex, address type
 	if err != nil {
 		return fmt.Errorf("failed to get state elements: %w", err)
 	}
-
 	for i := range stateElements {
 		cru.UpdateElementProof(&stateElements[i])
 	}
-
 	if err := tx.UpdateWalletStateElements(stateElements); err != nil {
 		return fmt.Errorf("failed to update state elements: %w", err)
 	}
