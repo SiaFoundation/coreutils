@@ -119,7 +119,6 @@ func TestV2Attestations(t *testing.T) {
 	n.HardforkV2.AllowHeight = 2
 	n.HardforkV2.RequireHeight = 3
 
-	//sk := types.GeneratePrivateKey()
 	policy := types.AnyoneCanSpend()
 	addr := policy.Address()
 
@@ -136,7 +135,6 @@ func TestV2Attestations(t *testing.T) {
 		}
 	}
 
-	// ok
 	t.Run("arbitrary data", func(t *testing.T) {
 		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock)
 		if err != nil {
@@ -172,7 +170,6 @@ func TestV2Attestations(t *testing.T) {
 		ms.Sync(t, cm)
 	})
 
-	// ok
 	t.Run("arbitrary data + attestation + no change output", func(t *testing.T) {
 		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock)
 		if err != nil {
@@ -222,7 +219,6 @@ func TestV2Attestations(t *testing.T) {
 		ms.Sync(t, cm)
 	})
 
-	// panics
 	t.Run("arbitrary data + attestation", func(t *testing.T) {
 		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock)
 		if err != nil {
@@ -267,7 +263,6 @@ func TestV2Attestations(t *testing.T) {
 		ms.Sync(t, cm)
 	})
 
-	// panics
 	t.Run("arbitrary data + attestation + change output", func(t *testing.T) {
 		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock)
 		if err != nil {
