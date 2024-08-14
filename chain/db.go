@@ -486,8 +486,8 @@ func (db *DBStore) revertElements(cru consensus.RevertUpdate) {
 			// contract no longer revised; restore prior revision
 			db.putFileContractElement(fce)
 			if rev.FileContract.WindowEnd != fce.FileContract.WindowEnd {
-				db.deleteFileContractExpiration(types.FileContractID(fce.ID), fce.FileContract.WindowEnd)
-				db.putFileContractExpiration(types.FileContractID(fce.ID), rev.FileContract.WindowEnd)
+				db.deleteFileContractExpiration(types.FileContractID(fce.ID), rev.FileContract.WindowEnd)
+				db.putFileContractExpiration(types.FileContractID(fce.ID), fce.FileContract.WindowEnd)
 			}
 		} else {
 			// contract no longer exists; delete it
