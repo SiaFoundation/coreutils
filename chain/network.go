@@ -168,6 +168,9 @@ func TestnetAnagami() (*consensus.Network, types.Block) {
 	n.HardforkV2.AllowHeight = 2016         // ~2 weeks in
 	n.HardforkV2.RequireHeight = 2016 + 288 // ~2 days later
 
+	n.HardforkFoundation.PrimaryAddress = parseAddr("addr:241352c83da002e61f57e96b14f3a5f8b5de22156ce83b753ea495e64f1affebae88736b2347")
+	n.HardforkFoundation.FailsafeAddress = types.VoidAddress
+
 	// move the genesis airdrops for easier testing
 	genesis.Transactions[0].SiacoinOutputs = []types.SiacoinOutput{{
 		Address: parseAddr("addr:241352c83da002e61f57e96b14f3a5f8b5de22156ce83b753ea495e64f1affebae88736b2347"),
