@@ -157,6 +157,8 @@ func TestnetZen() (*consensus.Network, types.Block) {
 	return n, b
 }
 
+// TestnetAnagami returns the chain parameters and genesis block for the "Anagami"
+// testnet chain.
 func TestnetAnagami() (*consensus.Network, types.Block) {
 	// use a modified version of Zen
 	n, genesis := TestnetZen()
