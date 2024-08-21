@@ -106,57 +106,6 @@ func Mainnet() (*consensus.Network, types.Block) {
 	return n, b
 }
 
-// TestnetAnagami returns the chain parameters and genesis block for the "Anagami"
-// testnet chain.
-func TestnetAnagami() (*consensus.Network, types.Block) {
-	n := &consensus.Network{
-		Name: "anagami",
-
-		InitialCoinbase: types.Siacoins(300000),
-		MinimumCoinbase: types.Siacoins(300000),
-		InitialTarget:   types.BlockID{3: 1},
-	}
-
-	n.HardforkDevAddr.Height = 1
-	n.HardforkDevAddr.OldAddress = types.Address{}
-	n.HardforkDevAddr.NewAddress = types.Address{}
-
-	n.HardforkTax.Height = 2
-
-	n.HardforkStorageProof.Height = 3
-
-	n.HardforkOak.Height = 5
-	n.HardforkOak.FixHeight = 8
-	n.HardforkOak.GenesisTimestamp = time.Unix(1702300000, 0) // Dec 11, 2023 @ 13:06 GMT
-
-	n.HardforkASIC.Height = 13
-	n.HardforkASIC.OakTime = 10 * time.Minute
-	n.HardforkASIC.OakTarget = n.InitialTarget
-
-	n.HardforkFoundation.Height = 21
-	n.HardforkFoundation.PrimaryAddress, _ = types.ParseAddress("addr:5949fdf56a7c18ba27f6526f22fd560526ce02a1bd4fa3104938ab744b69cf63b6b734b8341f")
-	n.HardforkFoundation.FailsafeAddress = n.HardforkFoundation.PrimaryAddress
-
-	n.HardforkV2.AllowHeight = 2016         // ~2 weeks in
-	n.HardforkV2.RequireHeight = 2016 + 288 // ~2 days later
-
-	b := types.Block{
-		Timestamp: n.HardforkOak.GenesisTimestamp,
-		Transactions: []types.Transaction{{
-			SiacoinOutputs: []types.SiacoinOutput{{
-				Address: n.HardforkFoundation.PrimaryAddress,
-				Value:   types.Siacoins(1).Mul64(1e12),
-			}},
-			SiafundOutputs: []types.SiafundOutput{{
-				Address: n.HardforkFoundation.PrimaryAddress,
-				Value:   10000,
-			}},
-		}},
-	}
-
-	return n, b
-}
-
 // TestnetZen returns the chain parameters and genesis block for the "Zen"
 // testnet chain.
 func TestnetZen() (*consensus.Network, types.Block) {
@@ -206,4 +155,30 @@ func TestnetZen() (*consensus.Network, types.Block) {
 	}
 
 	return n, b
+}
+
+// TestnetAnagami returns the chain parameters and genesis block for the "Anagami"
+// testnet chain.
+func TestnetAnagami() (*consensus.Network, types.Block) {
+	// use a modified version of Zen
+	n, genesis := TestnetZen()
+
+	n.Name = "anagami"
+	n.HardforkOak.GenesisTimestamp = time.Date(2024, time.August, 22, 0, 0, 0, 0, time.UTC)
+	n.HardforkV2.AllowHeight = 2016         // ~2 weeks in
+	n.HardforkV2.RequireHeight = 2016 + 288 // ~2 days later
+
+	n.HardforkFoundation.PrimaryAddress = parseAddr("addr:241352c83da002e61f57e96b14f3a5f8b5de22156ce83b753ea495e64f1affebae88736b2347")
+	n.HardforkFoundation.FailsafeAddress = types.VoidAddress
+
+	// move the genesis airdrops for easier testing
+	genesis.Transactions[0].SiacoinOutputs = []types.SiacoinOutput{{
+		Address: parseAddr("addr:241352c83da002e61f57e96b14f3a5f8b5de22156ce83b753ea495e64f1affebae88736b2347"),
+		Value:   types.Siacoins(1).Mul64(1e12),
+	}}
+	genesis.Transactions[0].SiafundOutputs = []types.SiafundOutput{{
+		Address: parseAddr("addr:241352c83da002e61f57e96b14f3a5f8b5de22156ce83b753ea495e64f1affebae88736b2347"),
+		Value:   10000,
+	}}
+	return n, genesis
 }
