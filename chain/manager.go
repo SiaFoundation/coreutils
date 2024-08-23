@@ -1210,6 +1210,8 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 	_, txns, err := m.updateV2TransactionSet(basis, txns)
 	if err != nil {
 		return false, m.markBadTxnSet(setID, fmt.Errorf("failed to update set basis: %w", err))
+	} else if len(txns) == 0 {
+		return true, nil
 	}
 
 	// validate as a standalone set
