@@ -55,9 +55,10 @@ retry:
 		}},
 	}
 
-	if cs.Index.Height >= cs.Network.HardforkV2.AllowHeight {
+	childHeight := cs.Index.Height + 1
+	if childHeight >= cs.Network.HardforkV2.AllowHeight {
 		b.V2 = &types.V2BlockData{
-			Height: cs.Index.Height + 1,
+			Height: childHeight,
 		}
 	}
 
@@ -69,14 +70,14 @@ retry:
 		b.Transactions = append(b.Transactions, txn)
 		b.MinerPayouts[0].Value = b.MinerPayouts[0].Value.Add(txn.TotalFees())
 	}
-	for _, txn := range v2Txns {
-		if weight += cs.V2TransactionWeight(txn); weight > cs.MaxBlockWeight() {
-			break
-		}
-		b.V2.Transactions = append(b.V2.Transactions, txn)
-		b.MinerPayouts[0].Value = b.MinerPayouts[0].Value.Add(txn.MinerFee)
-	}
 	if b.V2 != nil {
+		for _, txn := range v2Txns {
+			if weight += cs.V2TransactionWeight(txn); weight > cs.MaxBlockWeight() {
+				break
+			}
+			b.V2.Transactions = append(b.V2.Transactions, txn)
+			b.MinerPayouts[0].Value = b.MinerPayouts[0].Value.Add(txn.MinerFee)
+		}
 		b.V2.Commitment = cs.Commitment(cs.TransactionsCommitment(b.Transactions, b.V2Transactions()), addr)
 	}
 	found := FindBlockNonce(cs, &b, timeout)
