@@ -371,15 +371,25 @@ func (sw *SingleAddressWallet) UpdateChainState(tx UpdateTx, reverted []chain.Re
 			ID:     cru.Block.ID(),
 			Height: cru.State.Index.Height + 1,
 		}
-		if err := revertChainUpdate(tx, revertedIndex, sw.addr, cru); err != nil {
-			return err
+		sw.mu.Lock()
+		err := revertChainUpdate(tx, revertedIndex, sw.addr, cru)
+		if err != nil {
+			sw.mu.Unlock()
+			return fmt.Errorf("failed to revert chain update %q: %w", cru.State.Index, err)
 		}
+		sw.tip = cru.State.Index
+		sw.mu.Unlock()
 	}
 
 	for _, cau := range applied {
-		if err := applyChainState(tx, sw.addr, cau); err != nil {
+		sw.mu.Lock()
+		err := applyChainState(tx, sw.addr, cau)
+		if err != nil {
+			sw.mu.Unlock()
 			return fmt.Errorf("failed to apply chain update %q: %w", cau.State.Index, err)
 		}
+		sw.tip = cau.State.Index
+		sw.mu.Unlock()
 	}
 	return nil
 }

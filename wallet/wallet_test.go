@@ -596,7 +596,7 @@ func TestWalletRedistributeV2(t *testing.T) {
 		}
 
 		for i := 0; i < len(txns); i++ {
-			w.SignV2Inputs(cm.TipState(), &txns[i], toSign[i])
+			w.SignV2Inputs(&txns[i], toSign[i])
 		}
 		if _, err := cm.AddV2PoolTransactions(cm.Tip(), txns); err != nil {
 			return fmt.Errorf("failed to add transactions to pool: %w", err)
@@ -1008,14 +1008,14 @@ func TestWalletV2(t *testing.T) {
 	}
 
 	// fund and sign the transaction
-	state, toSignV2, err := w.FundV2Transaction(&v2Txn, types.Siacoins(100), false)
+	basis, toSignV2, err := w.FundV2Transaction(&v2Txn, types.Siacoins(100), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.SignV2Inputs(state, &v2Txn, toSignV2)
+	w.SignV2Inputs(&v2Txn, toSignV2)
 
 	// add the transaction to the pool
-	if _, err := cm.AddV2PoolTransactions(state.Index, []types.V2Transaction{v2Txn}); err != nil {
+	if _, err := cm.AddV2PoolTransactions(basis, []types.V2Transaction{v2Txn}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1139,11 +1139,11 @@ func TestReorgV2(t *testing.T) {
 	}
 
 	// fund and sign the transaction
-	state, toSign, err := w.FundV2Transaction(&txn, initialReward, false)
+	basis, toSign, err := w.FundV2Transaction(&txn, initialReward, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.SignV2Inputs(state, &txn, toSign)
+	w.SignV2Inputs(&txn, toSign)
 
 	// check that wallet now has no spendable balance
 	assertBalance(t, w, types.ZeroCurrency, initialReward, types.ZeroCurrency, types.ZeroCurrency)
@@ -1157,7 +1157,7 @@ func TestReorgV2(t *testing.T) {
 	}
 
 	// add the transaction to the pool
-	if _, err := cm.AddV2PoolTransactions(state.Index, []types.V2Transaction{txn}); err != nil {
+	if _, err := cm.AddV2PoolTransactions(basis, []types.V2Transaction{txn}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1187,11 +1187,11 @@ func TestReorgV2(t *testing.T) {
 			{Address: types.VoidAddress, Value: initialReward},
 		},
 	}
-	state, toSign, err = w.FundV2Transaction(&txn2, initialReward, false)
+	_, toSign, err = w.FundV2Transaction(&txn2, initialReward, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.SignV2Inputs(state, &txn2, toSign)
+	w.SignV2Inputs(&txn2, toSign)
 
 	// release the inputs to construct a double spend
 	w.ReleaseInputs(nil, []types.V2Transaction{txn2})
@@ -1201,14 +1201,14 @@ func TestReorgV2(t *testing.T) {
 			{Address: types.VoidAddress, Value: initialReward.Div64(2)},
 		},
 	}
-	state, toSign, err = w.FundV2Transaction(&txn1, initialReward.Div64(2), false)
+	basis, toSign, err = w.FundV2Transaction(&txn1, initialReward.Div64(2), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.SignV2Inputs(state, &txn1, toSign)
+	w.SignV2Inputs(&txn1, toSign)
 
 	// add the first transaction to the pool
-	if _, err := cm.AddV2PoolTransactions(state.Index, []types.V2Transaction{txn1}); err != nil {
+	if _, err := cm.AddV2PoolTransactions(basis, []types.V2Transaction{txn1}); err != nil {
 		t.Fatal(err)
 	}
 	mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
@@ -1225,7 +1225,7 @@ func TestReorgV2(t *testing.T) {
 	assertBalance(t, w, initialReward.Div64(2), initialReward.Div64(2), types.ZeroCurrency, types.ZeroCurrency)
 
 	// spend the second transaction to invalidate the confirmed transaction
-	state = rollbackState
+	state := rollbackState
 	txn2Height := state.Index.Height + 1
 	b := types.Block{
 		ParentID:     state.Index.ID,
@@ -1343,13 +1343,13 @@ func TestFundTransaction(t *testing.T) {
 	}
 
 	// Send full confirmed balance to the wallet
-	state, toSignV2, err := w.FundV2Transaction(&txnV2, sendAmt, false)
+	basis, toSignV2, err := w.FundV2Transaction(&txnV2, sendAmt, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.SignV2Inputs(state, &txnV2, toSignV2)
+	w.SignV2Inputs(&txnV2, toSignV2)
 
-	_, err = cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txnV2})
+	_, err = cm.AddV2PoolTransactions(basis, []types.V2Transaction{txnV2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1376,12 +1376,17 @@ func TestFundTransaction(t *testing.T) {
 			},
 		},
 	}
-	state, toSignV2, err = w.FundV2Transaction(&txnV3, sendAmt, true)
+	basis, toSignV2, err = w.FundV2Transaction(&txnV3, sendAmt, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.SignV2Inputs(state, &txnV3, toSignV2)
-	_, err = cm.AddV2PoolTransactions(cm.Tip(), append(cm.V2UnconfirmedParents(txnV3), txnV3))
+	w.SignV2Inputs(&txnV3, toSignV2)
+	basis, txnset, err := cm.V2TransactionSet(basis, txnV3)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = cm.AddV2PoolTransactions(basis, txnset)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1497,10 +1502,10 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		wm.SignV2Inputs(basis, &txn, toSign)
+		wm.SignV2Inputs(&txn, toSign)
 
 		// broadcast the transaction
-		if _, err := cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txn}); err != nil {
+		if _, err := cm.AddV2PoolTransactions(basis, []types.V2Transaction{txn}); err != nil {
 			t.Fatal(err)
 		}
 		// mine a block to confirm the transaction
@@ -1541,10 +1546,10 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		wm.SignV2Inputs(basis, &txn, toSign)
+		wm.SignV2Inputs(&txn, toSign)
 
 		// broadcast the transaction
-		if _, err := cm.AddV2PoolTransactions(basis.Index, []types.V2Transaction{txn}); err != nil {
+		if _, err := cm.AddV2PoolTransactions(basis, []types.V2Transaction{txn}); err != nil {
 			t.Fatal(err)
 		}
 		// current tip
@@ -1617,10 +1622,10 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		wm.SignV2Inputs(basis, &txn, toSign)
+		wm.SignV2Inputs(&txn, toSign)
 
 		// broadcast the transaction
-		if _, err := cm.AddV2PoolTransactions(basis.Index, []types.V2Transaction{txn}); err != nil {
+		if _, err := cm.AddV2PoolTransactions(basis, []types.V2Transaction{txn}); err != nil {
 			t.Fatal(err)
 		}
 		// current tip
@@ -1700,10 +1705,10 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		wm.SignV2Inputs(basis, &txn, toSign)
+		wm.SignV2Inputs(&txn, toSign)
 
 		// broadcast the transaction
-		if _, err := cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txn}); err != nil {
+		if _, err := cm.AddV2PoolTransactions(basis, []types.V2Transaction{txn}); err != nil {
 			t.Fatal(err)
 		}
 		// current tip
@@ -1762,7 +1767,7 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		wm.SignV2Inputs(setupBasis, &setupTxn, setupToSign)
+		wm.SignV2Inputs(&setupTxn, setupToSign)
 
 		// create the renewal transaction
 		resolutionTxn := types.V2Transaction{
@@ -1781,10 +1786,10 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 				},
 			},
 		}
-		wm.SignV2Inputs(setupBasis, &resolutionTxn, []int{0})
+		wm.SignV2Inputs(&resolutionTxn, []int{0})
 
 		// broadcast the renewal
-		if _, err := cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{setupTxn, resolutionTxn}); err != nil {
+		if _, err := cm.AddV2PoolTransactions(setupBasis, []types.V2Transaction{setupTxn, resolutionTxn}); err != nil {
 			t.Fatal(err)
 		}
 		// mine a block to confirm the renewal
@@ -1824,10 +1829,10 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		wm.SignV2Inputs(basis, &txn, toSign)
+		wm.SignV2Inputs(&txn, toSign)
 
 		// broadcast the transaction
-		if _, err := cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txn}); err != nil {
+		if _, err := cm.AddV2PoolTransactions(basis, []types.V2Transaction{txn}); err != nil {
 			t.Fatal(err)
 		}
 		// current tip
@@ -1878,4 +1883,80 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		mineAndSync(t, cm, ws, wm, types.VoidAddress, 1)
 		assertEvent(t, wm, types.Hash256(types.FileContractID(fce.ID).V2RenterOutputID()), wallet.EventTypeV2ContractResolution, renterPayout, types.ZeroCurrency, cm.Tip().Height+144)
 	})
+}
+
+func TestV2TPoolRace(t *testing.T) {
+	// create wallet store
+	pk := types.GeneratePrivateKey()
+	ws := testutil.NewEphemeralWalletStore()
+
+	// create chain store
+	network, genesis := testutil.V2Network()
+	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// create chain manager and subscribe the wallet
+	cm := chain.NewManager(cs, genesisState)
+	// create wallet
+	l := zaptest.NewLogger(t)
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(l.Named("wallet")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	// fund the wallet
+	mineAndSync(t, cm, ws, w, w.Address(), 1)
+	// mine until one utxo is mature
+	mineAndSync(t, cm, ws, w, types.VoidAddress, 144)
+
+	// create a transaction that creates an ephemeral output with 1000 SC
+	setupTxn := types.V2Transaction{
+		SiacoinOutputs: []types.SiacoinOutput{
+			{Address: w.Address(), Value: types.Siacoins(1000)},
+		},
+	}
+	basis, toSign, err := w.FundV2Transaction(&setupTxn, types.Siacoins(1000), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SignV2Inputs(&setupTxn, toSign)
+
+	// broadcast the setup transaction
+	if _, err := cm.AddV2PoolTransactions(basis, []types.V2Transaction{setupTxn}); err != nil {
+		t.Fatal(err)
+	}
+
+	// create a transaction that spends the ephemeral output
+	spendTxn := types.V2Transaction{
+		SiacoinOutputs: []types.SiacoinOutput{
+			{Address: types.VoidAddress, Value: types.Siacoins(1000)},
+		},
+	}
+
+	// try to fund with non-ephemeral output, should fail
+	if _, _, err = w.FundV2Transaction(&spendTxn, types.Siacoins(1000), false); err == nil {
+		t.Fatal("expected funding error, got nil")
+	}
+
+	// fund with the tpool ephemeral output
+	basis, toSign, err = w.FundV2Transaction(&spendTxn, types.Siacoins(1000), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SignV2Inputs(&spendTxn, toSign)
+
+	// mine to confirm the setup transaction. This will make the ephemeral
+	// output in the spend transaction invalid unless it is updated.
+	mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
+
+	// broadcast the transaction set including the already confirmed setup
+	// transaction. This seems unnecessary, but it's a fairly common occurrence
+	// when passing transaction sets using unconfirmed outputs between a renter
+	// and host. If the transaction set is not updated correctly, it will fail.
+	if _, err := cm.AddV2PoolTransactions(basis, []types.V2Transaction{setupTxn, spendTxn}); err != nil {
+		t.Fatal(err)
+	}
 }
