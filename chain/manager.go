@@ -941,6 +941,8 @@ func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transacti
 	_, txns, err := m.updateV2TransactionSet(basis, []types.V2Transaction{txn})
 	if err != nil {
 		return types.ChainIndex{}, nil, fmt.Errorf("failed to update transaction set basis: %w", err)
+	} else if len(txns) == 0 {
+		return types.ChainIndex{}, nil, errors.New("no transactions to broadcast")
 	}
 	txn = txns[0]
 
