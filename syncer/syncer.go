@@ -285,14 +285,19 @@ func (s *Syncer) runPeer(p *Peer) error {
 			p.setErr(err)
 			return fmt.Errorf("failed to accept rpc: %w", err)
 		}
+
+		// set a generous deadline
+		err = stream.SetDeadline(time.Now().Add(10 * time.Minute))
+		if err != nil {
+			p.setErr(err)
+			return fmt.Errorf("failed to set deadline: %w", err)
+		}
+
 		inflight <- struct{}{}
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
 			defer stream.Close()
-			// NOTE: we do not set any deadlines on the stream. If a peer is
-			// slow, fine; we don't need to worry about resource exhaustion
-			// unless we have tons of peers.
 			if err := s.handleRPC(id, stream, p); err != nil {
 				s.log.Debug("rpc failed", zap.Stringer("peer", p), zap.Stringer("rpc", id), zap.Error(err))
 			}
@@ -675,10 +680,22 @@ func (s *Syncer) Run(ctx context.Context) error {
 	return err
 }
 
-// Close closes the Syncer's net.Listener.
-func (s *Syncer) Close() error {
+// Shutdown closes the Syncer's net.Listener.
+func (s *Syncer) Shutdown(ctx context.Context) error {
 	err := s.l.Close()
-	s.wg.Wait()
+
+	waitChan := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(waitChan)
+	}()
+
+	select {
+	case <-ctx.Done():
+		return errors.Join(err, ctx.Err())
+	case <-waitChan:
+	}
+
 	return err
 }
 
