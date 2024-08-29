@@ -285,8 +285,11 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 	return
 }
 
-// applyChainState atomically applies a chain update
-func applyChainState(tx UpdateTx, address types.Address, cau chain.ApplyUpdate) error {
+// applyChainUpdate atomically applies a chain update
+func (sw *SingleAddressWallet) applyChainUpdate(tx UpdateTx, address types.Address, cau chain.ApplyUpdate) error {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+
 	// update current state elements
 	stateElements, err := tx.WalletStateElements()
 	if err != nil {
@@ -321,11 +324,15 @@ func applyChainState(tx UpdateTx, address types.Address, cau chain.ApplyUpdate) 
 	if err := tx.WalletApplyIndex(cau.State.Index, createdUTXOs, spentUTXOs, appliedEvents(cau, address), cau.Block.Timestamp); err != nil {
 		return fmt.Errorf("failed to apply index: %w", err)
 	}
+	sw.tip = cau.State.Index
 	return nil
 }
 
 // revertChainUpdate atomically reverts a chain update from a wallet
-func revertChainUpdate(tx UpdateTx, revertedIndex types.ChainIndex, address types.Address, cru chain.RevertUpdate) error {
+func (sw *SingleAddressWallet) revertChainUpdate(tx UpdateTx, revertedIndex types.ChainIndex, address types.Address, cru chain.RevertUpdate) error {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+
 	var removedUTXOs, unspentUTXOs []types.SiacoinElement
 	cru.ForEachSiacoinElement(func(se types.SiacoinElement, created, spent bool) {
 		switch {
@@ -360,6 +367,7 @@ func revertChainUpdate(tx UpdateTx, revertedIndex types.ChainIndex, address type
 	if err := tx.UpdateWalletStateElements(stateElements); err != nil {
 		return fmt.Errorf("failed to update state elements: %w", err)
 	}
+	sw.tip = revertedIndex
 	return nil
 }
 
@@ -371,13 +379,15 @@ func (sw *SingleAddressWallet) UpdateChainState(tx UpdateTx, reverted []chain.Re
 			ID:     cru.Block.ID(),
 			Height: cru.State.Index.Height + 1,
 		}
-		if err := revertChainUpdate(tx, revertedIndex, sw.addr, cru); err != nil {
-			return err
+		err := sw.revertChainUpdate(tx, revertedIndex, sw.addr, cru)
+		if err != nil {
+			return fmt.Errorf("failed to revert chain update %q: %w", cru.State.Index, err)
 		}
 	}
 
 	for _, cau := range applied {
-		if err := applyChainState(tx, sw.addr, cau); err != nil {
+		err := sw.applyChainUpdate(tx, sw.addr, cau)
+		if err != nil {
 			return fmt.Errorf("failed to apply chain update %q: %w", cau.State.Index, err)
 		}
 	}
