@@ -764,8 +764,8 @@ func (s *Syncer) Addr() string {
 // New returns a new Syncer.
 func New(l net.Listener, cm ChainManager, pm PeerStore, header gateway.Header, opts ...Option) *Syncer {
 	config := config{
-		MaxInboundPeers:            8,
-		MaxOutboundPeers:           8,
+		MaxInboundPeers:            16,
+		MaxOutboundPeers:           16,
 		MaxInflightRPCs:            3,
 		ConnectTimeout:             5 * time.Second,
 		ShareNodesTimeout:          5 * time.Second,
