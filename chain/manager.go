@@ -9,6 +9,7 @@ import (
 
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/types"
+	"go.uber.org/zap"
 	"lukechampine.com/frand"
 )
 
@@ -73,6 +74,7 @@ func blockAndChild(s Store, id types.BlockID) (types.Block, *consensus.V1BlockSu
 // A Manager tracks multiple blockchains and identifies the best valid
 // chain.
 type Manager struct {
+	log           *zap.Logger
 	store         Store
 	tipState      consensus.State
 	onReorg       map[[16]byte]func(types.ChainIndex)
@@ -199,6 +201,8 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 		return nil
 	}
 
+	log := m.log.Named("AddBlocks")
+
 	cs := m.tipState
 	for _, b := range blocks {
 		bid := b.ID()
@@ -226,11 +230,13 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 		cs = consensus.ApplyOrphan(cs, b, ancestorTimestamp)
 		m.store.AddState(cs)
 		m.store.AddBlock(b, nil)
+		log.Debug("added block", zap.Uint64("height", cs.Index.Height), zap.Stringer("id", bid))
 	}
 
 	// if this chain is now the best chain, trigger a reorg
 	if cs.SufficientlyHeavierThan(m.tipState) {
 		oldTip := m.tipState.Index
+		log.Debug("reorging to", zap.Stringer("current", oldTip), zap.Stringer("target", cs.Index))
 		if err := m.reorgTo(cs.Index); err != nil {
 			if err := m.reorgTo(oldTip); err != nil {
 				return fmt.Errorf("failed to revert failed reorg: %w", err)
@@ -456,6 +462,7 @@ func (m *Manager) OnReorg(fn func(types.ChainIndex)) (cancel func()) {
 }
 
 func (m *Manager) revalidatePool() {
+	log := m.log.Named("revalidatePool")
 	txpoolMaxWeight := m.tipState.MaxBlockWeight() * 10
 	if m.txpool.ms != nil && m.txpool.weight < txpoolMaxWeight {
 		return
@@ -516,24 +523,28 @@ func (m *Manager) revalidatePool() {
 	filtered := m.txpool.txns[:0]
 	for _, txn := range m.txpool.txns {
 		ts := m.store.SupplementTipTransaction(txn)
-		if consensus.ValidateTransaction(m.txpool.ms, txn, ts) == nil {
-			m.txpool.ms.ApplyTransaction(txn, ts)
-			m.txpool.indices[txn.ID()] = len(m.txpool.txns)
-			m.txpool.weight += m.tipState.TransactionWeight(txn)
-			filtered = append(filtered, txn)
+		if err := consensus.ValidateTransaction(m.txpool.ms, txn, ts); err != nil {
+			log.Debug("dropping invalid pool transaction", zap.Stringer("id", txn.ID()), zap.Error(err))
+			continue
 		}
+		m.txpool.ms.ApplyTransaction(txn, ts)
+		m.txpool.indices[txn.ID()] = len(m.txpool.txns)
+		m.txpool.weight += m.tipState.TransactionWeight(txn)
+		filtered = append(filtered, txn)
 	}
 	m.txpool.txns = filtered
 
 	m.txpool.v2txns = append(m.txpool.v2txns, m.txpool.lastRevertedV2...)
 	v2filtered := m.txpool.v2txns[:0]
 	for _, txn := range m.txpool.v2txns {
-		if consensus.ValidateV2Transaction(m.txpool.ms, txn) == nil {
-			m.txpool.ms.ApplyV2Transaction(txn)
-			m.txpool.indices[txn.ID()] = len(m.txpool.v2txns)
-			m.txpool.weight += m.tipState.V2TransactionWeight(txn)
-			v2filtered = append(v2filtered, txn)
+		if err := consensus.ValidateV2Transaction(m.txpool.ms, txn); err != nil {
+			log.Debug("dropping invalid pool v2 transaction", zap.Stringer("id", txn.ID()), zap.Error(err))
+			continue
 		}
+		m.txpool.ms.ApplyV2Transaction(txn)
+		m.txpool.indices[txn.ID()] = len(m.txpool.v2txns)
+		m.txpool.weight += m.tipState.V2TransactionWeight(txn)
+		v2filtered = append(v2filtered, txn)
 	}
 	m.txpool.v2txns = v2filtered
 }
@@ -1243,12 +1254,16 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 }
 
 // NewManager returns a Manager initialized with the provided Store and State.
-func NewManager(store Store, cs consensus.State) *Manager {
+func NewManager(store Store, cs consensus.State, opts ...ManagerOption) *Manager {
 	m := &Manager{
+		log:           zap.NewNop(),
 		store:         store,
 		tipState:      cs,
 		onReorg:       make(map[[16]byte]func(types.ChainIndex)),
 		invalidBlocks: make(map[types.BlockID]error),
+	}
+	for _, opt := range opts {
+		opt(m)
 	}
 	m.txpool.indices = make(map[types.TransactionID]int)
 	m.txpool.invalidTxnSets = make(map[types.Hash256]error)
