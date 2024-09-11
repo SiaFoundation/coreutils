@@ -76,7 +76,8 @@ type (
 
 		cfg config
 
-		mu sync.Mutex // protects the following fields
+		mu  sync.Mutex // protects the following fields
+		tip types.ChainIndex
 		// locked is a set of siacoin output IDs locked by FundTransaction. They
 		// will be released either by calling Release for unused transactions or
 		// being confirmed in a block.
@@ -90,7 +91,6 @@ var ErrDifferentSeed = errors.New("seed differs from wallet seed")
 
 // Close closes the wallet
 func (sw *SingleAddressWallet) Close() error {
-	// TODO: remove subscription??
 	return nil
 }
 
@@ -413,19 +413,18 @@ func (sw *SingleAddressWallet) SignTransaction(txn *types.Transaction, toSign []
 // will not be available to future calls to FundTransaction unless ReleaseInputs
 // is called.
 //
-// The returned consensus state should be used to calculate the input signature
-// hash and as the basis for AddV2PoolTransactions.
-func (sw *SingleAddressWallet) FundV2Transaction(txn *types.V2Transaction, amount types.Currency, useUnconfirmed bool) (consensus.State, []int, error) {
-	if amount.IsZero() {
-		return sw.cm.TipState(), nil, nil
-	}
-
+// The returned index should be used as the basis for AddV2PoolTransactions.
+func (sw *SingleAddressWallet) FundV2Transaction(txn *types.V2Transaction, amount types.Currency, useUnconfirmed bool) (types.ChainIndex, []int, error) {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
+	if amount.IsZero() {
+		return sw.tip, nil, nil
+	}
+
 	selected, inputSum, err := sw.selectUTXOs(amount, len(txn.SiacoinInputs), useUnconfirmed)
 	if err != nil {
-		return consensus.State{}, nil, err
+		return types.ChainIndex{}, nil, err
 	}
 
 	// add a change output if necessary
@@ -445,11 +444,11 @@ func (sw *SingleAddressWallet) FundV2Transaction(txn *types.V2Transaction, amoun
 		sw.locked[sce.ID] = time.Now().Add(sw.cfg.ReservationDuration)
 	}
 
-	return sw.cm.TipState(), toSign, nil
+	return sw.tip, toSign, nil
 }
 
 // SignV2Inputs adds a signature to each of the specified siacoin inputs.
-func (sw *SingleAddressWallet) SignV2Inputs(state consensus.State, txn *types.V2Transaction, toSign []int) {
+func (sw *SingleAddressWallet) SignV2Inputs(txn *types.V2Transaction, toSign []int) {
 	if len(toSign) == 0 {
 		return
 	}
@@ -458,7 +457,7 @@ func (sw *SingleAddressWallet) SignV2Inputs(state consensus.State, txn *types.V2
 	defer sw.mu.Unlock()
 
 	policy := sw.SpendPolicy()
-	sigHash := state.InputSigHash(*txn)
+	sigHash := sw.cm.TipState().InputSigHash(*txn)
 	for _, i := range toSign {
 		txn.SiacoinInputs[i].SatisfiedPolicy = types.SatisfiedPolicy{
 			Policy:     policy,
@@ -468,8 +467,10 @@ func (sw *SingleAddressWallet) SignV2Inputs(state consensus.State, txn *types.V2
 }
 
 // Tip returns the block height the wallet has scanned to.
-func (sw *SingleAddressWallet) Tip() (types.ChainIndex, error) {
-	return sw.store.Tip()
+func (sw *SingleAddressWallet) Tip() types.ChainIndex {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return sw.tip
 }
 
 // SpendPolicy returns the wallet's default spend policy.
@@ -922,6 +923,11 @@ func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store Single
 		opt(&cfg)
 	}
 
+	tip, err := store.Tip()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get wallet tip: %w", err)
+	}
+
 	sw := &SingleAddressWallet{
 		priv: priv,
 
@@ -932,6 +938,7 @@ func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store Single
 		log: cfg.Log,
 
 		addr:   types.StandardUnlockHash(priv.PublicKey()),
+		tip:    tip,
 		locked: make(map[types.Hash256]time.Time),
 	}
 	return sw, nil

@@ -531,7 +531,11 @@ func (s *Syncer) peerLoop(ctx context.Context) error {
 		for _, p := range candidates {
 			if numOutbound() >= s.config.MaxOutboundPeers {
 				break
+			} else if err := s.allowConnect(ctx, p, false); err != nil {
+				log.Debug("rejected outbound peer", zap.String("peer", p), zap.Error(err))
+				break
 			}
+
 			ctx, cancel := context.WithTimeout(ctx, s.config.ConnectTimeout)
 			if _, err := s.Connect(ctx, p); err != nil {
 				log.Debug("connected to peer", zap.String("peer", p))
@@ -701,10 +705,6 @@ func (s *Syncer) Shutdown(ctx context.Context) error {
 
 // Connect forms an outbound connection to a peer.
 func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
-	if err := s.allowConnect(ctx, addr, false); err != nil {
-		return nil, err
-	}
-
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
@@ -781,8 +781,8 @@ func (s *Syncer) Addr() string {
 // New returns a new Syncer.
 func New(l net.Listener, cm ChainManager, pm PeerStore, header gateway.Header, opts ...Option) *Syncer {
 	config := config{
-		MaxInboundPeers:            8,
-		MaxOutboundPeers:           8,
+		MaxInboundPeers:            16,
+		MaxOutboundPeers:           16,
 		MaxInflightRPCs:            3,
 		ConnectTimeout:             5 * time.Second,
 		ShareNodesTimeout:          5 * time.Second,

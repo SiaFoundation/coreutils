@@ -9,6 +9,7 @@ import (
 
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/types"
+	"go.uber.org/zap"
 	"lukechampine.com/frand"
 )
 
@@ -73,6 +74,7 @@ func blockAndChild(s Store, id types.BlockID) (types.Block, *consensus.V1BlockSu
 // A Manager tracks multiple blockchains and identifies the best valid
 // chain.
 type Manager struct {
+	log           *zap.Logger
 	store         Store
 	tipState      consensus.State
 	onReorg       map[[16]byte]func(types.ChainIndex)
@@ -199,6 +201,8 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 		return nil
 	}
 
+	log := m.log.Named("AddBlocks")
+
 	cs := m.tipState
 	for _, b := range blocks {
 		bid := b.ID()
@@ -226,11 +230,13 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 		cs = consensus.ApplyOrphan(cs, b, ancestorTimestamp)
 		m.store.AddState(cs)
 		m.store.AddBlock(b, nil)
+		log.Debug("added block", zap.Uint64("height", cs.Index.Height), zap.Stringer("id", bid))
 	}
 
 	// if this chain is now the best chain, trigger a reorg
 	if cs.SufficientlyHeavierThan(m.tipState) {
 		oldTip := m.tipState.Index
+		log.Debug("reorging to", zap.Stringer("current", oldTip), zap.Stringer("target", cs.Index))
 		if err := m.reorgTo(cs.Index); err != nil {
 			if err := m.reorgTo(oldTip); err != nil {
 				return fmt.Errorf("failed to revert failed reorg: %w", err)
@@ -456,6 +462,7 @@ func (m *Manager) OnReorg(fn func(types.ChainIndex)) (cancel func()) {
 }
 
 func (m *Manager) revalidatePool() {
+	log := m.log.Named("revalidatePool")
 	txpoolMaxWeight := m.tipState.MaxBlockWeight() * 10
 	if m.txpool.ms != nil && m.txpool.weight < txpoolMaxWeight {
 		return
@@ -516,24 +523,28 @@ func (m *Manager) revalidatePool() {
 	filtered := m.txpool.txns[:0]
 	for _, txn := range m.txpool.txns {
 		ts := m.store.SupplementTipTransaction(txn)
-		if consensus.ValidateTransaction(m.txpool.ms, txn, ts) == nil {
-			m.txpool.ms.ApplyTransaction(txn, ts)
-			m.txpool.indices[txn.ID()] = len(m.txpool.txns)
-			m.txpool.weight += m.tipState.TransactionWeight(txn)
-			filtered = append(filtered, txn)
+		if err := consensus.ValidateTransaction(m.txpool.ms, txn, ts); err != nil {
+			log.Debug("dropping invalid pool transaction", zap.Stringer("id", txn.ID()), zap.Error(err))
+			continue
 		}
+		m.txpool.ms.ApplyTransaction(txn, ts)
+		m.txpool.indices[txn.ID()] = len(m.txpool.txns)
+		m.txpool.weight += m.tipState.TransactionWeight(txn)
+		filtered = append(filtered, txn)
 	}
 	m.txpool.txns = filtered
 
 	m.txpool.v2txns = append(m.txpool.v2txns, m.txpool.lastRevertedV2...)
 	v2filtered := m.txpool.v2txns[:0]
 	for _, txn := range m.txpool.v2txns {
-		if consensus.ValidateV2Transaction(m.txpool.ms, txn) == nil {
-			m.txpool.ms.ApplyV2Transaction(txn)
-			m.txpool.indices[txn.ID()] = len(m.txpool.v2txns)
-			m.txpool.weight += m.tipState.V2TransactionWeight(txn)
-			v2filtered = append(v2filtered, txn)
+		if err := consensus.ValidateV2Transaction(m.txpool.ms, txn); err != nil {
+			log.Debug("dropping invalid pool v2 transaction", zap.Stringer("id", txn.ID()), zap.Error(err))
+			continue
 		}
+		m.txpool.ms.ApplyV2Transaction(txn)
+		m.txpool.indices[txn.ID()] = len(m.txpool.v2txns)
+		m.txpool.weight += m.tipState.V2TransactionWeight(txn)
+		v2filtered = append(v2filtered, txn)
 	}
 	m.txpool.v2txns = v2filtered
 }
@@ -928,13 +939,25 @@ func (m *Manager) UnconfirmedParents(txn types.Transaction) []types.Transaction 
 	return parents
 }
 
-// V2UnconfirmedParents returns the v2 transactions in the txpool that are referenced
-// by txn.
-func (m *Manager) V2UnconfirmedParents(txn types.V2Transaction) []types.V2Transaction {
+// V2TransactionSet returns the full transaction set and basis necessary for
+// broadcasting a transaction. If the provided basis does not match the current
+// tip the transaction will be updated. The transaction set includes the parents
+// and the transaction itself in an order valid for broadcasting.
+func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transaction) (types.ChainIndex, []types.V2Transaction, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.revalidatePool()
 
+	// update the transaction's basis to match tip
+	_, txns, err := m.updateV2TransactionSet(basis, []types.V2Transaction{txn})
+	if err != nil {
+		return types.ChainIndex{}, nil, fmt.Errorf("failed to update transaction set basis: %w", err)
+	} else if len(txns) == 0 {
+		return types.ChainIndex{}, nil, errors.New("no transactions to broadcast")
+	}
+	txn = txns[0]
+
+	// get the transaction's parents
 	parentMap := m.computeParentMap()
 	var parents []types.V2Transaction
 	seen := make(map[int]bool)
@@ -975,7 +998,7 @@ func (m *Manager) V2UnconfirmedParents(txn types.V2Transaction) []types.V2Transa
 		j := len(parents) - 1 - i
 		parents[i], parents[j] = parents[j], parents[i]
 	}
-	return parents
+	return m.tipState.Index, append(parents, txn), nil
 }
 
 func (m *Manager) checkDupTxnSet(txns []types.Transaction, v2txns []types.V2Transaction) (types.Hash256, bool) {
@@ -1063,6 +1086,109 @@ func (m *Manager) AddPoolTransactions(txns []types.Transaction) (known bool, err
 	return
 }
 
+// updateV2TransactionSet updates the basis of a transaction set to the current
+// tip. If the basis is already the tip, the transaction set is returned as-is.
+// Any transactions that were confirmed are removed from the set. Any ephemeral
+// state elements that were created by an update are updated.
+//
+// If it is undesirable to modify the transaction set, deep-copy it
+// before calling this method.
+func (m *Manager) updateV2TransactionSet(basis types.ChainIndex, txns []types.V2Transaction) (types.ChainIndex, []types.V2Transaction, error) {
+	if basis == m.tipState.Index {
+		return basis, txns, nil
+	}
+
+	// bring txns up-to-date
+	revert, apply, err := m.reorgPath(basis, m.tipState.Index)
+	if err != nil {
+		return types.ChainIndex{}, nil, fmt.Errorf("couldn't determine reorg path from %v to %v: %w", basis, m.tipState.Index, err)
+	} else if len(revert)+len(apply) > 144 {
+		return types.ChainIndex{}, nil, fmt.Errorf("reorg path from %v to %v is too long (-%v +%v)", basis, m.tipState.Index, len(revert), len(apply))
+	}
+	for _, index := range revert {
+		b, _, cs, ok := blockAndParent(m.store, index.ID)
+		if !ok {
+			return types.ChainIndex{}, nil, fmt.Errorf("missing reverted block at index %v", index)
+		} else if b.V2 == nil {
+			return types.ChainIndex{}, nil, fmt.Errorf("reorg path from %v to %v contains a non-v2 block (%v)", basis, m.tipState.Index, index)
+		}
+		// NOTE: since we are post-hardfork, we don't need a v1 supplement
+		cru := consensus.RevertBlock(cs, b, consensus.V1BlockSupplement{})
+		for i := range txns {
+			if !updateTxnProofs(&txns[i], cru.UpdateElementProof, cs.Elements.NumLeaves) {
+				return types.ChainIndex{}, nil, fmt.Errorf("transaction %v references element that does not exist in our chain", txns[i].ID())
+			}
+		}
+	}
+
+	for _, index := range apply {
+		b, _, cs, ok := blockAndParent(m.store, index.ID)
+		if !ok {
+			return types.ChainIndex{}, nil, fmt.Errorf("missing applied block at index %v", index)
+		} else if b.V2 == nil {
+			return types.ChainIndex{}, nil, fmt.Errorf("reorg path from %v to %v contains a non-v2 block (%v)", basis, m.tipState.Index, index)
+		}
+		// NOTE: since we are post-hardfork, we don't need a v1 supplement or ancestorTimestamp
+		cs, cau := consensus.ApplyBlock(cs, b, consensus.V1BlockSupplement{}, time.Time{})
+
+		// get the transactions that were confirmed in this block
+		confirmedTxns := make(map[types.TransactionID]bool)
+		for _, txn := range b.V2Transactions() {
+			confirmedTxns[txn.ID()] = true
+		}
+		confirmedStateElements := make(map[types.Hash256]types.StateElement)
+		cau.ForEachSiacoinElement(func(sce types.SiacoinElement, created, spent bool) {
+			if created {
+				confirmedStateElements[sce.ID] = sce.StateElement
+			}
+		})
+		cau.ForEachSiafundElement(func(sfe types.SiafundElement, created, spent bool) {
+			if created {
+				confirmedStateElements[sfe.ID] = sfe.StateElement
+			}
+		})
+
+		rem := txns[:0]
+		for i := range txns {
+			if confirmedTxns[txns[i].ID()] {
+				// remove any transactions that were confirmed in this block
+				continue
+			}
+			rem = append(rem, txns[i])
+
+			// update the state elements for any confirmed ephemeral elements
+			for j := range txns[i].SiacoinInputs {
+				if txns[i].SiacoinInputs[j].Parent.LeafIndex != types.UnassignedLeafIndex {
+					continue
+				}
+				se, ok := confirmedStateElements[types.Hash256(txns[i].SiacoinInputs[j].Parent.ID)]
+				if !ok {
+					continue
+				}
+				txns[i].SiacoinInputs[j].Parent.StateElement = se
+			}
+
+			// update the state elements for any confirmed ephemeral elements
+			for j := range txns[i].SiafundInputs {
+				if txns[i].SiafundInputs[j].Parent.LeafIndex != types.UnassignedLeafIndex {
+					continue
+				}
+				se, ok := confirmedStateElements[types.Hash256(txns[i].SiafundInputs[j].Parent.ID)]
+				if !ok {
+					continue
+				}
+				txns[i].SiafundInputs[j].Parent.StateElement = se
+			}
+
+			// NOTE: all elements guaranteed to exist from here on, so no
+			// need to check this return value
+			updateTxnProofs(&rem[len(rem)-1], cau.UpdateElementProof, cs.Elements.NumLeaves)
+		}
+		txns = rem
+	}
+	return m.tipState.Index, txns, nil
+}
+
 // AddV2PoolTransactions validates a transaction set and adds it to the txpool.
 // If any transaction references an element (SiacoinOutput, SiafundOutput, or
 // FileContract) not present in the blockchain, that element must be created by
@@ -1093,44 +1219,12 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 		txns[i] = txns[i].DeepCopy()
 	}
 
-	if basis != m.tipState.Index {
-		// bring txns up-to-date
-		revert, apply, err := m.reorgPath(basis, m.tipState.Index)
-		if err != nil {
-			return false, fmt.Errorf("couldn't determine reorg path from %v to %v: %w", basis, m.tipState.Index, err)
-		} else if len(revert)+len(apply) > 144 {
-			return false, fmt.Errorf("reorg path from %v to %v is too long (-%v +%v)", basis, m.tipState.Index, len(revert), len(apply))
-		}
-		for _, index := range revert {
-			b, _, cs, ok := blockAndParent(m.store, index.ID)
-			if !ok {
-				return false, fmt.Errorf("missing reverted block at index %v", index)
-			} else if b.V2 == nil {
-				return false, m.markBadTxnSet(setID, fmt.Errorf("reorg path from %v to %v contains a non-v2 block (%v)", basis, m.tipState.Index, index))
-			}
-			// NOTE: since we are post-hardfork, we don't need a v1 supplement
-			cru := consensus.RevertBlock(cs, b, consensus.V1BlockSupplement{})
-			for i := range txns {
-				if !updateTxnProofs(&txns[i], cru.UpdateElementProof, cs.Elements.NumLeaves) {
-					return false, m.markBadTxnSet(setID, fmt.Errorf("transaction %v references element that does not exist in our chain", txns[i].ID()))
-				}
-			}
-		}
-		for _, index := range apply {
-			b, _, cs, ok := blockAndParent(m.store, index.ID)
-			if !ok {
-				return false, fmt.Errorf("missing applied block at index %v", index)
-			} else if b.V2 == nil {
-				return false, m.markBadTxnSet(setID, fmt.Errorf("reorg path from %v to %v contains a non-v2 block (%v)", basis, m.tipState.Index, index))
-			}
-			// NOTE: since we are post-hardfork, we don't need a v1 supplement or ancestorTimestamp
-			cs, cau := consensus.ApplyBlock(cs, b, consensus.V1BlockSupplement{}, time.Time{})
-			for i := range txns {
-				// NOTE: all elements guaranteed to exist from here on, so no
-				// need to check this return value
-				updateTxnProofs(&txns[i], cau.UpdateElementProof, cs.Elements.NumLeaves)
-			}
-		}
+	// update the transaction set to the current tip
+	_, txns, err := m.updateV2TransactionSet(basis, txns)
+	if err != nil {
+		return false, m.markBadTxnSet(setID, fmt.Errorf("failed to update set basis: %w", err))
+	} else if len(txns) == 0 {
+		return true, nil
 	}
 
 	// validate as a standalone set
@@ -1160,12 +1254,16 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 }
 
 // NewManager returns a Manager initialized with the provided Store and State.
-func NewManager(store Store, cs consensus.State) *Manager {
+func NewManager(store Store, cs consensus.State, opts ...ManagerOption) *Manager {
 	m := &Manager{
+		log:           zap.NewNop(),
 		store:         store,
 		tipState:      cs,
 		onReorg:       make(map[[16]byte]func(types.ChainIndex)),
 		invalidBlocks: make(map[types.BlockID]error),
+	}
+	for _, opt := range opts {
+		opt(m)
 	}
 	m.txpool.indices = make(map[types.TransactionID]int)
 	m.txpool.invalidTxnSets = make(map[types.Hash256]error)
