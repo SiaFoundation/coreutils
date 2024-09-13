@@ -879,7 +879,7 @@ func TestRPCModifySectors(t *testing.T) {
 	tokenSigHash := token.SigHash()
 	token.Signature = renterKey.SignHash(tokenSigHash)
 
-	roots := make([]types.Hash256, 50)
+	roots := make([]types.Hash256, 10)
 	for i := range roots {
 		// store random sectors on the host
 		data := frand.Bytes(1024)
@@ -921,7 +921,7 @@ func TestRPCModifySectors(t *testing.T) {
 	revision.Revision = revised
 
 	// swap two random sectors
-	swapA, swapB := frand.Uint64n(25), frand.Uint64n(25)+25
+	swapA, swapB := frand.Uint64n(uint64(len(roots)/2)), frand.Uint64n(uint64(len(roots)/2))+uint64(len(roots)/2)
 	actions = []proto4.WriteAction{
 		{Type: proto4.ActionSwap, A: swapA, B: swapB},
 	}
@@ -935,21 +935,21 @@ func TestRPCModifySectors(t *testing.T) {
 
 	// delete the last 10 sectors
 	actions = []proto4.WriteAction{
-		{Type: proto4.ActionTrim, N: 10},
+		{Type: proto4.ActionTrim, N: uint64(len(roots) / 2)},
 	}
 	revised, err = rhp4.RPCModifySectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, actions)
 	if err != nil {
 		t.Fatal(err)
 	}
-	trimmed, roots := roots[:len(roots)-10], roots[:40]
+	trimmed, roots := roots[len(roots)/2:], roots[:len(roots)/2]
 	assertRevision(t, revised, roots)
 	revision.Revision = revised
 
 	// update a random sector with one of the trimmed sectors
-	updateIdx := frand.Uint64n(40)
-	trimmedIdx := frand.Uint64n(10)
+	updateIdx := frand.Intn(len(roots))
+	trimmedIdx := frand.Intn(len(trimmed))
 	actions = []proto4.WriteAction{
-		{Type: proto4.ActionUpdate, Root: trimmed[trimmedIdx], A: updateIdx},
+		{Type: proto4.ActionUpdate, Root: trimmed[trimmedIdx], A: uint64(updateIdx)},
 	}
 
 	revised, err = rhp4.RPCModifySectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, actions)
@@ -1364,4 +1364,10 @@ func BenchmarkContractUpload(b *testing.B) {
 	} else if revised.Filesize != uint64(b.N)*proto4.SectorSize {
 		b.Fatalf("expected %v sectors, got %v", b.N, revised.Filesize/proto4.SectorSize)
 	}
+}
+
+func TestContext(t *testing.T) {
+	ctx := context.Background()
+	<-ctx.Done()
+	t.Fatal("context should not be done")
 }

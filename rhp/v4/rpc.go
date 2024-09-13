@@ -70,22 +70,6 @@ type (
 	}
 )
 
-// client return values
-type (
-	// RPCFormContractResponse is the response to a form contract request
-	RPCFormContractResponse struct {
-		Basis        types.ChainIndex      `json:"basis"`
-		FormationSet []types.V2Transaction `json:"formationSet"`
-		Contract     ContractRevision      `json:"contract"`
-		Cost         types.Currency        `json:"cost"`
-	}
-
-	RPCReadSectorResponse struct {
-		Cost types.Currency `json:"cost"`
-		Data []byte         `json:"data"`
-	}
-)
-
 // RPCSettings returns the current settings of the host
 func RPCSettings(ctx context.Context, t TransportClient) (rhp4.HostSettings, error) {
 	s := t.DialStreamContext(ctx)

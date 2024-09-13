@@ -11,7 +11,7 @@ import (
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/chain"
 	rhp4 "go.sia.tech/coreutils/rhp/v4"
-	"go.sia.tech/mux"
+	"go.sia.tech/mux/v2"
 	"go.uber.org/zap"
 )
 
