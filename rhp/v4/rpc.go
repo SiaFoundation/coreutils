@@ -11,8 +11,8 @@ import (
 )
 
 type (
-	// A Transport is a generic multiplexer for incoming streams.
-	Transport interface {
+	// A TransportClient is a generic multiplexer for outgoing streams.
+	TransportClient interface {
 		DialStream() net.Conn
 		Close() error
 	}
@@ -50,7 +50,7 @@ type ContractRevision struct {
 }
 
 // RPCSettings returns the current settings of the host
-func RPCSettings(t Transport) (rhp4.HostSettings, error) {
+func RPCSettings(t TransportClient) (rhp4.HostSettings, error) {
 	s := t.DialStream()
 	defer s.Close()
 
@@ -66,7 +66,7 @@ func RPCSettings(t Transport) (rhp4.HostSettings, error) {
 }
 
 // RPCReadSector reads a sector from the host
-func RPCReadSector(t Transport, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256, offset, length uint64) ([]byte, error) {
+func RPCReadSector(t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256, offset, length uint64) ([]byte, error) {
 	if offset+length > rhp4.SectorSize {
 		return nil, fmt.Errorf("read exceeds sector bounds")
 	}
@@ -93,7 +93,7 @@ func RPCReadSector(t Transport, prices rhp4.HostPrices, token rhp4.AccountToken,
 }
 
 // RPCWriteSector writes a sector to the host
-func RPCWriteSector(t Transport, prices rhp4.HostPrices, token rhp4.AccountToken, data []byte, duration uint64) (types.Hash256, error) {
+func RPCWriteSector(t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, data []byte, duration uint64) (types.Hash256, error) {
 	if len(data) > rhp4.SectorSize {
 		return types.Hash256{}, fmt.Errorf("sector must be less than %d bytes", rhp4.SectorSize)
 	} else if len(data)%rhp4.LeafSize != 0 {
@@ -128,7 +128,7 @@ func RPCWriteSector(t Transport, prices rhp4.HostPrices, token rhp4.AccountToken
 }
 
 // RPCModifySectors modifies sectors on the host
-func RPCModifySectors(t Transport, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, actions []rhp4.WriteAction) (types.V2FileContract, error) {
+func RPCModifySectors(t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, actions []rhp4.WriteAction) (types.V2FileContract, error) {
 	s := t.DialStream()
 	defer s.Close()
 
@@ -176,7 +176,7 @@ func RPCModifySectors(t Transport, cs consensus.State, prices rhp4.HostPrices, s
 }
 
 // RPCFundAccounts funds accounts on the host
-func RPCFundAccounts(t Transport, cs consensus.State, sk types.PrivateKey, contract ContractRevision, deposits []rhp4.AccountDeposit) (types.V2FileContract, []types.Currency, error) {
+func RPCFundAccounts(t TransportClient, cs consensus.State, sk types.PrivateKey, contract ContractRevision, deposits []rhp4.AccountDeposit) (types.V2FileContract, []types.Currency, error) {
 	var total types.Currency
 	for _, deposit := range deposits {
 		total = total.Add(deposit.Amount)
@@ -215,7 +215,7 @@ func RPCFundAccounts(t Transport, cs consensus.State, sk types.PrivateKey, contr
 }
 
 // RPCLatestRevision returns the latest revision of a contract
-func RPCLatestRevision(t Transport, contractID types.FileContractID) (types.V2FileContract, error) {
+func RPCLatestRevision(t TransportClient, contractID types.FileContractID) (types.V2FileContract, error) {
 	s := t.DialStream()
 	defer s.Close()
 
@@ -231,7 +231,7 @@ func RPCLatestRevision(t Transport, contractID types.FileContractID) (types.V2Fi
 }
 
 // RPCSectorRoots returns the sector roots for a contract
-func RPCSectorRoots(t Transport, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, offset, length uint64) (types.V2FileContract, []types.Hash256, error) {
+func RPCSectorRoots(t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, offset, length uint64) (types.V2FileContract, []types.Hash256, error) {
 	revision, err := rhp4.ReviseForSectorRoots(contract.Revision, prices, length)
 	if err != nil {
 		return types.V2FileContract{}, nil, fmt.Errorf("failed to revise contract: %w", err)
@@ -269,7 +269,7 @@ func RPCSectorRoots(t Transport, cs consensus.State, prices rhp4.HostPrices, sk 
 }
 
 // RPCAccountBalance returns the balance of an account
-func RPCAccountBalance(t Transport, account rhp4.Account) (types.Currency, error) {
+func RPCAccountBalance(t TransportClient, account rhp4.Account) (types.Currency, error) {
 	s := t.DialStream()
 	defer s.Close()
 
@@ -285,7 +285,7 @@ func RPCAccountBalance(t Transport, account rhp4.Account) (types.Currency, error
 }
 
 // RPCFormContract forms a contract with a host
-func RPCFormContract(t Transport, cm ChainManager, signer FundAndSign, prices rhp4.HostPrices, fc types.V2FileContract) (ContractRevision, TransactionSet, error) {
+func RPCFormContract(t TransportClient, cm ChainManager, signer FundAndSign, prices rhp4.HostPrices, fc types.V2FileContract) (ContractRevision, TransactionSet, error) {
 	formationTxn := types.V2Transaction{
 		MinerFee:      types.Siacoins(1),
 		FileContracts: []types.V2FileContract{fc},
@@ -393,7 +393,7 @@ func RPCFormContract(t Transport, cm ChainManager, signer FundAndSign, prices rh
 }
 
 // RPCRenewContract renews a contract with a host
-func RPCRenewContract(t Transport, cm ChainManager, signer FundAndSign, prices rhp4.HostPrices, sk types.PrivateKey, contractID types.FileContractID, existing types.V2FileContract, renewal types.V2FileContractRenewal) (ContractRevision, TransactionSet, error) {
+func RPCRenewContract(t TransportClient, cm ChainManager, signer FundAndSign, prices rhp4.HostPrices, sk types.PrivateKey, contractID types.FileContractID, existing types.V2FileContract, renewal types.V2FileContractRenewal) (ContractRevision, TransactionSet, error) {
 	renewalTxn := types.V2Transaction{
 		MinerFee: types.Siacoins(1),
 		FileContractResolutions: []types.V2FileContractResolution{

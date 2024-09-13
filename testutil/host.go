@@ -10,7 +10,7 @@ import (
 	proto4 "go.sia.tech/core/rhp/v4"
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/chain"
-	rhp4 "go.sia.tech/coreutils/rhp/v4/host"
+	rhp4 "go.sia.tech/coreutils/rhp/v4"
 	"go.sia.tech/mux"
 	"go.uber.org/zap"
 )
@@ -102,10 +102,10 @@ func (ec *EphemeralContractor) AddV2Contract(formationSet rhp4.TransactionSet, _
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 
-	if len(formationSet.TransactionSet) == 0 {
+	if len(formationSet.Transactions) == 0 {
 		return errors.New("expected at least one transaction")
 	}
-	formationTxn := formationSet.TransactionSet[len(formationSet.TransactionSet)-1]
+	formationTxn := formationSet.Transactions[len(formationSet.Transactions)-1]
 	if len(formationTxn.FileContracts) != 1 {
 		return errors.New("expected exactly one contract")
 	}
@@ -126,10 +126,10 @@ func (ec *EphemeralContractor) RenewV2Contract(renewalSet rhp4.TransactionSet, _
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 
-	if len(renewalSet.TransactionSet) == 0 {
+	if len(renewalSet.Transactions) == 0 {
 		return errors.New("expected at least one transaction")
 	}
-	renewalTxn := renewalSet.TransactionSet[len(renewalSet.TransactionSet)-1]
+	renewalTxn := renewalSet.Transactions[len(renewalSet.Transactions)-1]
 	if len(renewalTxn.FileContractResolutions) != 1 {
 		return errors.New("expected exactly one resolution")
 	}

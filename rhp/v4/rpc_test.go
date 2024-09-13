@@ -15,7 +15,6 @@ import (
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/chain"
 	rhp4 "go.sia.tech/coreutils/rhp/v4"
-	"go.sia.tech/coreutils/rhp/v4/host"
 	"go.sia.tech/coreutils/syncer"
 	"go.sia.tech/coreutils/testutil"
 	"go.sia.tech/coreutils/wallet"
@@ -47,8 +46,8 @@ func (fs *fundAndSign) SignV2Inputs(txn *types.V2Transaction, toSign []int) {
 	fs.w.SignV2Inputs(txn, toSign)
 }
 
-func testRenterHostPair(tb testing.TB, hostKey types.PrivateKey, cm host.ChainManager, s host.Syncer, w host.Wallet, c host.Contractor, sr host.SettingsReporter, ss host.SectorStore, log *zap.Logger) rhp4.Transport {
-	rs := host.NewServer(hostKey, cm, s, c, w, sr, ss, host.WithContractProofWindowBuffer(10), host.WithPriceTableValidity(2*time.Minute), host.WithLog(log.Named("rhp4")))
+func testRenterHostPair(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ServerChainManager, s rhp4.Syncer, w rhp4.Wallet, c rhp4.Contractor, sr rhp4.SettingsReporter, ss rhp4.SectorStore, log *zap.Logger) rhp4.TransportClient {
+	rs := rhp4.NewServer(hostKey, cm, s, c, w, sr, ss, rhp4.WithContractProofWindowBuffer(10), rhp4.WithPriceTableValidity(2*time.Minute), rhp4.WithLog(log.Named("rhp4")))
 	hostAddr := testutil.ServeSiaMux(tb, rs, log.Named("siamux"))
 
 	conn, err := net.Dial("tcp", hostAddr)
