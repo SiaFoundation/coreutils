@@ -54,18 +54,31 @@ type (
 	}
 )
 
-// A TransactionSet is a set of transactions is a set of transactions that
-// are valid as of the provided chain index.
-type TransactionSet struct {
-	Basis        types.ChainIndex      `json:"basis"`
-	Transactions []types.V2Transaction `json:"transactions"`
-}
+type (
+	// A TransactionSet is a set of transactions is a set of transactions that
+	// are valid as of the provided chain index.
+	TransactionSet struct {
+		Basis        types.ChainIndex      `json:"basis"`
+		Transactions []types.V2Transaction `json:"transactions"`
+	}
 
-// ContractRevision pairs a contract ID with a revision.
-type ContractRevision struct {
-	ID       types.FileContractID `json:"id"`
-	Revision types.V2FileContract `json:"revision"`
-}
+	// ContractRevision pairs a contract ID with a revision.
+	ContractRevision struct {
+		ID       types.FileContractID `json:"id"`
+		Revision types.V2FileContract `json:"revision"`
+	}
+)
+
+// client return values
+type (
+	// RPCFormContractResponse is the response to a form contract request
+	RPCFormContractResponse struct {
+		Basis        types.ChainIndex      `json:"basis"`
+		FormationSet []types.V2Transaction `json:"formationSet"`
+		Contract     ContractRevision      `json:"contract"`
+		Cost         types.Currency        `json:"cost"`
+	}
+)
 
 // RPCSettings returns the current settings of the host
 func RPCSettings(t TransportClient) (rhp4.HostSettings, error) {
@@ -85,7 +98,9 @@ func RPCSettings(t TransportClient) (rhp4.HostSettings, error) {
 
 // RPCReadSector reads a sector from the host
 func RPCReadSector(t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256, offset, length uint64) ([]byte, error) {
-	if offset+length > rhp4.SectorSize {
+	if offset%rhp4.LeafSize != 0 {
+		return nil, fmt.Errorf("offset must be a multiple of %d bytes", rhp4.LeafSize)
+	} else if offset+length > rhp4.SectorSize {
 		return nil, fmt.Errorf("read exceeds sector bounds")
 	}
 
