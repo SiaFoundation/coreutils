@@ -1365,9 +1365,3 @@ func BenchmarkContractUpload(b *testing.B) {
 		b.Fatalf("expected %v sectors, got %v", b.N, revised.Filesize/proto4.SectorSize)
 	}
 }
-
-func TestContext(t *testing.T) {
-	ctx := context.Background()
-	<-ctx.Done()
-	t.Fatal("context should not be done")
-}

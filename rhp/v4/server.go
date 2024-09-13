@@ -931,6 +931,7 @@ func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 		log.Debug("failed to read RPC ID", zap.Error(err))
 		return
 	}
+	log = log.With(zap.Stringer("rpc", id))
 
 	switch id {
 	case rhp4.RPCSettingsID:
