@@ -18,7 +18,7 @@ import (
 	"go.sia.tech/coreutils/syncer"
 	"go.sia.tech/coreutils/testutil"
 	"go.sia.tech/coreutils/wallet"
-	"go.sia.tech/mux"
+	"go.sia.tech/mux/v2"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 	"lukechampine.com/frand"
@@ -28,8 +28,8 @@ type muxTransport struct {
 	m *mux.Mux
 }
 
-func (mt *muxTransport) DialStream() net.Conn {
-	return mt.m.DialStream()
+func (mt *muxTransport) DialStreamContext(ctx context.Context) net.Conn {
+	return mt.m.DialStreamContext(ctx)
 }
 func (mt *muxTransport) Close() error {
 	return mt.m.Close()
@@ -189,7 +189,7 @@ func TestSettings(t *testing.T) {
 
 	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
 
-	settings, err := rhp4.RPCSettings(transport)
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
 		t.Fatal(err)
 	} else if settings.Prices.ValidUntil.Before(time.Now()) {
@@ -250,14 +250,14 @@ func TestFormContract(t *testing.T) {
 
 	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
 
-	settings, err := rhp4.RPCSettings(transport)
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	_, finalizedSet, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+	_, finalizedSet, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
 		RenterAddress:   w.Address(),
 		Allowance:       renterAllowance,
@@ -310,14 +310,14 @@ func TestFormContractBasis(t *testing.T) {
 
 	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
 
-	settings, err := rhp4.RPCSettings(transport)
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	_, finalizedSet, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+	_, finalizedSet, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
 		RenterAddress:   w.Address(),
 		Allowance:       renterAllowance,
@@ -370,14 +370,14 @@ func TestRenewContractPartialRollover(t *testing.T) {
 
 	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
 
-	settings, err := rhp4.RPCSettings(transport)
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	revision, formationSet, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+	revision, formationSet, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
 		RenterAddress:   w.Address(),
 		Allowance:       renterAllowance,
@@ -402,7 +402,7 @@ func TestRenewContractPartialRollover(t *testing.T) {
 	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 	accountFundAmount := types.Siacoins(25)
-	revised, _, err := rhp4.RPCFundAccounts(transport, cs, renterKey, revision, []proto4.AccountDeposit{
+	revised, _, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
 		{Account: account, Amount: accountFundAmount},
 	})
 	if err != nil {
@@ -411,7 +411,7 @@ func TestRenewContractPartialRollover(t *testing.T) {
 	revision.Revision = revised
 
 	// renew the contract
-	revision, renewalSet, err := rhp4.RPCRenewContract(transport, cm, fundAndSign, settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
+	revision, renewalSet, err := rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
 		ContractID:  revision.ID,
 		Allowance:   types.Siacoins(150),
 		Collateral:  types.Siacoins(300),
@@ -463,14 +463,14 @@ func TestRenewContractFullRollover(t *testing.T) {
 
 	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
 
-	settings, err := rhp4.RPCSettings(transport)
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	revision, formationSet, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+	revision, formationSet, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
 		RenterAddress:   w.Address(),
 		Allowance:       renterAllowance,
@@ -495,7 +495,7 @@ func TestRenewContractFullRollover(t *testing.T) {
 	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 	accountFundAmount := types.Siacoins(25)
-	revised, _, err := rhp4.RPCFundAccounts(transport, cs, renterKey, revision, []proto4.AccountDeposit{
+	revised, _, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
 		{Account: account, Amount: accountFundAmount},
 	})
 	if err != nil {
@@ -504,7 +504,7 @@ func TestRenewContractFullRollover(t *testing.T) {
 	revision.Revision = revised
 
 	// renew the contract
-	revision, renewalSet, err := rhp4.RPCRenewContract(transport, cm, fundAndSign, settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
+	revision, renewalSet, err := rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
 		ContractID:  revision.ID,
 		Allowance:   types.Siacoins(50),
 		Collateral:  types.Siacoins(100),
@@ -556,14 +556,14 @@ func TestRenewContractNoRollover(t *testing.T) {
 
 	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
 
-	settings, err := rhp4.RPCSettings(transport)
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	revision, formationSet, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+	revision, formationSet, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
 		RenterAddress:   w.Address(),
 		Allowance:       renterAllowance,
@@ -588,7 +588,7 @@ func TestRenewContractNoRollover(t *testing.T) {
 	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 	accountFundAmount := types.Siacoins(100)
-	revised, _, err := rhp4.RPCFundAccounts(transport, cs, renterKey, revision, []proto4.AccountDeposit{
+	revised, _, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
 		{Account: account, Amount: accountFundAmount},
 	})
 	if err != nil {
@@ -597,7 +597,7 @@ func TestRenewContractNoRollover(t *testing.T) {
 	revision.Revision = revised
 
 	// renew the contract
-	revision, renewalSet, err := rhp4.RPCRenewContract(transport, cm, fundAndSign, settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
+	revision, renewalSet, err := rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
 		ContractID:  revision.ID,
 		Allowance:   types.Siacoins(150),
 		Collateral:  types.Siacoins(300),
@@ -649,14 +649,14 @@ func TestAccounts(t *testing.T) {
 
 	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
 
-	settings, err := rhp4.RPCSettings(transport)
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+	revision, _, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
 		RenterAddress:   w.Address(),
 		Allowance:       renterAllowance,
@@ -671,7 +671,7 @@ func TestAccounts(t *testing.T) {
 	account := proto4.Account(renterKey.PublicKey())
 
 	accountFundAmount := types.Siacoins(25)
-	revised, balances, err := rhp4.RPCFundAccounts(transport, cs, renterKey, revision, []proto4.AccountDeposit{
+	revised, balances, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
 		{Account: account, Amount: accountFundAmount},
 	})
 	if err != nil {
@@ -706,7 +706,7 @@ func TestAccounts(t *testing.T) {
 	}
 
 	// verify the account balance
-	balance, err := rhp4.RPCAccountBalance(transport, account)
+	balance, err := rhp4.RPCAccountBalance(context.Background(), transport, account)
 	if err != nil {
 		t.Fatal(err)
 	} else if !balance.Equals(accountFundAmount) {
@@ -748,14 +748,14 @@ func TestReadWriteSector(t *testing.T) {
 
 	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
 
-	settings, err := rhp4.RPCSettings(transport)
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+	revision, _, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
 		RenterAddress:   w.Address(),
 		Allowance:       renterAllowance,
@@ -770,7 +770,7 @@ func TestReadWriteSector(t *testing.T) {
 	account := proto4.Account(renterKey.PublicKey())
 
 	accountFundAmount := types.Siacoins(25)
-	_, _, err = rhp4.RPCFundAccounts(transport, cs, renterKey, revision, []proto4.AccountDeposit{
+	_, _, err = rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
 		{Account: account, Amount: accountFundAmount},
 	})
 	if err != nil {
@@ -787,7 +787,7 @@ func TestReadWriteSector(t *testing.T) {
 	data := frand.Bytes(1024)
 
 	// store the sector
-	root, err := rhp4.RPCWriteSector(transport, settings.Prices, token, data, 5)
+	root, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, data, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -800,7 +800,7 @@ func TestReadWriteSector(t *testing.T) {
 	}
 
 	// read the sector back
-	buf, err := rhp4.RPCReadSector(transport, settings.Prices, token, root, 0, 64)
+	buf, err := rhp4.RPCReadSector(context.Background(), transport, settings.Prices, token, root, 0, 64)
 	if err != nil {
 		t.Fatal(err)
 	} else if !bytes.Equal(buf, data[:64]) {
@@ -842,14 +842,14 @@ func TestRPCModifySectors(t *testing.T) {
 
 	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
 
-	settings, err := rhp4.RPCSettings(transport)
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+	revision, _, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
 		RenterAddress:   w.Address(),
 		Allowance:       renterAllowance,
@@ -864,7 +864,7 @@ func TestRPCModifySectors(t *testing.T) {
 	account := proto4.Account(renterKey.PublicKey())
 
 	accountFundAmount := types.Siacoins(25)
-	revised, _, err := rhp4.RPCFundAccounts(transport, cs, renterKey, revision, []proto4.AccountDeposit{
+	revised, _, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
 		{Account: account, Amount: accountFundAmount},
 	})
 	if err != nil {
@@ -885,7 +885,7 @@ func TestRPCModifySectors(t *testing.T) {
 		data := frand.Bytes(1024)
 
 		// store the sector
-		root, err := rhp4.RPCWriteSector(transport, settings.Prices, token, data, 5)
+		root, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, data, 5)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -913,7 +913,7 @@ func TestRPCModifySectors(t *testing.T) {
 			Root: root,
 		})
 	}
-	revised, err = rhp4.RPCModifySectors(transport, cs, settings.Prices, renterKey, revision, actions)
+	revised, err = rhp4.RPCModifySectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, actions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -925,7 +925,7 @@ func TestRPCModifySectors(t *testing.T) {
 	actions = []proto4.WriteAction{
 		{Type: proto4.ActionSwap, A: swapA, B: swapB},
 	}
-	revised, err = rhp4.RPCModifySectors(transport, cs, settings.Prices, renterKey, revision, actions)
+	revised, err = rhp4.RPCModifySectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, actions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -937,7 +937,7 @@ func TestRPCModifySectors(t *testing.T) {
 	actions = []proto4.WriteAction{
 		{Type: proto4.ActionTrim, N: 10},
 	}
-	revised, err = rhp4.RPCModifySectors(transport, cs, settings.Prices, renterKey, revision, actions)
+	revised, err = rhp4.RPCModifySectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, actions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -952,7 +952,7 @@ func TestRPCModifySectors(t *testing.T) {
 		{Type: proto4.ActionUpdate, Root: trimmed[trimmedIdx], A: updateIdx},
 	}
 
-	revised, err = rhp4.RPCModifySectors(transport, cs, settings.Prices, renterKey, revision, actions)
+	revised, err = rhp4.RPCModifySectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, actions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -994,14 +994,14 @@ func TestRPCSectorRoots(t *testing.T) {
 
 	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
 
-	settings, err := rhp4.RPCSettings(transport)
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+	revision, _, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
 		RenterAddress:   w.Address(),
 		Allowance:       renterAllowance,
@@ -1016,7 +1016,7 @@ func TestRPCSectorRoots(t *testing.T) {
 	account := proto4.Account(renterKey.PublicKey())
 
 	accountFundAmount := types.Siacoins(25)
-	revised, _, err := rhp4.RPCFundAccounts(transport, cs, renterKey, revision, []proto4.AccountDeposit{
+	revised, _, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
 		{Account: account, Amount: accountFundAmount},
 	})
 	if err != nil {
@@ -1036,7 +1036,7 @@ func TestRPCSectorRoots(t *testing.T) {
 	checkRoots := func(t *testing.T, expected []types.Hash256) {
 		t.Helper()
 
-		revised, roots, err := rhp4.RPCSectorRoots(transport, cs, settings.Prices, renterKey, revision, 0, uint64(len(expected)))
+		revised, roots, err := rhp4.RPCSectorRoots(context.Background(), transport, cs, settings.Prices, renterKey, revision, 0, uint64(len(expected)))
 		if err != nil {
 			t.Fatal(err)
 		} else if len(roots) != len(expected) {
@@ -1055,13 +1055,13 @@ func TestRPCSectorRoots(t *testing.T) {
 		data := frand.Bytes(1024)
 
 		// store the sector
-		root, err := rhp4.RPCWriteSector(transport, settings.Prices, token, data, 5)
+		root, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, data, 5)
 		if err != nil {
 			t.Fatal(err)
 		}
 		roots = append(roots, root)
 
-		revised, err := rhp4.RPCModifySectors(transport, cs, settings.Prices, renterKey, revision, []proto4.WriteAction{
+		revised, err := rhp4.RPCModifySectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, []proto4.WriteAction{
 			{Type: proto4.ActionAppend, Root: root},
 		})
 		if err != nil {
@@ -1106,14 +1106,14 @@ func BenchmarkWrite(b *testing.B) {
 
 	transport := testRenterHostPair(b, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
-	settings, err := rhp4.RPCSettings(transport)
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
 		b.Fatal(err)
 	}
 
 	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+	revision, _, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
 		RenterAddress:   w.Address(),
 		Allowance:       renterAllowance,
@@ -1128,7 +1128,7 @@ func BenchmarkWrite(b *testing.B) {
 	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 	accountFundAmount := types.Siacoins(25)
-	_, _, err = rhp4.RPCFundAccounts(transport, cs, renterKey, revision, []proto4.AccountDeposit{
+	_, _, err = rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
 		{Account: account, Amount: accountFundAmount},
 	})
 	if err != nil {
@@ -1154,7 +1154,7 @@ func BenchmarkWrite(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		// store the sector
-		_, err := rhp4.RPCWriteSector(transport, settings.Prices, token, sectors[i][:], 5)
+		_, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, sectors[i][:], 5)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1194,14 +1194,14 @@ func BenchmarkRead(b *testing.B) {
 
 	transport := testRenterHostPair(b, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
-	settings, err := rhp4.RPCSettings(transport)
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
 		b.Fatal(err)
 	}
 
 	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+	revision, _, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
 		RenterAddress:   w.Address(),
 		Allowance:       renterAllowance,
@@ -1216,7 +1216,7 @@ func BenchmarkRead(b *testing.B) {
 	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 	accountFundAmount := types.Siacoins(25)
-	_, _, err = rhp4.RPCFundAccounts(transport, cs, renterKey, revision, []proto4.AccountDeposit{
+	_, _, err = rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
 		{Account: account, Amount: accountFundAmount},
 	})
 	if err != nil {
@@ -1237,7 +1237,7 @@ func BenchmarkRead(b *testing.B) {
 		sectors = append(sectors, sector)
 
 		// store the sector
-		root, err := rhp4.RPCWriteSector(transport, settings.Prices, token, sectors[i][:], 5)
+		root, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, sectors[i][:], 5)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1250,7 +1250,7 @@ func BenchmarkRead(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		// store the sector
-		buf, err := rhp4.RPCReadSector(transport, settings.Prices, token, roots[i], 0, proto4.SectorSize)
+		buf, err := rhp4.RPCReadSector(context.Background(), transport, settings.Prices, token, roots[i], 0, proto4.SectorSize)
 		if err != nil {
 			b.Fatal(err)
 		} else if !bytes.Equal(buf, sectors[i][:]) {
@@ -1292,14 +1292,14 @@ func BenchmarkContractUpload(b *testing.B) {
 
 	transport := testRenterHostPair(b, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
-	settings, err := rhp4.RPCSettings(transport)
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
 		b.Fatal(err)
 	}
 
 	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+	revision, _, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
 		RenterAddress:   w.Address(),
 		Allowance:       renterAllowance,
@@ -1314,7 +1314,7 @@ func BenchmarkContractUpload(b *testing.B) {
 	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 	accountFundAmount := types.Siacoins(25)
-	revised, _, err := rhp4.RPCFundAccounts(transport, cs, renterKey, revision, []proto4.AccountDeposit{
+	revised, _, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
 		{Account: account, Amount: accountFundAmount},
 	})
 	if err != nil {
@@ -1345,7 +1345,7 @@ func BenchmarkContractUpload(b *testing.B) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			root, err := rhp4.RPCWriteSector(transport, settings.Prices, token, sectors[i][:], 5)
+			root, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, sectors[i][:], 5)
 			if err != nil {
 				b.Error(err)
 			}
@@ -1358,7 +1358,7 @@ func BenchmarkContractUpload(b *testing.B) {
 
 	wg.Wait()
 
-	revised, err = rhp4.RPCModifySectors(transport, cs, settings.Prices, renterKey, revision, actions)
+	revised, err = rhp4.RPCModifySectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, actions)
 	if err != nil {
 		b.Fatal(err)
 	} else if revised.Filesize != uint64(b.N)*proto4.SectorSize {

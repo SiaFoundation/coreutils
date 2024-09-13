@@ -225,16 +225,24 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 		return errorBadRequest("sector length %v must be a multiple of segment size %v", req.DataLength, rhp4.LeafSize)
 	case req.Duration > settings.MaxSectorDuration:
 		return errorBadRequest("sector duration %v exceeds maximum %v", req.Duration, settings.MaxSectorDuration)
+	case settings.RemainingStorage < rhp4.SectorSize:
+		return rhp4.ErrNotEnoughStorage
 	}
 
-	if err := s.contractor.DebitAccount(req.Token.Account, prices.RPCWriteSectorCost(uint64(req.DataLength), req.Duration)); err != nil {
-		return fmt.Errorf("failed to debit account: %w", err)
-	}
-
+	// read the sector data
 	var sector [rhp4.SectorSize]byte
 	if _, err := io.ReadFull(stream, sector[:req.DataLength]); err != nil {
 		return errorDecodingError("failed to read sector data: %v", err)
 	}
+
+	// calculate the cost
+	cost := prices.RPCWriteSectorCost(req.DataLength, req.Duration)
+	// debit the account
+	if err := s.contractor.DebitAccount(req.Token.Account, cost); err != nil {
+		return fmt.Errorf("failed to debit account: %w", err)
+	}
+
+	// store the sector
 	root := rhp4.SectorRoot(&sector)
 	if err := s.sectors.StoreSector(root, &sector, req.Duration); err != nil {
 		return fmt.Errorf("failed to store sector: %w", err)
