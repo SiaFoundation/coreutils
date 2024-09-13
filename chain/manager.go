@@ -941,7 +941,7 @@ func (m *Manager) UnconfirmedParents(txn types.Transaction) []types.Transaction 
 
 // V2TransactionSet returns the full transaction set and basis necessary for
 // broadcasting a transaction. If the provided basis does not match the current
-// tip the transaction will be updated. The transaction set includes the parents
+// tip, the transaction will be updated. The transaction set includes the parents
 // and the transaction itself in an order valid for broadcasting.
 func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transaction) (types.ChainIndex, []types.V2Transaction, error) {
 	m.mu.Lock()
