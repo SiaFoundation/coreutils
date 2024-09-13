@@ -2,6 +2,7 @@ package chain
 
 import (
 	"encoding/binary"
+	"math"
 	"testing"
 
 	"go.sia.tech/core/consensus"
@@ -44,7 +45,7 @@ func TestForEachV2HostAnnouncement(t *testing.T) {
 	randomAttestation.Signature = sk.SignHash(cs.AttestationSigHash(randomAttestation))
 
 	invalidData := make([]byte, 100)
-	binary.LittleEndian.PutUint64(invalidData, uint64(len(attestationHostAnnouncement)))
+	binary.LittleEndian.PutUint64(invalidData, math.MaxUint64)
 	extraBigAttestation := types.Attestation{
 		PublicKey: sk.PublicKey(),
 		Key:       attestationHostAnnouncement,
