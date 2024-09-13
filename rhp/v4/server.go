@@ -205,35 +205,19 @@ func (s *Server) handleRPCReadSector(stream net.Conn) error {
 }
 
 func (s *Server) handleRPCWriteSector(stream net.Conn) error {
-	elapsed := func(context string) func() {
-		start := time.Now()
-		return func() {
-			s.log.Debug("RPCWriteSector", zap.String("context", context), zap.Duration("duration", time.Since(start)))
-		}
-	}
-	log := elapsed("write sector streaming")
 	var req rhp4.RPCWriteSectorStreamingRequest
 	if err := rhp4.ReadRequest(stream, &req); err != nil {
 		return errorDecodingError("failed to read request: %v", err)
 	}
-	log()
-
-	log = elapsed("validate prices")
 	prices, token := req.Prices, req.Token
 	if err := prices.Validate(s.hostKey.PublicKey()); err != nil {
 		return fmt.Errorf("price table invalid: %w", err)
-	}
-	log()
-
-	log = elapsed("validate token")
-	if err := token.Validate(); err != nil {
+	} else if err := token.Validate(); err != nil {
 		return fmt.Errorf("token invalid: %w", err)
 	}
-	log()
 
 	settings := s.settings.RHP4Settings()
 
-	log = elapsed("validate request")
 	switch {
 	case req.DataLength > rhp4.SectorSize:
 		return errorBadRequest("sector size %v exceeds maximum %v", req.DataLength, rhp4.SectorSize)
@@ -242,30 +226,19 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 	case req.Duration > settings.MaxSectorDuration:
 		return errorBadRequest("sector duration %v exceeds maximum %v", req.Duration, settings.MaxSectorDuration)
 	}
-	log()
 
-	log = elapsed("debit account")
 	if err := s.contractor.DebitAccount(req.Token.Account, prices.RPCWriteSectorCost(uint64(req.DataLength), req.Duration)); err != nil {
 		return fmt.Errorf("failed to debit account: %w", err)
 	}
-	log()
 
-	log = elapsed("read sector")
 	var sector [rhp4.SectorSize]byte
 	if _, err := io.ReadFull(stream, sector[:req.DataLength]); err != nil {
 		return errorDecodingError("failed to read sector data: %v", err)
 	}
-	log()
-
-	log = elapsed("calculate root")
 	root := rhp4.SectorRoot(&sector)
-	log()
-
-	log = elapsed("store sector")
 	if err := s.sectors.StoreSector(root, &sector, req.Duration); err != nil {
 		return fmt.Errorf("failed to store sector: %w", err)
 	}
-	log()
 	return rhp4.WriteResponse(stream, &rhp4.RPCWriteSectorResponse{
 		Root: root,
 	})
