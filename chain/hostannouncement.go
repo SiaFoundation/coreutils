@@ -46,7 +46,9 @@ func (ha V2HostAnnouncement) ToAttestation(cs consensus.State, sk types.PrivateK
 	buf := bytes.NewBuffer(nil)
 	e := types.NewEncoder(buf)
 	types.EncodeSlice(e, ha)
-	e.Flush()
+	if err := e.Flush(); err != nil {
+		panic(err) // should never happen
+	}
 	a := types.Attestation{
 		PublicKey: sk.PublicKey(),
 		Key:       attestationHostAnnouncement,
@@ -73,9 +75,14 @@ func (ha HostAnnouncement) ToArbitraryData(sk types.PrivateKey) []byte {
 	specifierHostAnnouncement.EncodeTo(e)
 	e.WriteString(ha.NetAddress)
 	sk.PublicKey().UnlockKey().EncodeTo(e)
-	e.Flush()
+	if err := e.Flush(); err != nil {
+		panic(err) // should never happen
+	}
+	// sign the current contents of the buffer and append the signature
 	sk.SignHash(types.HashBytes(buf.Bytes())).EncodeTo(e)
-	e.Flush()
+	if err := e.Flush(); err != nil {
+		panic(err) // should never happen
+	}
 	return buf.Bytes()
 }
 
