@@ -17,8 +17,8 @@ type (
 		Close() error
 	}
 
-	// A ChainManager reports the chain state and manages the mempool.
-	ChainManager interface {
+	// A ChainReader reports the chain state and manages the mempool.
+	ChainReader interface {
 		Tip() types.ChainIndex
 		TipState() consensus.State
 
@@ -29,10 +29,28 @@ type (
 		V2TransactionSet(basis types.ChainIndex, txn types.V2Transaction) (types.ChainIndex, []types.V2Transaction, error)
 	}
 
-	// FundAndSign is an interface for funding and signing v2 transactions
-	FundAndSign interface {
-		FundV2Transaction(txn *types.V2Transaction, amount types.Currency) (types.ChainIndex, []int, error)
+	// A ContractSigner is a minimal interface for contract signing
+	ContractSigner interface {
+		SignHash(types.Hash256) types.Signature
+	}
+
+	// A TransactionInputSigner is an interface for signing v2 transactions using
+	// a single private key.
+	TransactionInputSigner interface {
 		SignV2Inputs(*types.V2Transaction, []int)
+	}
+
+	// A TransactionFunder is an interface for funding v2 transactions.
+	TransactionFunder interface {
+		FundV2Transaction(txn *types.V2Transaction, amount types.Currency) (types.ChainIndex, []int, error)
+	}
+
+	// FormContractSigner is the minimal interface required to fund and sign a
+	// contract formation transaction.
+	FormContractSigner interface {
+		ContractSigner
+		TransactionInputSigner
+		TransactionFunder
 	}
 )
 
@@ -117,7 +135,6 @@ func RPCWriteSector(t TransportClient, prices rhp4.HostPrices, token rhp4.Accoun
 		return types.Hash256{}, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	// TODO: stream?
 	var sector [rhp4.SectorSize]byte
 	copy(sector[:], data)
 	root := rhp4.SectorRoot(&sector)
@@ -176,7 +193,7 @@ func RPCModifySectors(t TransportClient, cs consensus.State, prices rhp4.HostPri
 }
 
 // RPCFundAccounts funds accounts on the host
-func RPCFundAccounts(t TransportClient, cs consensus.State, sk types.PrivateKey, contract ContractRevision, deposits []rhp4.AccountDeposit) (types.V2FileContract, []types.Currency, error) {
+func RPCFundAccounts(t TransportClient, cs consensus.State, signer ContractSigner, contract ContractRevision, deposits []rhp4.AccountDeposit) (types.V2FileContract, []types.Currency, error) {
 	var total types.Currency
 	for _, deposit := range deposits {
 		total = total.Add(deposit.Amount)
@@ -186,7 +203,7 @@ func RPCFundAccounts(t TransportClient, cs consensus.State, sk types.PrivateKey,
 		return types.V2FileContract{}, nil, fmt.Errorf("failed to revise contract: %w", err)
 	}
 	sigHash := cs.ContractSigHash(revision)
-	revision.RenterSignature = sk.SignHash(sigHash)
+	revision.RenterSignature = signer.SignHash(sigHash)
 
 	req := rhp4.RPCFundAccountsRequest{
 		ContractID:      contract.ID,
@@ -231,13 +248,13 @@ func RPCLatestRevision(t TransportClient, contractID types.FileContractID) (type
 }
 
 // RPCSectorRoots returns the sector roots for a contract
-func RPCSectorRoots(t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, offset, length uint64) (types.V2FileContract, []types.Hash256, error) {
+func RPCSectorRoots(t TransportClient, cs consensus.State, prices rhp4.HostPrices, signer ContractSigner, contract ContractRevision, offset, length uint64) (types.V2FileContract, []types.Hash256, error) {
 	revision, err := rhp4.ReviseForSectorRoots(contract.Revision, prices, length)
 	if err != nil {
 		return types.V2FileContract{}, nil, fmt.Errorf("failed to revise contract: %w", err)
 	}
 	sigHash := cs.ContractSigHash(revision)
-	revision.RenterSignature = sk.SignHash(sigHash)
+	revision.RenterSignature = signer.SignHash(sigHash)
 
 	req := rhp4.RPCSectorRootsRequest{
 		Prices:          prices,
@@ -285,42 +302,42 @@ func RPCAccountBalance(t TransportClient, account rhp4.Account) (types.Currency,
 }
 
 // RPCFormContract forms a contract with a host
-func RPCFormContract(t TransportClient, cm ChainManager, signer FundAndSign, prices rhp4.HostPrices, fc types.V2FileContract) (ContractRevision, TransactionSet, error) {
+func RPCFormContract(t TransportClient, cr ChainReader, signer FormContractSigner, p rhp4.HostPrices, hostKey types.PublicKey, hostAddress types.Address, params rhp4.RPCFormContractParams) (ContractRevision, TransactionSet, error) {
+	cs := cr.TipState()
+	fc := rhp4.NewContract(p, params, hostKey, hostAddress)
 	formationTxn := types.V2Transaction{
 		MinerFee:      types.Siacoins(1),
 		FileContracts: []types.V2FileContract{fc},
 	}
 
-	cs := cm.TipState()
-	renterFundAmount := rhp4.ContractRenterCost(cs, prices, fc, formationTxn.MinerFee)
-	basis, toSign, err := signer.FundV2Transaction(&formationTxn, renterFundAmount)
+	renterCost, _ := rhp4.ContractCost(cs, p, fc, formationTxn.MinerFee)
+	basis, toSign, err := signer.FundV2Transaction(&formationTxn, renterCost)
 	if err != nil {
 		return ContractRevision{}, TransactionSet{}, fmt.Errorf("failed to fund transaction: %w", err)
 	}
 
-	basis, formationSet, err := cm.V2TransactionSet(basis, formationTxn)
+	basis, formationSet, err := cr.V2TransactionSet(basis, formationTxn)
 	if err != nil {
 		return ContractRevision{}, TransactionSet{}, fmt.Errorf("failed to get transaction set: %w", err)
 	}
-	formationTxn = formationSet[len(formationSet)-1]
+	formationTxn, formationSet = formationSet[len(formationSet)-1], formationSet[:len(formationSet)-1]
 
 	renterSiacoinElements := make([]types.SiacoinElement, 0, len(formationTxn.SiacoinInputs))
 	for _, i := range formationTxn.SiacoinInputs {
 		renterSiacoinElements = append(renterSiacoinElements, i.Parent)
 	}
 
-	req := rhp4.RPCFormContractRequest{
-		Prices:        prices,
-		Basis:         basis,
-		MinerFee:      formationTxn.MinerFee,
-		Contract:      fc,
-		RenterInputs:  renterSiacoinElements,
-		RenterParents: formationSet[:len(formationSet)-1],
-	}
-
 	s := t.DialStream()
 	defer s.Close()
 
+	req := rhp4.RPCFormContractRequest{
+		Prices:        p,
+		Contract:      params,
+		Basis:         basis,
+		MinerFee:      formationTxn.MinerFee,
+		RenterInputs:  renterSiacoinElements,
+		RenterParents: formationSet,
+	}
 	if err := rhp4.WriteRequest(s, rhp4.RPCFormContractID, &req); err != nil {
 		return ContractRevision{}, TransactionSet{}, fmt.Errorf("failed to write request: %w", err)
 	}
@@ -349,8 +366,12 @@ func RPCFormContract(t TransportClient, cm ChainManager, signer FundAndSign, pri
 
 	// sign the renter inputs
 	signer.SignV2Inputs(&formationTxn, toSign)
+	formationSigHash := cs.ContractSigHash(fc)
+	formationTxn.FileContracts[0].RenterSignature = signer.SignHash(formationSigHash)
 
-	var renterPolicyResp rhp4.RPCFormContractSecondResponse
+	renterPolicyResp := rhp4.RPCFormContractSecondResponse{
+		RenterContractSignature: formationTxn.FileContracts[0].RenterSignature,
+	}
 	for _, si := range formationTxn.SiacoinInputs[:len(renterSiacoinElements)] {
 		renterPolicyResp.RenterSatisfiedPolicies = append(renterPolicyResp.RenterSatisfiedPolicies, si.SatisfiedPolicy)
 	}
@@ -372,6 +393,8 @@ func RPCFormContract(t TransportClient, cm ChainManager, signer FundAndSign, pri
 	if len(hostFormationTxn.FileContracts) != 1 {
 		return ContractRevision{}, TransactionSet{}, fmt.Errorf("expected exactly one contract")
 	}
+
+	// check for no funny business
 	formationTxnID := formationTxn.ID()
 	hostFormationTxnID := hostFormationTxn.ID()
 	if formationTxnID != hostFormationTxnID {
@@ -380,7 +403,7 @@ func RPCFormContract(t TransportClient, cm ChainManager, signer FundAndSign, pri
 
 	// validate the host signature
 	fc.HostSignature = hostFormationTxn.FileContracts[0].HostSignature
-	if !fc.HostPublicKey.VerifyHash(cs.ContractSigHash(fc), fc.HostSignature) {
+	if !fc.HostPublicKey.VerifyHash(formationSigHash, fc.HostSignature) {
 		return ContractRevision{}, TransactionSet{}, errors.New("invalid host signature")
 	}
 	return ContractRevision{
@@ -393,7 +416,8 @@ func RPCFormContract(t TransportClient, cm ChainManager, signer FundAndSign, pri
 }
 
 // RPCRenewContract renews a contract with a host
-func RPCRenewContract(t TransportClient, cm ChainManager, signer FundAndSign, prices rhp4.HostPrices, sk types.PrivateKey, contractID types.FileContractID, existing types.V2FileContract, renewal types.V2FileContractRenewal) (ContractRevision, TransactionSet, error) {
+func RPCRenewContract(t TransportClient, cr ChainReader, signer FormContractSigner, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRenewContractParams) (ContractRevision, TransactionSet, error) {
+	renewal := rhp4.NewRenewal(existing, p, params)
 	renewalTxn := types.V2Transaction{
 		MinerFee: types.Siacoins(1),
 		FileContractResolutions: []types.V2FileContractResolution{
@@ -403,7 +427,7 @@ func RPCRenewContract(t TransportClient, cm ChainManager, signer FundAndSign, pr
 						// the other parts of the state element are not required
 						// for signing the transaction. Let the host fill them
 						// in.
-						ID: types.Hash256(contractID),
+						ID: types.Hash256(params.ContractID),
 					},
 				},
 				Resolution: &renewal,
@@ -411,26 +435,26 @@ func RPCRenewContract(t TransportClient, cm ChainManager, signer FundAndSign, pr
 		},
 	}
 
-	cs := cm.TipState()
-	setupFundAmount := rhp4.ContractRenterCost(cs, prices, renewal.NewContract, renewalTxn.MinerFee).Sub(renewal.RenterRollover)
+	cs := cr.TipState()
+	renterCost, hostCost := rhp4.RenewalCost(cs, p, renewal, renewalTxn.MinerFee)
 
 	basis := cs.Index // start with a decent basis and overwrite it if a setup transaction is needed
 	var renewalParents []types.V2Transaction
-	if !setupFundAmount.IsZero() {
+	if !renterCost.IsZero() {
 		setupTxn := types.V2Transaction{
 			SiacoinOutputs: []types.SiacoinOutput{
-				{Address: renewal.NewContract.RenterOutput.Address, Value: setupFundAmount},
+				{Address: renewal.NewContract.RenterOutput.Address, Value: renterCost},
 			},
 		}
 		var err error
 		var toSign []int
-		basis, toSign, err = signer.FundV2Transaction(&setupTxn, setupFundAmount)
+		basis, toSign, err = signer.FundV2Transaction(&setupTxn, renterCost)
 		if err != nil {
 			return ContractRevision{}, TransactionSet{}, fmt.Errorf("failed to fund transaction: %w", err)
 		}
 		signer.SignV2Inputs(&setupTxn, toSign)
 
-		basis, renewalParents, err = cm.V2TransactionSet(basis, setupTxn)
+		basis, renewalParents, err = cr.V2TransactionSet(basis, setupTxn)
 		if err != nil {
 			return ContractRevision{}, TransactionSet{}, fmt.Errorf("failed to get transaction set: %w", err)
 		}
@@ -448,16 +472,15 @@ func RPCRenewContract(t TransportClient, cm ChainManager, signer FundAndSign, pr
 	}
 
 	req := rhp4.RPCRenewContractRequest{
-		Prices:        prices,
-		ContractID:    contractID,
-		Renewal:       renewal,
+		Prices:        p,
+		Renewal:       params,
 		MinerFee:      renewalTxn.MinerFee,
 		Basis:         basis,
 		RenterInputs:  renterSiacoinElements,
 		RenterParents: renewalParents,
 	}
 	sigHash := req.ChallengeSigHash(existing.RevisionNumber)
-	req.ChallengeSignature = sk.SignHash(sigHash)
+	req.ChallengeSignature = signer.SignHash(sigHash)
 
 	s := t.DialStream()
 	defer s.Close()
@@ -472,22 +495,27 @@ func RPCRenewContract(t TransportClient, cm ChainManager, signer FundAndSign, pr
 	}
 
 	// add the host inputs to the transaction
-	hostInputSum := renewal.HostRollover
+	var hostInputSum types.Currency
 	for _, si := range hostInputsResp.HostInputs {
 		hostInputSum = hostInputSum.Add(si.Parent.SiacoinOutput.Value)
 		renewalTxn.SiacoinInputs = append(renewalTxn.SiacoinInputs, si)
 	}
 
 	// verify the host added enough inputs
-	if !hostInputSum.Equals(renewal.NewContract.TotalCollateral) {
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("expected host to fund %v, got %v", renewal.NewContract.TotalCollateral, hostInputSum)
+	if !hostInputSum.Equals(hostCost) {
+		return ContractRevision{}, TransactionSet{}, fmt.Errorf("expected host to fund %v, got %v", hostCost, hostInputSum)
 	}
 
 	// sign the renter inputs
 	signer.SignV2Inputs(&renewalTxn, []int{0})
+	// sign the renewal
+	renewalSigHash := cs.RenewalSigHash(renewal)
+	renewal.RenterSignature = signer.SignHash(renewalSigHash)
 
 	// send the renter signatures
-	var renterPolicyResp rhp4.RPCRenewContractSecondResponse
+	renterPolicyResp := rhp4.RPCRenewContractSecondResponse{
+		RenterRenewalSignature: renewal.RenterSignature,
+	}
 	for _, si := range renewalTxn.SiacoinInputs[:len(renterSiacoinElements)] {
 		renterPolicyResp.RenterSatisfiedPolicies = append(renterPolicyResp.RenterSatisfiedPolicies, si.SatisfiedPolicy)
 	}
@@ -515,12 +543,11 @@ func RPCRenewContract(t TransportClient, cm ChainManager, signer FundAndSign, pr
 	}
 
 	// validate the host signature
-	renewalSigHash := cs.RenewalSigHash(renewal)
 	if !existing.HostPublicKey.VerifyHash(renewalSigHash, hostRenewal.HostSignature) {
 		return ContractRevision{}, TransactionSet{}, errors.New("invalid host signature")
 	}
 	return ContractRevision{
-			ID:       contractID.V2RenewalID(),
+			ID:       params.ContractID.V2RenewalID(),
 			Revision: renewal.NewContract,
 		}, TransactionSet{
 			Basis:        hostTransactionSetResp.Basis,

@@ -36,7 +36,8 @@ func (mt *muxTransport) Close() error {
 }
 
 type fundAndSign struct {
-	w *wallet.SingleAddressWallet
+	w  *wallet.SingleAddressWallet
+	pk types.PrivateKey
 }
 
 func (fs *fundAndSign) FundV2Transaction(txn *types.V2Transaction, amount types.Currency) (types.ChainIndex, []int, error) {
@@ -44,6 +45,15 @@ func (fs *fundAndSign) FundV2Transaction(txn *types.V2Transaction, amount types.
 }
 func (fs *fundAndSign) SignV2Inputs(txn *types.V2Transaction, toSign []int) {
 	fs.w.SignV2Inputs(txn, toSign)
+}
+func (fs *fundAndSign) SignHash(h types.Hash256) types.Signature {
+	return fs.pk.SignHash(h)
+}
+func (fs *fundAndSign) PublicKey() types.PublicKey {
+	return fs.pk.PublicKey()
+}
+func (fs *fundAndSign) Address() types.Address {
+	return fs.w.Address()
 }
 
 func testRenterHostPair(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ServerChainManager, s rhp4.Syncer, w rhp4.Wallet, c rhp4.Contractor, sr rhp4.SettingsReporter, ss rhp4.SectorStore, log *zap.Logger) rhp4.TransportClient {
@@ -245,29 +255,15 @@ func TestFormContract(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	fc := types.V2FileContract{
-		ProofHeight:      cm.Tip().Height + 50,
-		ExpirationHeight: cm.Tip().Height + 60,
-		RenterOutput: types.SiacoinOutput{
-			Address: w.Address(),
-			Value:   renterAllowance,
-		},
-		HostOutput: types.SiacoinOutput{
-			Address: settings.WalletAddress,
-			Value:   hostCollateral.Add(settings.Prices.ContractPrice),
-		},
-		TotalCollateral: hostCollateral,
-		MissedHostValue: hostCollateral,
+	_, finalizedSet, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
-		HostPublicKey:   hostKey.PublicKey(),
-	}
-	cs := cm.TipState()
-	sigHash := cs.ContractSigHash(fc)
-	fc.RenterSignature = renterKey.SignHash(sigHash)
-
-	fundAndSign := &fundAndSign{w}
-	_, finalizedSet, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, fc)
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 50,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,29 +315,15 @@ func TestFormContractBasis(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	fc := types.V2FileContract{
-		ProofHeight:      cm.Tip().Height + 50,
-		ExpirationHeight: cm.Tip().Height + 60,
-		RenterOutput: types.SiacoinOutput{
-			Address: w.Address(),
-			Value:   renterAllowance,
-		},
-		HostOutput: types.SiacoinOutput{
-			Address: settings.WalletAddress,
-			Value:   hostCollateral.Add(settings.Prices.ContractPrice),
-		},
-		TotalCollateral: hostCollateral,
-		MissedHostValue: hostCollateral,
+	_, finalizedSet, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
-		HostPublicKey:   hostKey.PublicKey(),
-	}
-	cs := cm.TipState()
-	sigHash := cs.ContractSigHash(fc)
-	fc.RenterSignature = renterKey.SignHash(sigHash)
-
-	fundAndSign := &fundAndSign{w}
-	_, finalizedSet, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, fc)
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 50,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,29 +375,15 @@ func TestRenewContractPartialRollover(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	fc := types.V2FileContract{
-		ProofHeight:      cm.Tip().Height + 50,
-		ExpirationHeight: cm.Tip().Height + 60,
-		RenterOutput: types.SiacoinOutput{
-			Address: w.Address(),
-			Value:   renterAllowance,
-		},
-		HostOutput: types.SiacoinOutput{
-			Address: settings.WalletAddress,
-			Value:   hostCollateral.Add(settings.Prices.ContractPrice),
-		},
-		TotalCollateral: hostCollateral,
-		MissedHostValue: hostCollateral,
+	revision, formationSet, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
-		HostPublicKey:   hostKey.PublicKey(),
-	}
-	cs := cm.TipState()
-	sigHash := cs.ContractSigHash(fc)
-	fc.RenterSignature = renterKey.SignHash(sigHash)
-
-	fundAndSign := &fundAndSign{w}
-	revision, formationSet, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, fc)
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 50,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,6 +399,7 @@ func TestRenewContractPartialRollover(t *testing.T) {
 	mineAndSync(t, cm, types.VoidAddress, 10, w, c)
 
 	// fund an account to transfer funds to the host
+	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 	accountFundAmount := types.Siacoins(25)
 	revised, _, err := rhp4.RPCFundAccounts(transport, cs, renterKey, revision, []proto4.AccountDeposit{
@@ -442,10 +411,12 @@ func TestRenewContractPartialRollover(t *testing.T) {
 	revision.Revision = revised
 
 	// renew the contract
-	renewal := proto4.ReviseForRenewal(revision.Revision, settings.Prices, revision.Revision.ProofHeight+10, revision.Revision.ExpirationHeight+10, types.Siacoins(150), types.Siacoins(300))
-	renewalSigHash := cs.RenewalSigHash(renewal)
-	renewal.RenterSignature = renterKey.SignHash(renewalSigHash)
-	revision, renewalSet, err := rhp4.RPCRenewContract(transport, cm, fundAndSign, settings.Prices, renterKey, revision.ID, revision.Revision, renewal)
+	revision, renewalSet, err := rhp4.RPCRenewContract(transport, cm, fundAndSign, settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
+		ContractID:  revision.ID,
+		Allowance:   types.Siacoins(150),
+		Collateral:  types.Siacoins(300),
+		ProofHeight: revision.Revision.ProofHeight + 10,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,29 +468,15 @@ func TestRenewContractFullRollover(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	fc := types.V2FileContract{
-		ProofHeight:      cm.Tip().Height + 50,
-		ExpirationHeight: cm.Tip().Height + 60,
-		RenterOutput: types.SiacoinOutput{
-			Address: w.Address(),
-			Value:   renterAllowance,
-		},
-		HostOutput: types.SiacoinOutput{
-			Address: settings.WalletAddress,
-			Value:   hostCollateral.Add(settings.Prices.ContractPrice),
-		},
-		TotalCollateral: hostCollateral,
-		MissedHostValue: hostCollateral,
+	revision, formationSet, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
-		HostPublicKey:   hostKey.PublicKey(),
-	}
-	cs := cm.TipState()
-	sigHash := cs.ContractSigHash(fc)
-	fc.RenterSignature = renterKey.SignHash(sigHash)
-
-	fundAndSign := &fundAndSign{w}
-	revision, formationSet, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, fc)
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 50,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,6 +492,7 @@ func TestRenewContractFullRollover(t *testing.T) {
 	mineAndSync(t, cm, types.VoidAddress, 10, w, c)
 
 	// fund an account to transfer funds to the host
+	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 	accountFundAmount := types.Siacoins(25)
 	revised, _, err := rhp4.RPCFundAccounts(transport, cs, renterKey, revision, []proto4.AccountDeposit{
@@ -546,10 +504,12 @@ func TestRenewContractFullRollover(t *testing.T) {
 	revision.Revision = revised
 
 	// renew the contract
-	renewal := proto4.ReviseForRenewal(revision.Revision, settings.Prices, revision.Revision.ProofHeight+10, revision.Revision.ExpirationHeight+10, types.Siacoins(50), types.Siacoins(100))
-	renewalSigHash := cs.RenewalSigHash(renewal)
-	renewal.RenterSignature = renterKey.SignHash(renewalSigHash)
-	revision, renewalSet, err := rhp4.RPCRenewContract(transport, cm, fundAndSign, settings.Prices, renterKey, revision.ID, revision.Revision, renewal)
+	revision, renewalSet, err := rhp4.RPCRenewContract(transport, cm, fundAndSign, settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
+		ContractID:  revision.ID,
+		Allowance:   types.Siacoins(50),
+		Collateral:  types.Siacoins(100),
+		ProofHeight: revision.Revision.ProofHeight + 10,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -601,29 +561,15 @@ func TestRenewContractNoRollover(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	fc := types.V2FileContract{
-		ProofHeight:      cm.Tip().Height + 50,
-		ExpirationHeight: cm.Tip().Height + 60,
-		RenterOutput: types.SiacoinOutput{
-			Address: w.Address(),
-			Value:   renterAllowance,
-		},
-		HostOutput: types.SiacoinOutput{
-			Address: settings.WalletAddress,
-			Value:   hostCollateral.Add(settings.Prices.ContractPrice),
-		},
-		TotalCollateral: hostCollateral,
-		MissedHostValue: hostCollateral,
+	revision, formationSet, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
-		HostPublicKey:   hostKey.PublicKey(),
-	}
-	cs := cm.TipState()
-	sigHash := cs.ContractSigHash(fc)
-	fc.RenterSignature = renterKey.SignHash(sigHash)
-
-	fundAndSign := &fundAndSign{w}
-	revision, formationSet, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, fc)
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 50,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -639,6 +585,7 @@ func TestRenewContractNoRollover(t *testing.T) {
 	mineAndSync(t, cm, types.VoidAddress, 10, w, c)
 
 	// fund an account to transfer funds to the host
+	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 	accountFundAmount := types.Siacoins(100)
 	revised, _, err := rhp4.RPCFundAccounts(transport, cs, renterKey, revision, []proto4.AccountDeposit{
@@ -650,10 +597,12 @@ func TestRenewContractNoRollover(t *testing.T) {
 	revision.Revision = revised
 
 	// renew the contract
-	renewal := proto4.ReviseForRenewal(revision.Revision, settings.Prices, revision.Revision.ProofHeight+10, revision.Revision.ExpirationHeight+10, types.Siacoins(150), types.Siacoins(300))
-	renewalSigHash := cs.RenewalSigHash(renewal)
-	renewal.RenterSignature = renterKey.SignHash(renewalSigHash)
-	revision, renewalSet, err := rhp4.RPCRenewContract(transport, cm, fundAndSign, settings.Prices, renterKey, revision.ID, revision.Revision, renewal)
+	revision, renewalSet, err := rhp4.RPCRenewContract(transport, cm, fundAndSign, settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
+		ContractID:  revision.ID,
+		Allowance:   types.Siacoins(150),
+		Collateral:  types.Siacoins(300),
+		ProofHeight: revision.Revision.ProofHeight + 10,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -705,33 +654,20 @@ func TestAccounts(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	fc := types.V2FileContract{
-		ProofHeight:      cm.Tip().Height + 50,
-		ExpirationHeight: cm.Tip().Height + 60,
-		RenterOutput: types.SiacoinOutput{
-			Address: w.Address(),
-			Value:   renterAllowance,
-		},
-		HostOutput: types.SiacoinOutput{
-			Address: settings.WalletAddress,
-			Value:   hostCollateral.Add(settings.Prices.ContractPrice),
-		},
-		TotalCollateral: hostCollateral,
-		MissedHostValue: hostCollateral,
+	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
-		HostPublicKey:   hostKey.PublicKey(),
-	}
-	cs := cm.TipState()
-	sigHash := cs.ContractSigHash(fc)
-	fc.RenterSignature = renterKey.SignHash(sigHash)
-
-	fundAndSign := &fundAndSign{w}
-	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, fc)
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 50,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 
 	accountFundAmount := types.Siacoins(25)
@@ -817,33 +753,20 @@ func TestReadWriteSector(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	fc := types.V2FileContract{
-		ProofHeight:      cm.Tip().Height + 50,
-		ExpirationHeight: cm.Tip().Height + 60,
-		RenterOutput: types.SiacoinOutput{
-			Address: w.Address(),
-			Value:   renterAllowance,
-		},
-		HostOutput: types.SiacoinOutput{
-			Address: settings.WalletAddress,
-			Value:   hostCollateral.Add(settings.Prices.ContractPrice),
-		},
-		TotalCollateral: hostCollateral,
-		MissedHostValue: hostCollateral,
+	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
-		HostPublicKey:   hostKey.PublicKey(),
-	}
-	cs := cm.TipState()
-	sigHash := cs.ContractSigHash(fc)
-	fc.RenterSignature = renterKey.SignHash(sigHash)
-
-	fundAndSign := &fundAndSign{w}
-	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, fc)
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 50,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 
 	accountFundAmount := types.Siacoins(25)
@@ -924,33 +847,20 @@ func TestRPCModifySectors(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	fc := types.V2FileContract{
-		ProofHeight:      cm.Tip().Height + 50,
-		ExpirationHeight: cm.Tip().Height + 60,
-		RenterOutput: types.SiacoinOutput{
-			Address: w.Address(),
-			Value:   renterAllowance,
-		},
-		HostOutput: types.SiacoinOutput{
-			Address: settings.WalletAddress,
-			Value:   hostCollateral.Add(settings.Prices.ContractPrice),
-		},
-		TotalCollateral: hostCollateral,
-		MissedHostValue: hostCollateral,
+	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
-		HostPublicKey:   hostKey.PublicKey(),
-	}
-	cs := cm.TipState()
-	sigHash := cs.ContractSigHash(fc)
-	fc.RenterSignature = renterKey.SignHash(sigHash)
-
-	fundAndSign := &fundAndSign{w}
-	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, fc)
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 50,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 
 	accountFundAmount := types.Siacoins(25)
@@ -1089,33 +999,20 @@ func TestRPCSectorRoots(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	fc := types.V2FileContract{
-		ProofHeight:      cm.Tip().Height + 50,
-		ExpirationHeight: cm.Tip().Height + 60,
-		RenterOutput: types.SiacoinOutput{
-			Address: w.Address(),
-			Value:   renterAllowance,
-		},
-		HostOutput: types.SiacoinOutput{
-			Address: settings.WalletAddress,
-			Value:   hostCollateral.Add(settings.Prices.ContractPrice),
-		},
-		TotalCollateral: hostCollateral,
-		MissedHostValue: hostCollateral,
+	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
-		HostPublicKey:   hostKey.PublicKey(),
-	}
-	cs := cm.TipState()
-	sigHash := cs.ContractSigHash(fc)
-	fc.RenterSignature = renterKey.SignHash(sigHash)
-
-	fundAndSign := &fundAndSign{w}
-	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, fc)
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 50,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 
 	accountFundAmount := types.Siacoins(25)
@@ -1214,34 +1111,21 @@ func BenchmarkWrite(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	fc := types.V2FileContract{
-		ProofHeight:      cm.Tip().Height + 50,
-		ExpirationHeight: cm.Tip().Height + 60,
-		RenterOutput: types.SiacoinOutput{
-			Address: w.Address(),
-			Value:   renterAllowance,
-		},
-		HostOutput: types.SiacoinOutput{
-			Address: settings.WalletAddress,
-			Value:   hostCollateral.Add(settings.Prices.ContractPrice),
-		},
-		TotalCollateral: hostCollateral,
-		MissedHostValue: hostCollateral,
+	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
-		HostPublicKey:   hostKey.PublicKey(),
-	}
-	cs := cm.TipState()
-	sigHash := cs.ContractSigHash(fc)
-	fc.RenterSignature = renterKey.SignHash(sigHash)
-
-	fundAndSign := &fundAndSign{w}
-	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, fc)
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 50,
+	})
 	if err != nil {
 		b.Fatal(err)
 	}
 
 	// fund an account
+	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 	accountFundAmount := types.Siacoins(25)
 	_, _, err = rhp4.RPCFundAccounts(transport, cs, renterKey, revision, []proto4.AccountDeposit{
@@ -1315,34 +1199,21 @@ func BenchmarkRead(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	fc := types.V2FileContract{
-		ProofHeight:      cm.Tip().Height + 50,
-		ExpirationHeight: cm.Tip().Height + 60,
-		RenterOutput: types.SiacoinOutput{
-			Address: w.Address(),
-			Value:   renterAllowance,
-		},
-		HostOutput: types.SiacoinOutput{
-			Address: settings.WalletAddress,
-			Value:   hostCollateral.Add(settings.Prices.ContractPrice),
-		},
-		TotalCollateral: hostCollateral,
-		MissedHostValue: hostCollateral,
+	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
-		HostPublicKey:   hostKey.PublicKey(),
-	}
-	cs := cm.TipState()
-	sigHash := cs.ContractSigHash(fc)
-	fc.RenterSignature = renterKey.SignHash(sigHash)
-
-	fundAndSign := &fundAndSign{w}
-	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, fc)
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 50,
+	})
 	if err != nil {
 		b.Fatal(err)
 	}
 
 	// fund an account
+	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 	accountFundAmount := types.Siacoins(25)
 	_, _, err = rhp4.RPCFundAccounts(transport, cs, renterKey, revision, []proto4.AccountDeposit{
@@ -1426,35 +1297,21 @@ func BenchmarkContractUpload(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	fundAndSign := &fundAndSign{w, renterKey}
 	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	fc := types.V2FileContract{
-		ProofHeight:      cm.Tip().Height + 50,
-		ExpirationHeight: cm.Tip().Height + 60,
-		RenterOutput: types.SiacoinOutput{
-			Address: w.Address(),
-			Value:   renterAllowance,
-		},
-		HostOutput: types.SiacoinOutput{
-			Address: settings.WalletAddress,
-			Value:   hostCollateral.Add(settings.Prices.ContractPrice),
-		},
-		TotalCollateral: hostCollateral,
-		MissedHostValue: hostCollateral,
+	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
-		HostPublicKey:   hostKey.PublicKey(),
-	}
-
-	cs := cm.TipState()
-	sigHash := cs.ContractSigHash(fc)
-	fc.RenterSignature = renterKey.SignHash(sigHash)
-
-	fundAndSign := &fundAndSign{w}
-	revision, _, err := rhp4.RPCFormContract(transport, cm, fundAndSign, settings.Prices, fc)
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 50,
+	})
 	if err != nil {
 		b.Fatal(err)
 	}
 
 	// fund an account
+	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 	accountFundAmount := types.Siacoins(25)
 	revised, _, err := rhp4.RPCFundAccounts(transport, cs, renterKey, revision, []proto4.AccountDeposit{

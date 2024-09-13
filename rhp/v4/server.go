@@ -505,39 +505,22 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 		return errorDecodingError("failed to read request: %v", err)
 	}
 
+	ourKey := s.hostKey.PublicKey()
 	prices := req.Prices
-	if err := prices.Validate(s.hostKey.PublicKey()); err != nil {
+	if err := prices.Validate(ourKey); err != nil {
 		return err
 	}
 
-	fc := req.Contract
-
-	// validate contract
 	settings := s.settings.RHP4Settings()
-	minHostRevenue := prices.ContractPrice.Add(fc.TotalCollateral)
-	switch {
-	case fc.Filesize != 0:
-		return errorBadRequest("filesize must be 0")
-	case fc.FileMerkleRoot != (types.Hash256{}):
-		return errorBadRequest("file merkle root must be empty")
-	case fc.ProofHeight < req.Prices.TipHeight+s.contractProofWindowBuffer:
-		return errorBadRequest("proof height %v is too low", fc.ProofHeight)
-	case fc.ExpirationHeight < fc.ProofHeight:
-		return errorBadRequest("expiration height %v is before proof height %v", fc.ExpirationHeight, fc.ProofHeight)
-	case fc.ExpirationHeight-req.Prices.TipHeight > settings.MaxContractDuration:
-		return errorBadRequest("duration %v exceeds maximum %v", fc.ExpirationHeight-req.Prices.TipHeight, settings.MaxContractDuration)
-	case fc.TotalCollateral.Cmp(settings.MaxCollateral) > 0:
-		return errorBadRequest("total collateral %v exceeds maximum %v", fc.TotalCollateral, settings.MaxCollateral)
-	case !fc.MissedHostValue.Equals(fc.TotalCollateral):
-		return errorBadRequest("missed host value %v must equal total collateral %v", fc.MissedHostValue, fc.HostOutput.Value)
-	case fc.HostOutput.Value.Cmp(minHostRevenue) < 0:
-		return errorBadRequest("host output value %v must be greater than or equal to expected %v", fc.HostOutput.Value, minHostRevenue)
+	tip := s.chain.Tip()
+	// validate the request
+	if err := rhp4.ValidateFormContractParams(settings, tip, req.Contract); err != nil {
+		return errorBadRequest(err.Error())
 	}
 
-	formationRevenue := fc.HostOutput.Value.Sub(fc.TotalCollateral)
 	formationTxn := types.V2Transaction{
 		MinerFee:      req.MinerFee,
-		FileContracts: []types.V2FileContract{fc},
+		FileContracts: []types.V2FileContract{rhp4.NewContract(prices, req.Contract, ourKey, settings.WalletAddress)},
 	}
 
 	// calculate the renter inputs
@@ -551,26 +534,20 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 
 	// calculate the required funding
 	cs := s.chain.TipState()
-	requiredRenterFunding := rhp4.ContractRenterCost(cs, prices, fc, formationTxn.MinerFee)
+	renterCost, hostCost := rhp4.ContractCost(cs, prices, formationTxn.FileContracts[0], formationTxn.MinerFee)
 	// validate the renter added enough inputs
-	if n := renterInputs.Cmp(requiredRenterFunding); n < 0 {
-		return errorBadRequest("renter funding %v is less than required funding %v", renterInputs, requiredRenterFunding)
+	if n := renterInputs.Cmp(renterCost); n < 0 {
+		return errorBadRequest("renter funding %v is less than required funding %v", renterInputs, renterCost)
 	} else if n > 0 {
 		// if the renter added too much, add a change output
 		formationTxn.SiacoinOutputs = append(formationTxn.SiacoinOutputs, types.SiacoinOutput{
-			Address: fc.RenterOutput.Address,
-			Value:   renterInputs.Sub(requiredRenterFunding),
+			Address: req.Contract.RenterAddress,
+			Value:   renterInputs.Sub(renterCost),
 		})
 	}
 
-	// validate the renter's contract signature
-	sigHash := cs.ContractSigHash(fc)
-	if !fc.RenterPublicKey.VerifyHash(sigHash, fc.RenterSignature) {
-		return rhp4.ErrInvalidSignature
-	}
-
 	// fund the host collateral
-	basis, toSign, err := s.wallet.FundV2Transaction(&formationTxn, fc.TotalCollateral, true)
+	basis, toSign, err := s.wallet.FundV2Transaction(&formationTxn, hostCost, true)
 	if errors.Is(err, wallet.ErrNotEnoughFunds) {
 		return rhp4.ErrHostFundError
 	} else if err != nil {
@@ -578,6 +555,13 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	}
 	// sign the transaction inputs
 	s.wallet.SignV2Inputs(&formationTxn, toSign)
+
+	// update renter input basis to reflect our funding basis
+	if basis != req.Basis {
+		if err := updateSiacoinElementBasis(s.chain, req.Basis, basis, formationTxn.SiacoinInputs[:len(req.RenterInputs)]); err != nil {
+			return errorBadRequest("failed to update renter inputs from %q to %q: %v", req.Basis, basis, err)
+		}
+	}
 
 	// send the host inputs to the renter
 	hostInputsResp := rhp4.RPCFormContractResponse{
@@ -595,19 +579,20 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 		return errorBadRequest("expected %v satisfied policies, got %v", len(req.RenterInputs), len(renterSigResp.RenterSatisfiedPolicies))
 	}
 
+	// validate the renter's contract signature
+	formationSigHash := cs.ContractSigHash(formationTxn.FileContracts[0])
+	if !req.Contract.RenterPublicKey.VerifyHash(formationSigHash, renterSigResp.RenterContractSignature) {
+		return rhp4.ErrInvalidSignature
+	}
+	formationTxn.FileContracts[0].RenterSignature = renterSigResp.RenterContractSignature
+
+	// add the renter signatures to the transaction
 	for i := range formationTxn.SiacoinInputs[:len(req.RenterInputs)] {
 		formationTxn.SiacoinInputs[i].SatisfiedPolicy = renterSigResp.RenterSatisfiedPolicies[i]
 	}
 
 	// add our signature to the contract
-	formationTxn.FileContracts[0].HostSignature = s.hostKey.SignHash(sigHash)
-
-	if basis != req.Basis {
-		// update renter input basis to reflect our funding basis
-		if err := updateSiacoinElementBasis(s.chain, req.Basis, basis, formationTxn.SiacoinInputs[:len(req.RenterInputs)]); err != nil {
-			return errorBadRequest("failed to update renter inputs from %q to %q: %v", req.Basis, basis, err)
-		}
-	}
+	formationTxn.FileContracts[0].HostSignature = s.hostKey.SignHash(formationSigHash)
 
 	// add the renter's parents to our transaction pool to ensure they are valid
 	// and update the proofs.
@@ -631,7 +616,7 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 		Transactions: formationSet,
 		Basis:        basis,
 	}, Usage{
-		RPCRevenue: formationRevenue,
+		RPCRevenue: settings.Prices.ContractPrice,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to add contract: %w", err)
@@ -656,109 +641,27 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 		return fmt.Errorf("price table invalid: %w", err)
 	}
 
+	settings := s.settings.RHP4Settings()
+	tip := s.chain.Tip()
+	// validate the request
+	if err := rhp4.ValidateRenewContractParams(settings, tip, req.Renewal); err != nil {
+		return errorBadRequest(err.Error())
+	}
+
 	// lock the contract
-	state, unlock, err := s.lockContractForRevision(req.ContractID)
+	state, unlock, err := s.lockContractForRevision(req.Renewal.ContractID)
 	if err != nil {
-		return fmt.Errorf("failed to lock contract %q: %w", req.ContractID, err)
+		return fmt.Errorf("failed to lock contract %q: %w", req.Renewal.ContractID, err)
 	}
 	defer unlock()
 
 	// validate challenge signature
-	if !req.ValidChallengeSignature(state.Revision) {
+	existing := state.Revision
+	if !req.ValidChallengeSignature(existing) {
 		return errorBadRequest("invalid challenge signature")
 	}
 
-	renewal := req.Renewal
-	existing := state.Revision
-
-	// validate the final revision
-	settings := s.settings.RHP4Settings()
-	switch {
-	case renewal.FinalRevision.RevisionNumber != types.MaxRevisionNumber:
-		return errorBadRequest("expected max revision number, got %v", renewal.FinalRevision.RevisionNumber)
-	case renewal.FinalRevision.Filesize != 0:
-		return errorBadRequest("expected filesize 0, got %v", renewal.FinalRevision.Filesize)
-	case renewal.FinalRevision.FileMerkleRoot != (types.Hash256{}):
-		return errorBadRequest("expected empty file merkle root, got %v", renewal.FinalRevision.FileMerkleRoot)
-	case renewal.FinalRevision.HostOutput.Address != existing.HostOutput.Address:
-		return errorBadRequest("host output address must not change")
-	case !renewal.FinalRevision.HostOutput.Value.Equals(existing.HostOutput.Value):
-		return errorBadRequest("host output value must not change")
-	case !renewal.FinalRevision.MissedHostValue.Equals(existing.MissedHostValue):
-		return errorBadRequest("missed host value must not")
-	case renewal.FinalRevision.RenterPublicKey != existing.RenterPublicKey:
-		return errorBadRequest("renter public key must not change")
-	case renewal.FinalRevision.HostPublicKey != existing.HostPublicKey:
-		return errorBadRequest("host public key must not change")
-	}
-
-	// validate the new contract
-	switch {
-	case renewal.NewContract.ProofHeight < req.Prices.TipHeight+s.contractProofWindowBuffer:
-		return errorBadRequest("proof height %v is too low", renewal.NewContract.ProofHeight)
-	case renewal.NewContract.ExpirationHeight < renewal.NewContract.ProofHeight:
-		return errorBadRequest("expiration height %v is before proof height %v", renewal.NewContract.ExpirationHeight, renewal.NewContract.ProofHeight)
-	case renewal.NewContract.ExpirationHeight-req.Prices.TipHeight > settings.MaxContractDuration:
-		return errorBadRequest("duration %v exceeds maximum %v", renewal.NewContract.ExpirationHeight-req.Prices.TipHeight, settings.MaxContractDuration)
-	case renewal.NewContract.TotalCollateral.Cmp(settings.MaxCollateral) > 0:
-		return errorBadRequest("total collateral %v exceeds maximum %v", renewal.NewContract.TotalCollateral, settings.MaxCollateral)
-	case renewal.NewContract.ExpirationHeight < state.Revision.ExpirationHeight:
-		return errorBadRequest("expiration height %v is before current %v", renewal.NewContract.ExpirationHeight, state.Revision.ExpirationHeight)
-	case renewal.NewContract.MissedHostValue.Cmp(renewal.NewContract.HostOutput.Value) > 0:
-		return errorBadRequest("missed host value %v must be less than or equal to host output value %v", renewal.NewContract.MissedHostValue, renewal.NewContract.HostOutput.Value)
-	case renewal.NewContract.TotalCollateral.Cmp(renewal.NewContract.HostOutput.Value) > 0:
-		return errorBadRequest("total collateral %v must be less than or equal to host output value %v", renewal.NewContract.TotalCollateral, renewal.NewContract.HostOutput.Value)
-	case renewal.NewContract.RenterPublicKey != existing.RenterPublicKey:
-		return errorBadRequest("renter public key must not change")
-	case renewal.NewContract.HostPublicKey != existing.HostPublicKey:
-		return errorBadRequest("host public key must not change")
-	case renewal.NewContract.HostOutput.Address != existing.HostOutput.Address:
-		return errorBadRequest("host output address must not change")
-	case renewal.NewContract.Filesize != existing.Filesize:
-		return errorBadRequest("filesize must match existing contract")
-	case renewal.NewContract.FileMerkleRoot != existing.FileMerkleRoot:
-		return errorBadRequest("file merkle root must match existing contract")
-	case renewal.HostRollover.Cmp(existing.TotalCollateral) > 0:
-		return errorBadRequest("host rollover %v must be less than or equal to existing locked collateral %v", renewal.HostRollover, existing.TotalCollateral)
-	case renewal.HostRollover.Cmp(renewal.NewContract.TotalCollateral) > 0:
-		return errorBadRequest("host rollover %v must be less than or equal to total collateral %v", renewal.HostRollover, renewal.NewContract.TotalCollateral)
-	}
-
-	// calculate the contract revenue
-	expectedRevenue := prices.ContractPrice
-	if renewal.NewContract.ExpirationHeight > existing.ExpirationHeight {
-		expectedRevenue = prices.StoragePrice.Mul64(existing.Filesize).Mul64(renewal.NewContract.ExpirationHeight - existing.ExpirationHeight)
-	}
-
-	// validate the valid host output
-	minHostOutputValue := renewal.NewContract.TotalCollateral.Add(expectedRevenue) // more is fine
-	if renewal.NewContract.HostOutput.Value.Cmp(minHostOutputValue) < 0 {
-		return errorBadRequest("expected host output value at least %v, got %v", minHostOutputValue, renewal.NewContract.HostOutput.Value)
-	}
-	usage := Usage{
-		RPCRevenue:     prices.ContractPrice,
-		StorageRevenue: renewal.NewContract.HostOutput.Value.Sub(renewal.NewContract.TotalCollateral).Sub(prices.ContractPrice),
-	}
-
-	// if the missed payout is less than the locked collateral, validate the
-	// risked collateral for this renewal.
-	if renewal.NewContract.MissedHostValue.Cmp(renewal.NewContract.TotalCollateral) < 0 {
-		duration := renewal.NewContract.ExpirationHeight - req.Prices.TipHeight
-		maxRiskedCollateral := prices.Collateral.Mul64(existing.Filesize).Mul64(duration)
-		riskedCollateral := renewal.NewContract.TotalCollateral.Sub(renewal.NewContract.MissedHostValue)
-
-		if riskedCollateral.Cmp(maxRiskedCollateral) > 0 {
-			return errorBadRequest("risked collateral %v exceeds maximum %v", riskedCollateral, maxRiskedCollateral)
-		}
-		usage.RiskedCollateral = riskedCollateral
-	}
-
-	// validate the renter's signature
-	cs := s.chain.TipState()
-	renewalSigHash := cs.RenewalSigHash(renewal)
-	if !existing.RenterPublicKey.VerifyHash(renewalSigHash, renewal.RenterSignature) {
-		return rhp4.ErrInvalidSignature
-	}
+	renewal := rhp4.NewRenewal(existing, prices, req.Renewal)
 
 	// create the renewal transaction
 	renewalTxn := types.V2Transaction{
@@ -770,10 +673,11 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 		},
 	}
 	// calculate the renter funding
-	requiredRenterFunding := rhp4.ContractRenterCost(cs, prices, renewal.NewContract, renewalTxn.MinerFee)
+	cs := s.chain.TipState()
+	renterCost, hostCost := rhp4.RenewalCost(cs, prices, renewal, renewalTxn.MinerFee)
 
 	// add the renter inputs
-	renterInputSum := renewal.RenterRollover
+	var renterInputSum types.Currency
 	for _, si := range req.RenterInputs {
 		renewalTxn.SiacoinInputs = append(renewalTxn.SiacoinInputs, types.V2SiacoinInput{
 			Parent: si,
@@ -782,11 +686,11 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	}
 
 	// validate the renter added enough inputs
-	if !renterInputSum.Equals(requiredRenterFunding) {
-		return errorBadRequest("expected renter to fund %v, got %v", requiredRenterFunding, renterInputSum)
+	if !renterInputSum.Equals(renterCost) {
+		return errorBadRequest("expected renter to fund %v, got %v", renterInputSum, renterCost)
 	}
 
-	fceBasis, fce, err := s.contractor.ContractElement(req.ContractID)
+	fceBasis, fce, err := s.contractor.ContractElement(req.Renewal.ContractID)
 	if err != nil {
 		return fmt.Errorf("failed to get contract element: %w", err)
 	}
@@ -794,17 +698,16 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 
 	basis := cs.Index // start with a decent basis and overwrite it if a setup transaction is needed
 	var renewalParents []types.V2Transaction
-	setupFundAmount := renewal.NewContract.TotalCollateral.Sub(renewal.HostRollover)
-	if !setupFundAmount.IsZero() {
+	if !hostCost.IsZero() {
 		// fund the locked collateral
 		setupTxn := types.V2Transaction{
 			SiacoinOutputs: []types.SiacoinOutput{
-				{Address: renewal.NewContract.HostOutput.Address, Value: setupFundAmount},
+				{Address: renewal.NewContract.HostOutput.Address, Value: hostCost},
 			},
 		}
 
 		var toSign []int
-		basis, toSign, err = s.wallet.FundV2Transaction(&setupTxn, setupFundAmount, true)
+		basis, toSign, err = s.wallet.FundV2Transaction(&setupTxn, hostCost, true)
 		if errors.Is(err, wallet.ErrNotEnoughFunds) {
 			return rhp4.ErrHostFundError
 		} else if err != nil {
@@ -823,8 +726,6 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 		})
 		s.wallet.SignV2Inputs(&renewalTxn, []int{len(renewalTxn.SiacoinInputs) - 1})
 	}
-	// sign the renewal
-	renewal.HostSignature = s.hostKey.SignHash(renewalSigHash)
 
 	// update renter input basis to reflect our funding basis
 	if basis != req.Basis {
@@ -854,10 +755,21 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	} else if len(renterSigResp.RenterSatisfiedPolicies) != len(req.RenterInputs) {
 		return errorBadRequest("expected %v satisfied policies, got %v", len(req.RenterInputs), len(renterSigResp.RenterSatisfiedPolicies))
 	}
+
+	// validate the renter's signature
+	renewalSigHash := cs.RenewalSigHash(renewal)
+	if !existing.RenterPublicKey.VerifyHash(renewalSigHash, renterSigResp.RenterRenewalSignature) {
+		return rhp4.ErrInvalidSignature
+	}
+	renewal.RenterSignature = renterSigResp.RenterRenewalSignature
+
 	// apply the renter's signatures
 	for i := range renewalTxn.SiacoinInputs[:len(req.RenterInputs)] {
 		renewalTxn.SiacoinInputs[i].SatisfiedPolicy = renterSigResp.RenterSatisfiedPolicies[i]
 	}
+
+	// sign the renewal
+	renewal.HostSignature = s.hostKey.SignHash(renewalSigHash)
 
 	// add the renter's parents to our transaction pool to ensure they are valid
 	// and update the proofs.
@@ -888,7 +800,11 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	err = s.contractor.RenewV2Contract(TransactionSet{
 		Transactions: renewalSet,
 		Basis:        basis,
-	}, usage)
+	}, Usage{
+		RPCRevenue:       prices.ContractPrice,
+		StorageRevenue:   renewal.NewContract.HostOutput.Value.Sub(renewal.NewContract.TotalCollateral).Sub(prices.ContractPrice),
+		RiskedCollateral: renewal.NewContract.TotalCollateral.Sub(renewal.NewContract.MissedHostValue),
+	})
 	if err != nil {
 		return fmt.Errorf("failed to add contract: %w", err)
 	}
