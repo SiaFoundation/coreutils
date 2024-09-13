@@ -488,7 +488,7 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	tip := s.chain.Tip()
 	// validate the request
 	if err := rhp4.ValidateFormContractParams(settings, tip, req.Contract); err != nil {
-		return errorBadRequest(err.Error())
+		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
 	formationTxn := types.V2Transaction{
@@ -618,7 +618,7 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	tip := s.chain.Tip()
 	// validate the request
 	if err := rhp4.ValidateRenewContractParams(settings, tip, req.Renewal); err != nil {
-		return errorBadRequest(err.Error())
+		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
 	// lock the contract
