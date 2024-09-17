@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 
 	"go.sia.tech/core/consensus"
@@ -89,7 +90,7 @@ func RPCSettings(ctx context.Context, t TransportClient) (rhp4.HostSettings, err
 }
 
 // RPCReadSector reads a sector from the host
-func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256, offset, length uint64) ([]byte, error) {
+func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256, offset, length uint64, w io.Writer) error {
 	req := &rhp4.RPCReadSectorRequest{
 		Prices: prices,
 		Token:  token,
@@ -98,22 +99,29 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 		Length: length,
 	}
 	if err := req.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return fmt.Errorf("invalid request: %w", err)
 	}
 
 	s := t.DialStream(ctx)
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCReadSectorID, req); err != nil {
-		return nil, fmt.Errorf("failed to write request: %w", err)
+		return fmt.Errorf("failed to write request: %w", err)
 	}
 
-	var resp rhp4.RPCReadSectorResponse
+	var resp rhp4.RPCReadSectorStreamedResponse
 	if err := rhp4.ReadResponse(s, &resp); err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		return fmt.Errorf("failed to read response: %w", err)
 	}
-	// TODO: verify proof + stream to writer
-	return resp.Sector, nil
+
+	// TODO: verify proof
+	n, err := io.Copy(w, io.LimitReader(s, int64(resp.DataLength)))
+	if err != nil {
+		return fmt.Errorf("failed to read data: %w", err)
+	} else if n != int64(resp.DataLength) {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
 }
 
 // RPCWriteSector writes a sector to the host
@@ -121,8 +129,8 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 	req := &rhp4.RPCWriteSectorRequest{
 		Prices:   prices,
 		Token:    token,
-		Sector:   data,
 		Duration: duration,
+		Sector:   data,
 	}
 
 	if err := req.Validate(); err != nil {

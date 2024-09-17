@@ -785,10 +785,11 @@ func TestReadWriteSector(t *testing.T) {
 	}
 
 	// read the sector back
-	buf, err := rhp4.RPCReadSector(context.Background(), transport, settings.Prices, token, root, 0, 64)
+	buf := bytes.NewBuffer(nil)
+	err = rhp4.RPCReadSector(context.Background(), transport, settings.Prices, token, root, 0, 64, buf)
 	if err != nil {
 		t.Fatal(err)
-	} else if !bytes.Equal(buf, data[:64]) {
+	} else if !bytes.Equal(buf.Bytes(), data[:64]) {
 		t.Fatal("data mismatch")
 	}
 }
@@ -1233,12 +1234,14 @@ func BenchmarkRead(b *testing.B) {
 	b.ReportAllocs()
 	b.SetBytes(proto4.SectorSize)
 
+	buf := bytes.NewBuffer(make([]byte, 0, proto4.SectorSize))
 	for i := 0; i < b.N; i++ {
+		buf.Reset()
 		// store the sector
-		buf, err := rhp4.RPCReadSector(context.Background(), transport, settings.Prices, token, roots[i], 0, proto4.SectorSize)
+		err := rhp4.RPCReadSector(context.Background(), transport, settings.Prices, token, roots[i], 0, proto4.SectorSize, buf)
 		if err != nil {
 			b.Fatal(err)
-		} else if !bytes.Equal(buf, sectors[i][:]) {
+		} else if !bytes.Equal(buf.Bytes(), sectors[i][:]) {
 			b.Fatal("data mismatch")
 		}
 	}
