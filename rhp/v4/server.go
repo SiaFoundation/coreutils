@@ -17,6 +17,8 @@ import (
 	"lukechampine.com/frand"
 )
 
+// maxBasisDiff is the maximum number of blocks by which a transaction's basis
+// can differ from the current tip.
 const maxBasisDiff = 20
 
 var protocolVersion = [3]byte{0, 0, 1}
