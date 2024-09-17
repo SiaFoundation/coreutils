@@ -18,15 +18,16 @@ type (
 		Close() error
 	}
 
-	// A ChainReader reports the chain state and manages the mempool.
+	// A ChainReader reports the chain state and manages the transaction pool.
 	ChainReader interface {
 		Tip() types.ChainIndex
 		TipState() consensus.State
 
-		// V2TransactionSet returns the full transaction set and basis necessary for
-		// broadcasting a transaction. If the provided basis does not match the current
-		// tip, the transaction will be updated. The transaction set includes the parents
-		// and the transaction itself in an order valid for broadcasting.
+		// V2TransactionSet returns the full transaction set and basis necessary
+		// for broadcasting a transaction. The transaction will be updated if
+		// the provided basis does not match the current tip. The transaction set
+		// includes the parents and the transaction itself in an order valid
+		// for broadcasting.
 		V2TransactionSet(basis types.ChainIndex, txn types.V2Transaction) (types.ChainIndex, []types.V2Transaction, error)
 	}
 
@@ -44,6 +45,7 @@ type (
 	// A TransactionFunder is an interface for funding v2 transactions.
 	TransactionFunder interface {
 		FundV2Transaction(txn *types.V2Transaction, amount types.Currency) (types.ChainIndex, []int, error)
+		ReleaseInputs([]types.V2Transaction)
 	}
 
 	// FormContractSigner is the minimal interface required to fund and sign a
@@ -56,8 +58,8 @@ type (
 )
 
 type (
-	// A TransactionSet is a set of transactions is a set of transactions that
-	// are valid as of the provided chain index.
+	// A TransactionSet is a set of transactions that are valid as of the
+	// provided chain index.
 	TransactionSet struct {
 		Basis        types.ChainIndex      `json:"basis"`
 		Transactions []types.V2Transaction `json:"transactions"`

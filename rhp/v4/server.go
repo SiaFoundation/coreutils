@@ -42,9 +42,9 @@ type (
 		Close() error
 	}
 
-	// ServerChainManager defines the interface required by the contract manager to
+	// ChainManager defines the interface required by the contract manager to
 	// interact with the consensus set.
-	ServerChainManager interface {
+	ChainManager interface {
 		Tip() types.ChainIndex
 		TipState() consensus.State
 
@@ -133,7 +133,7 @@ type (
 
 		log *zap.Logger
 
-		chain      ServerChainManager
+		chain      ChainManager
 		syncer     Syncer
 		wallet     Wallet
 		sectors    SectorStore
@@ -799,7 +799,7 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	})
 }
 
-func updateStateElementBasis(cm ServerChainManager, base, target types.ChainIndex, element *types.StateElement) error {
+func updateStateElementBasis(cm ChainManager, base, target types.ChainIndex, element *types.StateElement) error {
 	reverted, applied, err := cm.UpdatesSince(base, 144)
 	if err != nil {
 		return err
@@ -846,7 +846,7 @@ func updateStateElementBasis(cm ServerChainManager, base, target types.ChainInde
 
 // updateSiacoinElementBasis is a helper to update a transaction's siacoin elements
 // to the target basis. If an error is returned, inputs must be considered invalid.
-func updateSiacoinElementBasis(cm ServerChainManager, base, target types.ChainIndex, inputs []types.V2SiacoinInput) error {
+func updateSiacoinElementBasis(cm ChainManager, base, target types.ChainIndex, inputs []types.V2SiacoinInput) error {
 	reverted, applied, err := cm.UpdatesSince(base, 144)
 	if err != nil {
 		return err
@@ -1017,7 +1017,7 @@ func errorDecodingError(f string, p ...any) error {
 }
 
 // NewServer creates a new RHP4 server
-func NewServer(pk types.PrivateKey, cm ServerChainManager, syncer Syncer, contracts Contractor, wallet Wallet, settings SettingsReporter, sectors SectorStore, opts ...ServerOption) *Server {
+func NewServer(pk types.PrivateKey, cm ChainManager, syncer Syncer, contracts Contractor, wallet Wallet, settings SettingsReporter, sectors SectorStore, opts ...ServerOption) *Server {
 	s := &Server{
 		hostKey:                   pk,
 		priceTableValidity:        30 * time.Minute,

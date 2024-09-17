@@ -43,6 +43,10 @@ type fundAndSign struct {
 func (fs *fundAndSign) FundV2Transaction(txn *types.V2Transaction, amount types.Currency) (types.ChainIndex, []int, error) {
 	return fs.w.FundV2Transaction(txn, amount, true)
 }
+func (fs *fundAndSign) ReleaseInputs(txns []types.V2Transaction) {
+	fs.w.ReleaseInputs(nil, txns)
+}
+
 func (fs *fundAndSign) SignV2Inputs(txn *types.V2Transaction, toSign []int) {
 	fs.w.SignV2Inputs(txn, toSign)
 }
@@ -56,7 +60,7 @@ func (fs *fundAndSign) Address() types.Address {
 	return fs.w.Address()
 }
 
-func testRenterHostPair(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ServerChainManager, s rhp4.Syncer, w rhp4.Wallet, c rhp4.Contractor, sr rhp4.SettingsReporter, ss rhp4.SectorStore, log *zap.Logger) rhp4.TransportClient {
+func testRenterHostPair(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ChainManager, s rhp4.Syncer, w rhp4.Wallet, c rhp4.Contractor, sr rhp4.SettingsReporter, ss rhp4.SectorStore, log *zap.Logger) rhp4.TransportClient {
 	rs := rhp4.NewServer(hostKey, cm, s, c, w, sr, ss, rhp4.WithContractProofWindowBuffer(10), rhp4.WithPriceTableValidity(2*time.Minute), rhp4.WithLog(log.Named("rhp4")))
 	hostAddr := testutil.ServeSiaMux(tb, rs, log.Named("siamux"))
 
