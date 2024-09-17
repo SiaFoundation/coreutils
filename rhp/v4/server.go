@@ -89,8 +89,8 @@ type (
 	// A SectorStore is an interface for reading and writing sectors
 	SectorStore interface {
 		ReadSector(types.Hash256) ([rhp4.SectorSize]byte, error)
-		// StoreSector stores a sector and returns its root hash.
-		StoreSector(root types.Hash256, data *[rhp4.SectorSize]byte, expiration uint64) error
+		// WriteSector stores a sector and returns its root hash.
+		WriteSector(root types.Hash256, data *[rhp4.SectorSize]byte, expiration uint64) error
 	}
 
 	// A RevisionState pairs a contract revision with its sector roots
@@ -147,7 +147,7 @@ func (s *Server) lockContractForRevision(contractID types.FileContractID) (Revis
 	switch {
 	case err != nil:
 		return RevisionState{}, nil, err
-	case rev.Revision.ProofHeight-s.contractProofWindowBuffer <= s.chain.Tip().Height:
+	case rev.Revision.ProofHeight <= s.chain.Tip().Height+s.contractProofWindowBuffer:
 		unlock()
 		return RevisionState{}, nil, errorBadRequest("contract too close to proof window")
 	case rev.Revision.RevisionNumber >= types.MaxRevisionNumber:
@@ -177,9 +177,9 @@ func (s *Server) handleRPCReadSector(stream net.Conn) error {
 
 	prices, token := req.Prices, req.Token
 	if err := prices.Validate(s.hostKey.PublicKey()); err != nil {
-		return fmt.Errorf("price table invalid: %w", err)
+		return errorBadRequest("price table invalid: %v", err)
 	} else if err := token.Validate(); err != nil {
-		return fmt.Errorf("token invalid: %w", err)
+		return errorBadRequest("account token invalid: %v", err)
 	}
 
 	switch {
@@ -213,9 +213,9 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 	}
 	prices, token := req.Prices, req.Token
 	if err := prices.Validate(s.hostKey.PublicKey()); err != nil {
-		return fmt.Errorf("price table invalid: %w", err)
+		return errorBadRequest("price table invalid: %v", err)
 	} else if err := token.Validate(); err != nil {
-		return fmt.Errorf("token invalid: %w", err)
+		return errorBadRequest("account token invalid: %v", err)
 	}
 
 	settings := s.settings.RHP4Settings()
@@ -246,7 +246,7 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 
 	// store the sector
 	root := rhp4.SectorRoot(&sector)
-	if err := s.sectors.StoreSector(root, &sector, req.Duration); err != nil {
+	if err := s.sectors.WriteSector(root, &sector, req.Duration); err != nil {
 		return fmt.Errorf("failed to store sector: %w", err)
 	}
 	return rhp4.WriteResponse(stream, &rhp4.RPCWriteSectorResponse{
@@ -262,12 +262,12 @@ func (s *Server) handleRPCModifySectors(stream net.Conn) error {
 
 	prices := req.Prices
 	if err := prices.Validate(s.hostKey.PublicKey()); err != nil {
-		return fmt.Errorf("price table invalid: %w", err)
+		return errorBadRequest("price table invalid: %v", err)
 	}
 	settings := s.settings.RHP4Settings()
 
 	if err := rhp4.ValidateModifyActions(req.Actions, settings.MaxModifyActions); err != nil {
-		return fmt.Errorf("modify actions invalid: %w", err)
+		return errorBadRequest("modify actions invalid: %v", err)
 	}
 
 	cs := s.chain.TipState()
@@ -431,19 +431,21 @@ func (s *Server) handleRPCSectorRoots(stream net.Conn) error {
 	}
 	defer unlock()
 
+	// validate the request fields
+	if err := req.Validate(state.Revision); err != nil {
+		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
+	}
+
 	// update the revision
 	revision, err := rhp4.ReviseForSectorRoots(state.Revision, prices, req.Length)
 	if err != nil {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}
+
+	// validate the renter's signature
 	cs := s.chain.TipState()
 	sigHash := cs.ContractSigHash(revision)
-
-	// validate the request
-	switch {
-	case req.Offset+req.Length > uint64(len(state.Roots)):
-		return errorBadRequest("requested offset %v and length %v exceed sector count %v", req.Offset, req.Length, len(state.Roots))
-	case !revision.RenterPublicKey.VerifyHash(sigHash, req.RenterSignature):
+	if !state.Revision.RenterPublicKey.VerifyHash(sigHash, req.RenterSignature) {
 		return rhp4.ErrInvalidSignature
 	}
 
@@ -494,10 +496,14 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 		return err
 	}
 
+	// get current settings and tip
 	settings := s.settings.RHP4Settings()
+	// set the prices to match the signed prices
+	settings.Prices = req.Prices
 	tip := s.chain.Tip()
+
 	// validate the request
-	if err := rhp4.ValidateFormContractParams(settings, tip, req.Contract); err != nil {
+	if err := req.Validate(settings, tip); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
@@ -624,14 +630,18 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 		return fmt.Errorf("price table invalid: %w", err)
 	}
 
+	// get the settings and update the prices to match the signed prices
 	settings := s.settings.RHP4Settings()
+	settings.Prices = prices
+	// get the current tip
 	tip := s.chain.Tip()
+
 	// validate the request
-	if err := rhp4.ValidateRenewContractParams(settings, tip, req.Renewal); err != nil {
+	if err := req.Validate(settings, tip); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
-	// lock the contract
+	// lock the existing contract
 	state, unlock, err := s.lockContractForRevision(req.Renewal.ContractID)
 	if err != nil {
 		return fmt.Errorf("failed to lock contract %q: %w", req.Renewal.ContractID, err)

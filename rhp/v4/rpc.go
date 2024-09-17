@@ -90,22 +90,21 @@ func RPCSettings(ctx context.Context, t TransportClient) (rhp4.HostSettings, err
 
 // RPCReadSector reads a sector from the host
 func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256, offset, length uint64) ([]byte, error) {
-	if offset%rhp4.LeafSize != 0 {
-		return nil, fmt.Errorf("offset must be a multiple of %d bytes", rhp4.LeafSize)
-	} else if offset+length > rhp4.SectorSize {
-		return nil, fmt.Errorf("read exceeds sector bounds")
-	}
-
-	s := t.DialStreamContext(ctx)
-	defer s.Close()
-
-	if err := rhp4.WriteRequest(s, rhp4.RPCReadSectorID, &rhp4.RPCReadSectorRequest{
+	req := &rhp4.RPCReadSectorRequest{
 		Prices: prices,
 		Token:  token,
 		Root:   root,
 		Offset: offset,
 		Length: length,
-	}); err != nil {
+	}
+	if err := req.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	s := t.DialStreamContext(ctx)
+	defer s.Close()
+
+	if err := rhp4.WriteRequest(s, rhp4.RPCReadSectorID, req); err != nil {
 		return nil, fmt.Errorf("failed to write request: %w", err)
 	}
 
@@ -119,21 +118,21 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 
 // RPCWriteSector writes a sector to the host
 func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, data []byte, duration uint64) (types.Hash256, error) {
-	if len(data) > rhp4.SectorSize {
-		return types.Hash256{}, fmt.Errorf("sector must be less than %d bytes", rhp4.SectorSize)
-	} else if len(data)%rhp4.LeafSize != 0 {
-		return types.Hash256{}, fmt.Errorf("sector must be a multiple of %d bytes", rhp4.LeafSize)
+	req := &rhp4.RPCWriteSectorRequest{
+		Prices:   prices,
+		Token:    token,
+		Sector:   data,
+		Duration: duration,
+	}
+
+	if err := req.Validate(); err != nil {
+		return types.Hash256{}, fmt.Errorf("invalid request: %w", err)
 	}
 
 	s := t.DialStreamContext(ctx)
 	defer s.Close()
 
-	if err := rhp4.WriteRequest(s, rhp4.RPCWriteSectorID, &rhp4.RPCWriteSectorRequest{
-		Prices:   prices,
-		Token:    token,
-		Sector:   data,
-		Duration: duration,
-	}); err != nil {
+	if err := rhp4.WriteRequest(s, rhp4.RPCWriteSectorID, req); err != nil {
 		return types.Hash256{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
@@ -271,6 +270,10 @@ func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, 
 		RenterSignature: revision.RenterSignature,
 	}
 
+	if err := req.Validate(revision); err != nil {
+		return types.V2FileContract{}, nil, fmt.Errorf("invalid request: %w", err)
+	}
+
 	s := t.DialStreamContext(ctx)
 	defer s.Close()
 
@@ -325,6 +328,7 @@ func RPCFormContract(ctx context.Context, t TransportClient, cr ChainReader, sig
 
 	basis, formationSet, err := cr.V2TransactionSet(basis, formationTxn)
 	if err != nil {
+		signer.ReleaseInputs([]types.V2Transaction{formationTxn})
 		return ContractRevision{}, TransactionSet{}, fmt.Errorf("failed to get transaction set: %w", err)
 	}
 	formationTxn, formationSet = formationSet[len(formationSet)-1], formationSet[:len(formationSet)-1]
