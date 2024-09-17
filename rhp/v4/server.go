@@ -1015,7 +1015,7 @@ func errorDecodingError(f string, p ...any) error {
 }
 
 // NewServer creates a new RHP4 server
-func NewServer(pk types.PrivateKey, cm ServerChainManager, syncer Syncer, contracts Contractor, wallet Wallet, settings SettingsReporter, sectors SectorStore, opts ...Option) *Server {
+func NewServer(pk types.PrivateKey, cm ServerChainManager, syncer Syncer, contracts Contractor, wallet Wallet, settings SettingsReporter, sectors SectorStore, opts ...ServerOption) *Server {
 	s := &Server{
 		hostKey:                   pk,
 		priceTableValidity:        30 * time.Minute,
