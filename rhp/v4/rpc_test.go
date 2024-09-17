@@ -18,22 +18,10 @@ import (
 	"go.sia.tech/coreutils/syncer"
 	"go.sia.tech/coreutils/testutil"
 	"go.sia.tech/coreutils/wallet"
-	"go.sia.tech/mux/v2"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 	"lukechampine.com/frand"
 )
-
-type muxTransport struct {
-	m *mux.Mux
-}
-
-func (mt *muxTransport) DialStreamContext(ctx context.Context) net.Conn {
-	return mt.m.DialStreamContext(ctx)
-}
-func (mt *muxTransport) Close() error {
-	return mt.m.Close()
-}
 
 type fundAndSign struct {
 	w  *wallet.SingleAddressWallet
@@ -64,20 +52,13 @@ func testRenterHostPair(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ChainMa
 	rs := rhp4.NewServer(hostKey, cm, s, c, w, sr, ss, rhp4.WithContractProofWindowBuffer(10), rhp4.WithPriceTableValidity(2*time.Minute), rhp4.WithLog(log.Named("rhp4")))
 	hostAddr := testutil.ServeSiaMux(tb, rs, log.Named("siamux"))
 
-	conn, err := net.Dial("tcp", hostAddr)
+	transport, err := rhp4.DialSiaMux(context.Background(), hostAddr, hostKey.PublicKey())
 	if err != nil {
 		tb.Fatal(err)
 	}
-	tb.Cleanup(func() { conn.Close() })
+	tb.Cleanup(func() { transport.Close() })
 
-	hostPK := hostKey.PublicKey()
-	m, err := mux.Dial(conn, hostPK[:])
-	if err != nil {
-		tb.Fatal(err)
-	}
-	tb.Cleanup(func() { m.Close() })
-
-	return &muxTransport{m}
+	return transport
 }
 
 func startTestNode(tb testing.TB, n *consensus.Network, genesis types.Block, log *zap.Logger) (*chain.Manager, *syncer.Syncer, *wallet.SingleAddressWallet) {

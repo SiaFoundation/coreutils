@@ -14,7 +14,7 @@ import (
 type (
 	// A TransportClient is a generic multiplexer for outgoing streams.
 	TransportClient interface {
-		DialStreamContext(context.Context) net.Conn
+		DialStream(context.Context) net.Conn
 		Close() error
 	}
 
@@ -74,7 +74,7 @@ type (
 
 // RPCSettings returns the current settings of the host
 func RPCSettings(ctx context.Context, t TransportClient) (rhp4.HostSettings, error) {
-	s := t.DialStreamContext(ctx)
+	s := t.DialStream(ctx)
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCSettingsID, nil); err != nil {
@@ -101,7 +101,7 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
-	s := t.DialStreamContext(ctx)
+	s := t.DialStream(ctx)
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCReadSectorID, req); err != nil {
@@ -129,7 +129,7 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 		return types.Hash256{}, fmt.Errorf("invalid request: %w", err)
 	}
 
-	s := t.DialStreamContext(ctx)
+	s := t.DialStream(ctx)
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCWriteSectorID, req); err != nil {
@@ -152,7 +152,7 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 
 // RPCModifySectors modifies sectors on the host
 func RPCModifySectors(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, actions []rhp4.WriteAction) (types.V2FileContract, error) {
-	s := t.DialStreamContext(ctx)
+	s := t.DialStream(ctx)
 	defer s.Close()
 
 	req := rhp4.RPCModifySectorsRequest{
@@ -217,7 +217,7 @@ func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State,
 		RenterSignature: revision.RenterSignature,
 	}
 
-	s := t.DialStreamContext(ctx)
+	s := t.DialStream(ctx)
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCFundAccountsID, &req); err != nil {
@@ -239,7 +239,7 @@ func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State,
 
 // RPCLatestRevision returns the latest revision of a contract
 func RPCLatestRevision(ctx context.Context, t TransportClient, contractID types.FileContractID) (types.V2FileContract, error) {
-	s := t.DialStreamContext(ctx)
+	s := t.DialStream(ctx)
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCLatestRevisionID, &rhp4.RPCLatestRevisionRequest{ContractID: contractID}); err != nil {
@@ -274,7 +274,7 @@ func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, 
 		return types.V2FileContract{}, nil, fmt.Errorf("invalid request: %w", err)
 	}
 
-	s := t.DialStreamContext(ctx)
+	s := t.DialStream(ctx)
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCSectorRootsID, &req); err != nil {
@@ -297,7 +297,7 @@ func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, 
 
 // RPCAccountBalance returns the balance of an account
 func RPCAccountBalance(ctx context.Context, t TransportClient, account rhp4.Account) (types.Currency, error) {
-	s := t.DialStreamContext(ctx)
+	s := t.DialStream(ctx)
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCAccountBalanceID, &rhp4.RPCAccountBalanceRequest{Account: account}); err != nil {
@@ -338,7 +338,7 @@ func RPCFormContract(ctx context.Context, t TransportClient, cr ChainReader, sig
 		renterSiacoinElements = append(renterSiacoinElements, i.Parent)
 	}
 
-	s := t.DialStreamContext(ctx)
+	s := t.DialStream(ctx)
 	defer s.Close()
 
 	req := rhp4.RPCFormContractRequest{
@@ -493,7 +493,7 @@ func RPCRenewContract(ctx context.Context, t TransportClient, cr ChainReader, si
 	sigHash := req.ChallengeSigHash(existing.RevisionNumber)
 	req.ChallengeSignature = signer.SignHash(sigHash)
 
-	s := t.DialStreamContext(ctx)
+	s := t.DialStream(ctx)
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCRenewContractID, &req); err != nil {
