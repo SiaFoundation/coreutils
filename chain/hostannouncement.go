@@ -33,6 +33,7 @@ func (ha HostAnnouncement) ToAttestation(cs consensus.State, sk types.PrivateKey
 	return a
 }
 
+// FromAttestation decodes a host announcement from an attestation.
 func (ha *HostAnnouncement) FromAttestation(a types.Attestation) bool {
 	if a.Key != attestationHostAnnouncement {
 		return false
@@ -59,6 +60,7 @@ func (ha HostAnnouncement) ToArbitraryData(sk types.PrivateKey) []byte {
 	return buf.Bytes()
 }
 
+// FromArbitraryData decodes a host announcement from arbitrary data.
 func (ha *HostAnnouncement) FromArbitraryData(arb []byte) bool {
 	var s types.Specifier
 	var uk types.UnlockKey
