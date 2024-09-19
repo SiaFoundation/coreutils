@@ -180,13 +180,8 @@ func (s *Server) handleRPCReadSector(stream net.Conn) error {
 		return errorBadRequest("price table invalid: %v", err)
 	} else if err := token.Validate(); err != nil {
 		return errorBadRequest("account token invalid: %v", err)
-	}
-
-	switch {
-	case req.Length%rhp4.LeafSize != 0:
-		return errorBadRequest("requested length must be a multiple of segment size %v", rhp4.LeafSize)
-	case req.Offset+req.Length > rhp4.SectorSize:
-		return errorBadRequest("requested offset %v and length %v exceed sector size %v", req.Offset, req.Length, rhp4.SectorSize)
+	} else if err := req.Validate(); err != nil {
+		return errorBadRequest("request invalid: %v", err)
 	}
 
 	if err := s.contractor.DebitAccount(req.Token.Account, prices.RPCReadSectorCost(req.Length)); err != nil {
