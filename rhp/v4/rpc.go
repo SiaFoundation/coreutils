@@ -12,6 +12,12 @@ import (
 	"go.sia.tech/core/types"
 )
 
+var (
+	// ErrInvalidRoot is returned when RPCWrite returns a sector root that does
+	// not match the expected value.
+	ErrInvalidRoot = errors.New("invalid root")
+)
+
 type (
 	// A TransportClient is a generic multiplexer for outgoing streams.
 	TransportClient interface {
@@ -133,6 +139,22 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 		Sector:   data,
 	}
 
+	// calculate the root in a separate goroutine to avoid blocking the
+	// RPC
+	ch := make(chan types.Hash256, 1)
+	go func() {
+		if len(data) == rhp4.SectorSize {
+			// dealing with a full sector, avoid copying
+			ch <- rhp4.SectorRoot((*[rhp4.SectorSize]byte)(data))
+			return
+		} else {
+			// pad the data to a full sector
+			var sector [rhp4.SectorSize]byte
+			copy(sector[:], data)
+			ch <- rhp4.SectorRoot(&sector)
+		}
+	}()
+
 	if err := req.Validate(); err != nil {
 		return types.Hash256{}, fmt.Errorf("invalid request: %w", err)
 	}
@@ -149,13 +171,11 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 		return types.Hash256{}, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	var sector [rhp4.SectorSize]byte
-	copy(sector[:], data)
-	root := rhp4.SectorRoot(&sector)
-	if root != resp.Root {
-		return types.Hash256{}, fmt.Errorf("invalid root returned: expected %v, got %v", root, resp.Root)
+	expected := <-ch
+	if expected != resp.Root {
+		return types.Hash256{}, ErrInvalidRoot
 	}
-	return root, nil
+	return resp.Root, nil
 }
 
 // RPCModifySectors modifies sectors on the host
