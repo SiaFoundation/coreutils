@@ -369,7 +369,6 @@ func (s *Server) handleRPCFundAccounts(stream net.Conn) error {
 	}
 
 	fc := state.Revision
-	fc.RevisionNumber++
 	if err := rhp4.PayWithContract(&fc, totalDeposits, types.ZeroCurrency); err != nil {
 		return fmt.Errorf("failed to pay with contract: %w", err)
 	}
