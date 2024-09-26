@@ -19,10 +19,15 @@ type (
 		NetAddress string
 	}
 
+	// A Protocol is a string identifying a network protocol that a host may be
+	// reached on. It should be in the form of "protocol/transport". There may be
+	// additional useful information after the transport, separated by slashes.
+	Protocol string
+
 	// A NetAddress is a pair of protocol and address that a host may be reached on
 	NetAddress struct {
-		Protocol string `json:"protocol"`
-		Address  string `json:"address"`
+		Protocol Protocol `json:"protocol"`
+		Address  string   `json:"address"`
 	}
 
 	// A V2HostAnnouncement lists all the network addresses a host may be reached on
@@ -31,13 +36,13 @@ type (
 
 // EncodeTo implements types.EncoderTo.
 func (na NetAddress) EncodeTo(e *types.Encoder) {
-	e.WriteString(na.Protocol)
+	e.WriteString(string(na.Protocol))
 	e.WriteString(na.Address)
 }
 
 // DecodeFrom implements types.DecoderFrom.
 func (na *NetAddress) DecodeFrom(d *types.Decoder) {
-	na.Protocol = d.ReadString()
+	na.Protocol = Protocol(d.ReadString())
 	na.Address = d.ReadString()
 }
 
