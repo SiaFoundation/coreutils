@@ -803,6 +803,39 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	})
 }
 
+func (s *Server) handleRPCVerifySector(stream net.Conn) error {
+	var req rhp4.RPCVerifySectorRequest
+	if err := rhp4.ReadRequest(stream, &req); err != nil {
+		return errorDecodingError("failed to read request: %v", err)
+	} else if err := req.Validate(); err != nil {
+		return errorBadRequest(err.Error())
+	}
+
+	prices := req.Prices
+	if err := prices.Validate(s.hostKey.PublicKey()); err != nil {
+		return fmt.Errorf("failed to validate price table: %w", err)
+	}
+	token := req.Token
+	if err := token.Validate(); err != nil {
+		return fmt.Errorf("failed to validate token: %w", err)
+	}
+
+	if err := s.contractor.DebitAccount(token.Account, prices.RPCVerifySectorCost()); err != nil {
+		return fmt.Errorf("failed to debit account: %w", err)
+	}
+
+	sector, err := s.sectors.ReadSector(req.Root)
+	if err != nil {
+		return errorBadRequest(err.Error())
+	}
+
+	// TODO: build proof
+	resp := rhp4.RPCVerifySectorResponse{
+		Leaf: ([64]byte)(sector[rhp4.LeafSize*req.LeafIndex:]),
+	}
+	return rhp4.WriteResponse(stream, &resp)
+}
+
 func updateStateElementBasis(cm ChainManager, base, target types.ChainIndex, element *types.StateElement) error {
 	reverted, applied, err := cm.UpdatesSince(base, 144)
 	if err != nil {
@@ -960,6 +993,8 @@ func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 		err = s.handleRPCSectorRoots(stream)
 	case rhp4.RPCWriteSectorID:
 		err = s.handleRPCWriteSector(stream)
+	case rhp4.RPCVerifySectorID:
+		err = s.handleRPCVerifySector(stream)
 	default:
 		log.Debug("unrecognized RPC", zap.Stringer("rpc", id))
 		rhp4.WriteResponse(stream, &rhp4.RPCError{Code: rhp4.ErrorCodeBadRequest, Description: "unrecognized RPC"})

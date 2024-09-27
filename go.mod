@@ -2,9 +2,11 @@ module go.sia.tech/coreutils
 
 go 1.23.0
 
+replace go.sia.tech/core => ../core
+
 require (
 	go.etcd.io/bbolt v1.3.11
-	go.sia.tech/core v0.4.7-0.20240926170123-801d36064633
+	go.sia.tech/core v0.4.8-0.20240927164319-a84f9361f4c0
 	go.sia.tech/mux v1.3.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.27.0

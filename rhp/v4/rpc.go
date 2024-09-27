@@ -10,6 +10,7 @@ import (
 	"go.sia.tech/core/consensus"
 	rhp4 "go.sia.tech/core/rhp/v4"
 	"go.sia.tech/core/types"
+	"lukechampine.com/frand"
 )
 
 var (
@@ -176,6 +177,29 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 		return types.Hash256{}, ErrInvalidRoot
 	}
 	return resp.Root, nil
+}
+
+// RPCVerifySector verifies that the host is properly storing a sector
+func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256) error {
+	req := &rhp4.RPCVerifySectorRequest{
+		Root:      root,
+		LeafIndex: frand.Uint64n(rhp4.LeavesPerSector),
+	}
+
+	s := t.DialStream(ctx)
+	defer s.Close()
+
+	if err := rhp4.WriteRequest(s, rhp4.RPCVerifySectorID, req); err != nil {
+		return fmt.Errorf("failed to write request: %w", err)
+	}
+
+	var resp rhp4.RPCVerifySectorResponse
+	if err := rhp4.ReadResponse(s, &resp); err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// TODO: validate proof
+	return nil
 }
 
 // RPCModifySectors modifies sectors on the host
