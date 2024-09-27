@@ -80,6 +80,64 @@ type (
 	}
 )
 
+type (
+	// An AccountBalance pairs an account with its current balance
+	AccountBalance struct {
+		Account rhp4.Account   `json:"account"`
+		Balance types.Currency `json:"balance"`
+	}
+
+	// RPCWriteSectorResult contains the result of executing the write sector RPC
+	RPCWriteSectorResult struct {
+		Root types.Hash256  `json:"root"`
+		Cost types.Currency `json:"cost"`
+	}
+
+	// RPCReadSectorResult contains the result of executing the read sector RPC
+	RPCReadSectorResult struct {
+		Cost types.Currency `json:"cost"`
+	}
+
+	// RPCVerifySectorResult contains the result of executing the verify sector RPC
+	RPCVerifySectorResult struct {
+		Cost types.Currency `json:"cost"`
+	}
+
+	// RPCModifySectorsResult contains the result of executing the modify sectors RPC
+	RPCModifySectorsResult struct {
+		Revision types.V2FileContract `json:"revision"`
+		Cost     types.Currency       `json:"cost"`
+	}
+
+	// RPCFundAccountResult contains the result of executing the fund accounts RPC
+	RPCFundAccountResult struct {
+		Revision types.V2FileContract `json:"revision"`
+		Balances []AccountBalance     `json:"balances"`
+		Cost     types.Currency       `json:"cost"`
+	}
+
+	// RPCSectorRootsResult contains the result of executing the sector roots RPC
+	RPCSectorRootsResult struct {
+		Revision types.V2FileContract `json:"revision"`
+		Roots    []types.Hash256      `json:"roots"`
+		Cost     types.Currency       `json:"cost"`
+	}
+
+	// RPCFormContractResult contains the result of executing the form contract RPC
+	RPCFormContractResult struct {
+		Contract     ContractRevision `json:"contract"`
+		FormationSet TransactionSet   `json:"formationSet"`
+		Cost         types.Currency   `json:"cost"`
+	}
+
+	// RPCRenewContractResult contains the result of executing the renew contract RPC
+	RPCRenewContractResult struct {
+		Contract   ContractRevision `json:"contract"`
+		RenewalSet TransactionSet   `json:"renewalSet"`
+		Cost       types.Currency   `json:"cost"`
+	}
+)
+
 // RPCSettings returns the current settings of the host
 func RPCSettings(ctx context.Context, t TransportClient) (rhp4.HostSettings, error) {
 	s := t.DialStream(ctx)
@@ -97,7 +155,7 @@ func RPCSettings(ctx context.Context, t TransportClient) (rhp4.HostSettings, err
 }
 
 // RPCReadSector reads a sector from the host
-func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256, offset, length uint64, w io.Writer) error {
+func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256, offset, length uint64, w io.Writer) (RPCReadSectorResult, error) {
 	req := &rhp4.RPCReadSectorRequest{
 		Prices: prices,
 		Token:  token,
@@ -106,33 +164,35 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 		Length: length,
 	}
 	if err := req.Validate(); err != nil {
-		return fmt.Errorf("invalid request: %w", err)
+		return RPCReadSectorResult{}, fmt.Errorf("invalid request: %w", err)
 	}
 
 	s := t.DialStream(ctx)
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCReadSectorID, req); err != nil {
-		return fmt.Errorf("failed to write request: %w", err)
+		return RPCReadSectorResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
 	var resp rhp4.RPCReadSectorStreamedResponse
 	if err := rhp4.ReadResponse(s, &resp); err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
+		return RPCReadSectorResult{}, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	// TODO: verify proof
 	n, err := io.Copy(w, io.LimitReader(s, int64(resp.DataLength)))
 	if err != nil {
-		return fmt.Errorf("failed to read data: %w", err)
+		return RPCReadSectorResult{}, fmt.Errorf("failed to read data: %w", err)
 	} else if n != int64(resp.DataLength) {
-		return io.ErrUnexpectedEOF
+		return RPCReadSectorResult{}, io.ErrUnexpectedEOF
 	}
-	return nil
+	return RPCReadSectorResult{
+		Cost: prices.RPCReadSectorCost(length),
+	}, nil
 }
 
 // RPCWriteSector writes a sector to the host
-func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, data []byte, duration uint64) (types.Hash256, error) {
+func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, data []byte, duration uint64) (RPCWriteSectorResult, error) {
 	req := &rhp4.RPCWriteSectorRequest{
 		Prices:   prices,
 		Token:    token,
@@ -141,7 +201,7 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 	}
 
 	if err := req.Validate(); err != nil {
-		return types.Hash256{}, fmt.Errorf("invalid request: %w", err)
+		return RPCWriteSectorResult{}, fmt.Errorf("invalid request: %w", err)
 	}
 
 	// calculate the root in a separate goroutine to avoid blocking the
@@ -164,23 +224,26 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCWriteSectorID, req); err != nil {
-		return types.Hash256{}, fmt.Errorf("failed to write request: %w", err)
+		return RPCWriteSectorResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
 	var resp rhp4.RPCWriteSectorResponse
 	if err := rhp4.ReadResponse(s, &resp); err != nil {
-		return types.Hash256{}, fmt.Errorf("failed to read response: %w", err)
+		return RPCWriteSectorResult{}, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	expected := <-ch
 	if expected != resp.Root {
-		return types.Hash256{}, ErrInvalidRoot
+		return RPCWriteSectorResult{}, ErrInvalidRoot
 	}
-	return resp.Root, nil
+	return RPCWriteSectorResult{
+		Root: resp.Root,
+		Cost: prices.RPCWriteSectorCost(uint64(len(data)), duration),
+	}, nil
 }
 
 // RPCVerifySector verifies that the host is properly storing a sector
-func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256) error {
+func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256) (RPCVerifySectorResult, error) {
 	req := &rhp4.RPCVerifySectorRequest{
 		Prices:    prices,
 		Token:     token,
@@ -192,20 +255,22 @@ func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPri
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCVerifySectorID, req); err != nil {
-		return fmt.Errorf("failed to write request: %w", err)
+		return RPCVerifySectorResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
 	var resp rhp4.RPCVerifySectorResponse
 	if err := rhp4.ReadResponse(s, &resp); err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
+		return RPCVerifySectorResult{}, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	// TODO: validate proof
-	return nil
+	return RPCVerifySectorResult{
+		Cost: prices.RPCVerifySectorCost(),
+	}, nil
 }
 
 // RPCModifySectors modifies sectors on the host
-func RPCModifySectors(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, actions []rhp4.WriteAction) (types.V2FileContract, error) {
+func RPCModifySectors(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, actions []rhp4.WriteAction) (RPCModifySectorsResult, error) {
 	s := t.DialStream(ctx)
 	defer s.Close()
 
@@ -217,17 +282,17 @@ func RPCModifySectors(ctx context.Context, t TransportClient, cs consensus.State
 	req.ChallengeSignature = sk.SignHash(req.ChallengeSigHash(contract.Revision.RevisionNumber + 1))
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCModifySectorsID, &req); err != nil {
-		return types.V2FileContract{}, fmt.Errorf("failed to write request: %w", err)
+		return RPCModifySectorsResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
 	var resp rhp4.RPCModifySectorsResponse
 	if err := rhp4.ReadResponse(s, &resp); err != nil {
-		return types.V2FileContract{}, fmt.Errorf("failed to read response: %w", err)
+		return RPCModifySectorsResult{}, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	revision, err := rhp4.ReviseForModifySectors(contract.Revision, req, resp)
 	if err != nil {
-		return types.V2FileContract{}, fmt.Errorf("failed to revise contract: %w", err)
+		return RPCModifySectorsResult{}, fmt.Errorf("failed to revise contract: %w", err)
 	}
 
 	sigHash := cs.ContractSigHash(revision)
@@ -237,30 +302,33 @@ func RPCModifySectors(ctx context.Context, t TransportClient, cs consensus.State
 		RenterSignature: revision.RenterSignature,
 	}
 	if err := rhp4.WriteResponse(s, &signatureResp); err != nil {
-		return types.V2FileContract{}, fmt.Errorf("failed to write signature response: %w", err)
+		return RPCModifySectorsResult{}, fmt.Errorf("failed to write signature response: %w", err)
 	}
 
 	var hostSignature rhp4.RPCModifySectorsThirdResponse
 	if err := rhp4.ReadResponse(s, &hostSignature); err != nil {
-		return types.V2FileContract{}, fmt.Errorf("failed to read host signatures: %w", err)
+		return RPCModifySectorsResult{}, fmt.Errorf("failed to read host signatures: %w", err)
 	}
 	// validate the host signature
 	if !contract.Revision.HostPublicKey.VerifyHash(sigHash, hostSignature.HostSignature) {
-		return contract.Revision, rhp4.ErrInvalidSignature
+		return RPCModifySectorsResult{}, rhp4.ErrInvalidSignature
 	}
 	// return the signed revision
-	return revision, nil
+	return RPCModifySectorsResult{
+		Revision: revision,
+		Cost:     contract.Revision.RenterOutput.Value.Sub(revision.RenterOutput.Value),
+	}, nil
 }
 
 // RPCFundAccounts funds accounts on the host
-func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State, signer ContractSigner, contract ContractRevision, deposits []rhp4.AccountDeposit) (types.V2FileContract, []types.Currency, error) {
+func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State, signer ContractSigner, contract ContractRevision, deposits []rhp4.AccountDeposit) (RPCFundAccountResult, error) {
 	var total types.Currency
 	for _, deposit := range deposits {
 		total = total.Add(deposit.Amount)
 	}
 	revision, err := rhp4.ReviseForFundAccount(contract.Revision, total)
 	if err != nil {
-		return types.V2FileContract{}, nil, fmt.Errorf("failed to revise contract: %w", err)
+		return RPCFundAccountResult{}, fmt.Errorf("failed to revise contract: %w", err)
 	}
 	sigHash := cs.ContractSigHash(revision)
 	revision.RenterSignature = signer.SignHash(sigHash)
@@ -275,20 +343,35 @@ func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State,
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCFundAccountsID, &req); err != nil {
-		return types.V2FileContract{}, nil, fmt.Errorf("failed to write request: %w", err)
+		return RPCFundAccountResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
 	var resp rhp4.RPCFundAccountsResponse
 	if err := rhp4.ReadResponse(s, &resp); err != nil {
-		return types.V2FileContract{}, nil, fmt.Errorf("failed to read response: %w", err)
+		return RPCFundAccountResult{}, fmt.Errorf("failed to read response: %w", err)
+	} else if len(resp.Balances) != len(deposits) {
+		return RPCFundAccountResult{}, fmt.Errorf("expected %v balances, got %v", len(deposits), len(resp.Balances))
 	}
 
 	// validate the host's signature
 	if !contract.Revision.HostPublicKey.VerifyHash(sigHash, resp.HostSignature) {
-		return contract.Revision, nil, rhp4.ErrInvalidSignature
+		return RPCFundAccountResult{}, rhp4.ErrInvalidSignature
 	}
 	revision.HostSignature = resp.HostSignature
-	return revision, resp.Balances, nil
+
+	balances := make([]AccountBalance, 0, len(deposits))
+	for i := range deposits {
+		balances = append(balances, AccountBalance{
+			Account: deposits[i].Account,
+			Balance: resp.Balances[i],
+		})
+	}
+
+	return RPCFundAccountResult{
+		Revision: revision,
+		Balances: balances,
+		Cost:     contract.Revision.RenterOutput.Value.Sub(revision.RenterOutput.Value),
+	}, nil
 }
 
 // RPCLatestRevision returns the latest revision of a contract
@@ -308,10 +391,10 @@ func RPCLatestRevision(ctx context.Context, t TransportClient, contractID types.
 }
 
 // RPCSectorRoots returns the sector roots for a contract
-func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, signer ContractSigner, contract ContractRevision, offset, length uint64) (types.V2FileContract, []types.Hash256, error) {
+func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, signer ContractSigner, contract ContractRevision, offset, length uint64) (RPCSectorRootsResult, error) {
 	revision, err := rhp4.ReviseForSectorRoots(contract.Revision, prices, length)
 	if err != nil {
-		return types.V2FileContract{}, nil, fmt.Errorf("failed to revise contract: %w", err)
+		return RPCSectorRootsResult{}, fmt.Errorf("failed to revise contract: %w", err)
 	}
 	sigHash := cs.ContractSigHash(revision)
 	revision.RenterSignature = signer.SignHash(sigHash)
@@ -325,28 +408,33 @@ func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, 
 	}
 
 	if err := req.Validate(revision); err != nil {
-		return types.V2FileContract{}, nil, fmt.Errorf("invalid request: %w", err)
+		return RPCSectorRootsResult{}, fmt.Errorf("invalid request: %w", err)
 	}
 
 	s := t.DialStream(ctx)
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCSectorRootsID, &req); err != nil {
-		return types.V2FileContract{}, nil, fmt.Errorf("failed to write request: %w", err)
+		return RPCSectorRootsResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
 	var resp rhp4.RPCSectorRootsResponse
 	if err := rhp4.ReadResponse(s, &resp); err != nil {
-		return types.V2FileContract{}, nil, fmt.Errorf("failed to read response: %w", err)
+		return RPCSectorRootsResult{}, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	// validate host signature
 	if !contract.Revision.HostPublicKey.VerifyHash(sigHash, resp.HostSignature) {
-		return contract.Revision, nil, rhp4.ErrInvalidSignature
+		return RPCSectorRootsResult{}, rhp4.ErrInvalidSignature
 	}
+	revision.HostSignature = resp.HostSignature
 
 	// TODO: validate proof
-	return revision, resp.Roots, nil
+	return RPCSectorRootsResult{
+		Revision: revision,
+		Roots:    resp.Roots,
+		Cost:     contract.Revision.RenterOutput.Value.Sub(revision.RenterOutput.Value),
+	}, nil
 }
 
 // RPCAccountBalance returns the balance of an account
@@ -366,7 +454,7 @@ func RPCAccountBalance(ctx context.Context, t TransportClient, account rhp4.Acco
 }
 
 // RPCFormContract forms a contract with a host
-func RPCFormContract(ctx context.Context, t TransportClient, cr ChainReader, signer FormContractSigner, p rhp4.HostPrices, hostKey types.PublicKey, hostAddress types.Address, params rhp4.RPCFormContractParams) (ContractRevision, TransactionSet, error) {
+func RPCFormContract(ctx context.Context, t TransportClient, cr ChainReader, signer FormContractSigner, p rhp4.HostPrices, hostKey types.PublicKey, hostAddress types.Address, params rhp4.RPCFormContractParams) (RPCFormContractResult, error) {
 	cs := cr.TipState()
 	fc := rhp4.NewContract(p, params, hostKey, hostAddress)
 	formationTxn := types.V2Transaction{
@@ -377,13 +465,13 @@ func RPCFormContract(ctx context.Context, t TransportClient, cr ChainReader, sig
 	renterCost, _ := rhp4.ContractCost(cs, p, fc, formationTxn.MinerFee)
 	basis, toSign, err := signer.FundV2Transaction(&formationTxn, renterCost)
 	if err != nil {
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("failed to fund transaction: %w", err)
+		return RPCFormContractResult{}, fmt.Errorf("failed to fund transaction: %w", err)
 	}
 
 	basis, formationSet, err := cr.V2TransactionSet(basis, formationTxn)
 	if err != nil {
 		signer.ReleaseInputs([]types.V2Transaction{formationTxn})
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("failed to get transaction set: %w", err)
+		return RPCFormContractResult{}, fmt.Errorf("failed to get transaction set: %w", err)
 	}
 	formationTxn, formationSet = formationSet[len(formationSet)-1], formationSet[:len(formationSet)-1]
 
@@ -404,12 +492,12 @@ func RPCFormContract(ctx context.Context, t TransportClient, cr ChainReader, sig
 		RenterParents: formationSet,
 	}
 	if err := rhp4.WriteRequest(s, rhp4.RPCFormContractID, &req); err != nil {
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("failed to write request: %w", err)
+		return RPCFormContractResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
 	var hostInputsResp rhp4.RPCFormContractResponse
 	if err := rhp4.ReadResponse(s, &hostInputsResp); err != nil {
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("failed to read host inputs response: %w", err)
+		return RPCFormContractResult{}, fmt.Errorf("failed to read host inputs response: %w", err)
 	}
 
 	// add the host inputs to the transaction
@@ -420,7 +508,7 @@ func RPCFormContract(ctx context.Context, t TransportClient, cr ChainReader, sig
 	}
 
 	if n := hostInputSum.Cmp(fc.TotalCollateral); n < 0 {
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("expected host to fund at least %v, got %v", fc.TotalCollateral, hostInputSum)
+		return RPCFormContractResult{}, fmt.Errorf("expected host to fund at least %v, got %v", fc.TotalCollateral, hostInputSum)
 	} else if n > 0 {
 		// add change output
 		formationTxn.SiacoinOutputs = append(formationTxn.SiacoinOutputs, types.SiacoinOutput{
@@ -442,46 +530,51 @@ func RPCFormContract(ctx context.Context, t TransportClient, cr ChainReader, sig
 	}
 	// send the renter signatures
 	if err := rhp4.WriteResponse(s, &renterPolicyResp); err != nil {
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("failed to write signature response: %w", err)
+		return RPCFormContractResult{}, fmt.Errorf("failed to write signature response: %w", err)
 	}
 
 	// read the finalized transaction set
 	var hostTransactionSetResp rhp4.RPCFormContractThirdResponse
 	if err := rhp4.ReadResponse(s, &hostTransactionSetResp); err != nil {
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("failed to read final response: %w", err)
+		return RPCFormContractResult{}, fmt.Errorf("failed to read final response: %w", err)
 	}
 
 	if len(hostTransactionSetResp.TransactionSet) == 0 {
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("expected at least one host transaction")
+		return RPCFormContractResult{}, fmt.Errorf("expected at least one host transaction")
 	}
 	hostFormationTxn := hostTransactionSetResp.TransactionSet[len(hostTransactionSetResp.TransactionSet)-1]
 	if len(hostFormationTxn.FileContracts) != 1 {
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("expected exactly one contract")
+		return RPCFormContractResult{}, fmt.Errorf("expected exactly one contract")
 	}
 
 	// check for no funny business
 	formationTxnID := formationTxn.ID()
 	hostFormationTxnID := hostFormationTxn.ID()
 	if formationTxnID != hostFormationTxnID {
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("expected transaction IDs to match %v != %v", formationTxnID, hostFormationTxnID)
+		return RPCFormContractResult{}, fmt.Errorf("expected transaction IDs to match %v != %v", formationTxnID, hostFormationTxnID)
 	}
 
 	// validate the host signature
 	fc.HostSignature = hostFormationTxn.FileContracts[0].HostSignature
 	if !fc.HostPublicKey.VerifyHash(formationSigHash, fc.HostSignature) {
-		return ContractRevision{}, TransactionSet{}, errors.New("invalid host signature")
+		return RPCFormContractResult{}, errors.New("invalid host signature")
 	}
-	return ContractRevision{
+
+	return RPCFormContractResult{
+		Contract: ContractRevision{
 			ID:       formationTxn.V2FileContractID(formationTxnID, 0),
 			Revision: fc,
-		}, TransactionSet{
+		},
+		FormationSet: TransactionSet{
 			Basis:        hostTransactionSetResp.Basis,
 			Transactions: hostTransactionSetResp.TransactionSet,
-		}, nil
+		},
+		Cost: renterCost,
+	}, nil
 }
 
 // RPCRenewContract renews a contract with a host
-func RPCRenewContract(ctx context.Context, t TransportClient, cr ChainReader, signer FormContractSigner, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRenewContractParams) (ContractRevision, TransactionSet, error) {
+func RPCRenewContract(ctx context.Context, t TransportClient, cr ChainReader, signer FormContractSigner, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRenewContractParams) (RPCRenewContractResult, error) {
 	renewal := rhp4.NewRenewal(existing, p, params)
 	renewalTxn := types.V2Transaction{
 		MinerFee: types.Siacoins(1),
@@ -515,13 +608,13 @@ func RPCRenewContract(ctx context.Context, t TransportClient, cr ChainReader, si
 		var toSign []int
 		basis, toSign, err = signer.FundV2Transaction(&setupTxn, renterCost)
 		if err != nil {
-			return ContractRevision{}, TransactionSet{}, fmt.Errorf("failed to fund transaction: %w", err)
+			return RPCRenewContractResult{}, fmt.Errorf("failed to fund transaction: %w", err)
 		}
 		signer.SignV2Inputs(&setupTxn, toSign)
 
 		basis, renewalParents, err = cr.V2TransactionSet(basis, setupTxn)
 		if err != nil {
-			return ContractRevision{}, TransactionSet{}, fmt.Errorf("failed to get transaction set: %w", err)
+			return RPCRenewContractResult{}, fmt.Errorf("failed to get transaction set: %w", err)
 		}
 		setupTxn = renewalParents[len(renewalParents)-1]
 
@@ -551,12 +644,12 @@ func RPCRenewContract(ctx context.Context, t TransportClient, cr ChainReader, si
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCRenewContractID, &req); err != nil {
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("failed to write request: %w", err)
+		return RPCRenewContractResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
 	var hostInputsResp rhp4.RPCRenewContractResponse
 	if err := rhp4.ReadResponse(s, &hostInputsResp); err != nil {
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("failed to read host inputs response: %w", err)
+		return RPCRenewContractResult{}, fmt.Errorf("failed to read host inputs response: %w", err)
 	}
 
 	// add the host inputs to the transaction
@@ -568,7 +661,7 @@ func RPCRenewContract(ctx context.Context, t TransportClient, cr ChainReader, si
 
 	// verify the host added enough inputs
 	if !hostInputSum.Equals(hostCost) {
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("expected host to fund %v, got %v", hostCost, hostInputSum)
+		return RPCRenewContractResult{}, fmt.Errorf("expected host to fund %v, got %v", hostCost, hostInputSum)
 	}
 
 	// sign the renter inputs
@@ -585,37 +678,41 @@ func RPCRenewContract(ctx context.Context, t TransportClient, cr ChainReader, si
 		renterPolicyResp.RenterSatisfiedPolicies = append(renterPolicyResp.RenterSatisfiedPolicies, si.SatisfiedPolicy)
 	}
 	if err := rhp4.WriteResponse(s, &renterPolicyResp); err != nil {
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("failed to write signature response: %w", err)
+		return RPCRenewContractResult{}, fmt.Errorf("failed to write signature response: %w", err)
 	}
 
 	// read the finalized transaction set
 	var hostTransactionSetResp rhp4.RPCRenewContractThirdResponse
 	if err := rhp4.ReadResponse(s, &hostTransactionSetResp); err != nil {
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("failed to read final response: %w", err)
+		return RPCRenewContractResult{}, fmt.Errorf("failed to read final response: %w", err)
 	}
 
 	if len(hostTransactionSetResp.TransactionSet) == 0 {
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("expected at least one host transaction")
+		return RPCRenewContractResult{}, fmt.Errorf("expected at least one host transaction")
 	}
 	hostRenewalTxn := hostTransactionSetResp.TransactionSet[len(hostTransactionSetResp.TransactionSet)-1]
 	if len(hostRenewalTxn.FileContractResolutions) != 1 {
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("expected exactly one resolution")
+		return RPCRenewContractResult{}, fmt.Errorf("expected exactly one resolution")
 	}
 
 	hostRenewal, ok := hostRenewalTxn.FileContractResolutions[0].Resolution.(*types.V2FileContractRenewal)
 	if !ok {
-		return ContractRevision{}, TransactionSet{}, fmt.Errorf("expected renewal resolution")
+		return RPCRenewContractResult{}, fmt.Errorf("expected renewal resolution")
 	}
 
 	// validate the host signature
 	if !existing.HostPublicKey.VerifyHash(renewalSigHash, hostRenewal.HostSignature) {
-		return ContractRevision{}, TransactionSet{}, errors.New("invalid host signature")
+		return RPCRenewContractResult{}, errors.New("invalid host signature")
 	}
-	return ContractRevision{
+	return RPCRenewContractResult{
+		Contract: ContractRevision{
 			ID:       params.ContractID.V2RenewalID(),
 			Revision: renewal.NewContract,
-		}, TransactionSet{
+		},
+		RenewalSet: TransactionSet{
 			Basis:        hostTransactionSetResp.Basis,
 			Transactions: hostTransactionSetResp.TransactionSet,
-		}, nil
+		},
+		Cost: renterCost,
+	}, nil
 }
