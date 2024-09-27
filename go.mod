@@ -2,8 +2,6 @@ module go.sia.tech/coreutils
 
 go 1.23.0
 
-replace go.sia.tech/core => ../core
-
 require (
 	go.etcd.io/bbolt v1.3.11
 	go.sia.tech/core v0.4.8-0.20240927164319-a84f9361f4c0
