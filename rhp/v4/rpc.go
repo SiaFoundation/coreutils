@@ -182,6 +182,8 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 // RPCVerifySector verifies that the host is properly storing a sector
 func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256) error {
 	req := &rhp4.RPCVerifySectorRequest{
+		Prices:    prices,
+		Token:     token,
 		Root:      root,
 		LeafIndex: frand.Uint64n(rhp4.LeavesPerSector),
 	}
