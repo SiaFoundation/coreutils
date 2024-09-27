@@ -794,6 +794,98 @@ func TestReadWriteSector(t *testing.T) {
 	}
 }
 
+func TestVerifySector(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	n, genesis := testutil.V2Network()
+	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
+
+	cm, s, w := startTestNode(t, n, genesis, log)
+
+	// fund the wallet with two UTXOs
+	mineAndSync(t, cm, w.Address(), 146, w)
+
+	sr := testutil.NewEphemeralSettingsReporter()
+	sr.Update(proto4.HostSettings{
+		Release:             "test",
+		AcceptingContracts:  true,
+		WalletAddress:       w.Address(),
+		MaxCollateral:       types.Siacoins(10000),
+		MaxContractDuration: 1000,
+		MaxSectorDuration:   3 * 144,
+		MaxModifyActions:    100,
+		RemainingStorage:    100 * proto4.SectorSize,
+		TotalStorage:        100 * proto4.SectorSize,
+		Prices: proto4.HostPrices{
+			ContractPrice: types.Siacoins(1).Div64(5), // 0.2 SC
+			StoragePrice:  types.NewCurrency64(100),   // 100 H / byte / block
+			IngressPrice:  types.NewCurrency64(100),   // 100 H / byte
+			EgressPrice:   types.NewCurrency64(100),   // 100 H / byte
+			Collateral:    types.NewCurrency64(200),
+		},
+	})
+	ss := testutil.NewEphemeralSectorStore()
+	c := testutil.NewEphemeralContractor(cm)
+
+	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
+
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fundAndSign := &fundAndSign{w, renterKey}
+	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
+	revision, _, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+		RenterPublicKey: renterKey.PublicKey(),
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cs := cm.TipState()
+	account := proto4.Account(renterKey.PublicKey())
+
+	accountFundAmount := types.Siacoins(25)
+	_, _, err = rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
+		{Account: account, Amount: accountFundAmount},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	token := proto4.AccountToken{
+		Account:    account,
+		ValidUntil: time.Now().Add(time.Hour),
+	}
+	tokenSigHash := token.SigHash()
+	token.Signature = renterKey.SignHash(tokenSigHash)
+
+	data := frand.Bytes(1024)
+
+	// store the sector
+	root, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, data, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// verify the sector root
+	var sector [proto4.SectorSize]byte
+	copy(sector[:], data)
+	if root != proto4.SectorRoot(&sector) {
+		t.Fatal("root mismatch")
+	}
+
+	// verify the host is storing the sector
+	err = rhp4.RPCVerifySector(context.Background(), transport, settings.Prices, token, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRPCModifySectors(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
