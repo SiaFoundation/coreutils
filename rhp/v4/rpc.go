@@ -139,6 +139,10 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 		Sector:   data,
 	}
 
+	if err := req.Validate(); err != nil {
+		return types.Hash256{}, fmt.Errorf("invalid request: %w", err)
+	}
+
 	// calculate the root in a separate goroutine to avoid blocking the
 	// RPC
 	ch := make(chan types.Hash256, 1)
@@ -154,10 +158,6 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 			ch <- rhp4.SectorRoot(&sector)
 		}
 	}()
-
-	if err := req.Validate(); err != nil {
-		return types.Hash256{}, fmt.Errorf("invalid request: %w", err)
-	}
 
 	s := t.DialStream(ctx)
 	defer s.Close()
