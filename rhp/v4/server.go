@@ -808,7 +808,7 @@ func (s *Server) handleRPCVerifySector(stream net.Conn) error {
 	if err := rhp4.ReadRequest(stream, &req); err != nil {
 		return errorDecodingError("failed to read request: %v", err)
 	} else if err := req.Validate(); err != nil {
-		return errorBadRequest(err.Error())
+		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
 	prices := req.Prices
@@ -826,7 +826,7 @@ func (s *Server) handleRPCVerifySector(stream net.Conn) error {
 
 	sector, err := s.sectors.ReadSector(req.Root)
 	if err != nil {
-		return errorBadRequest(err.Error())
+		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
 	// TODO: build proof
