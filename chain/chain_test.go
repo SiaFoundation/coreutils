@@ -184,7 +184,7 @@ func TestV2Attestations(t *testing.T) {
 
 		sk := types.GeneratePrivateKey()
 		ann := chain.V2HostAnnouncement{
-			chain.NetAddress{Address: "foo.bar:1234", Protocol: "tcp"},
+			{Address: "foo.bar:1234", Protocol: "tcp"},
 		}
 		se := ms.SpendableElement(t)
 		txn := types.V2Transaction{
@@ -233,7 +233,7 @@ func TestV2Attestations(t *testing.T) {
 
 		sk := types.GeneratePrivateKey()
 		ann := chain.V2HostAnnouncement{
-			chain.NetAddress{Address: "foo.bar:1234", Protocol: "tcp"},
+			{Address: "foo.bar:1234", Protocol: "tcp"},
 		}
 		txn := types.V2Transaction{
 			ArbitraryData: frand.Bytes(16),
@@ -277,7 +277,7 @@ func TestV2Attestations(t *testing.T) {
 
 		sk := types.GeneratePrivateKey()
 		ann := chain.V2HostAnnouncement{
-			chain.NetAddress{Address: "foo.bar:1234", Protocol: "tcp"},
+			{Address: "foo.bar:1234", Protocol: "tcp"},
 		}
 		se := ms.SpendableElement(t)
 		minerFee := types.Siacoins(1)

@@ -53,7 +53,7 @@ func (ps *MemPeerStore) PeerInfo(addr string) (syncer.PeerInfo, error) {
 func (ps *MemPeerStore) UpdatePeerInfo(addr string, fn func(*syncer.PeerInfo)) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	p := syncer.PeerInfo{}
+	p := ps.peers[addr]
 	fn(&p)
 	ps.peers[addr] = p
 	return nil

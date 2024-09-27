@@ -12,16 +12,19 @@ const attestationHostAnnouncement = "HostAnnouncement"
 
 var specifierHostAnnouncement = types.NewSpecifier("HostAnnouncement")
 
-// A HostAnnouncement represents a signed announcement of a host's network
-// address. Announcements may be made via arbitrary data
 type (
+	// A HostAnnouncement represents a signed announcement of a host's network
+	// address. Announcements may be made via arbitrary data (in a v1 transaction)
+	// or via attestation (in a v2 transaction).
 	HostAnnouncement struct {
-		NetAddress string
+		PublicKey  types.PublicKey `json:"publicKey"`
+		NetAddress string          `json:"netAddress"`
 	}
 
 	// A Protocol is a string identifying a network protocol that a host may be
 	// reached on. It should be in the form of "protocol/transport". There may be
-	// additional useful information after the transport, separated by slashes.
+	// additional useful information after the transport, separated by forward
+	// slashes.
 	Protocol string
 
 	// A NetAddress is a pair of protocol and address that a host may be reached on
@@ -75,23 +78,23 @@ func (ha *V2HostAnnouncement) FromAttestation(a types.Attestation) error {
 
 // ToArbitraryData encodes a host announcement as arbitrary data.
 func (ha HostAnnouncement) ToArbitraryData(sk types.PrivateKey) []byte {
+	if ha.PublicKey != sk.PublicKey() {
+		panic("key mismatch") // developer error
+	}
+
 	buf := new(bytes.Buffer)
 	e := types.NewEncoder(buf)
 	specifierHostAnnouncement.EncodeTo(e)
 	e.WriteString(ha.NetAddress)
-	sk.PublicKey().UnlockKey().EncodeTo(e)
-	if err := e.Flush(); err != nil {
-		panic(err) // should never happen
-	}
-	// sign the current contents of the buffer and append the signature
+	ha.PublicKey.UnlockKey().EncodeTo(e)
+	e.Flush()
 	sk.SignHash(types.HashBytes(buf.Bytes())).EncodeTo(e)
-	if err := e.Flush(); err != nil {
-		panic(err) // should never happen
-	}
+	e.Flush()
 	return buf.Bytes()
 }
 
-func (ha *HostAnnouncement) fromArbitraryData(arb []byte) (types.PublicKey, bool) {
+// FromArbitraryData decodes a host announcement from arbitrary data.
+func (ha *HostAnnouncement) FromArbitraryData(arb []byte) bool {
 	var s types.Specifier
 	var uk types.UnlockKey
 	var sig types.Signature
@@ -106,19 +109,20 @@ func (ha *HostAnnouncement) fromArbitraryData(arb []byte) (types.PublicKey, bool
 		len(uk.Key) < 32 ||
 		len(arb) < len(sig) ||
 		!types.PublicKey(uk.Key).VerifyHash(types.HashBytes(arb[:len(arb)-len(sig)]), sig) {
-		return types.PublicKey{}, false
+		return false
 	}
 	ha.NetAddress = addr
-	return types.PublicKey(uk.Key), true
+	ha.PublicKey = types.PublicKey(uk.Key)
+	return true
 }
 
 // ForEachHostAnnouncement calls fn on each host announcement in a block.
-func ForEachHostAnnouncement(b types.Block, fn func(types.PublicKey, HostAnnouncement)) {
+func ForEachHostAnnouncement(b types.Block, fn func(HostAnnouncement)) {
 	for _, txn := range b.Transactions {
 		for _, arb := range txn.ArbitraryData {
 			var ha HostAnnouncement
-			if pk, ok := ha.fromArbitraryData(arb); ok {
-				fn(pk, ha)
+			if ha.FromArbitraryData(arb) {
+				fn(ha)
 			}
 		}
 	}

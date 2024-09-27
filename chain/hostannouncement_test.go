@@ -14,14 +14,15 @@ func TestForEachHostAnnouncement(t *testing.T) {
 	sk := types.GeneratePrivateKey()
 	ha := HostAnnouncement{
 		NetAddress: "foo.bar:1234",
+		PublicKey:  sk.PublicKey(),
 	}
 	b := types.Block{
 		Transactions: []types.Transaction{
 			{ArbitraryData: [][]byte{ha.ToArbitraryData(sk)}},
 		},
 	}
-	ForEachHostAnnouncement(b, func(pk types.PublicKey, a HostAnnouncement) {
-		if pk != sk.PublicKey() {
+	ForEachHostAnnouncement(b, func(a HostAnnouncement) {
+		if a.PublicKey != sk.PublicKey() {
 			t.Error("pubkey mismatch")
 		} else if a.NetAddress != ha.NetAddress {
 			t.Error("address mismatch:", a, ha)
