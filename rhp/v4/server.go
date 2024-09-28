@@ -524,9 +524,9 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	cs := s.chain.TipState()
 	renterCost, hostCost := rhp4.ContractCost(cs, prices, formationTxn.FileContracts[0], formationTxn.MinerFee)
 	// validate the renter added enough inputs
-	if n := renterInputs.Cmp(renterCost); n < 0 {
+	if renterInputs.Cmp(renterCost) < 0 {
 		return errorBadRequest("renter funding %v is less than required funding %v", renterInputs, renterCost)
-	} else if n > 0 {
+	} else if !renterInputs.Equals(renterCost) {
 		// if the renter added too much, add a change output
 		formationTxn.SiacoinOutputs = append(formationTxn.SiacoinOutputs, types.SiacoinOutput{
 			Address: req.Contract.RenterAddress,
