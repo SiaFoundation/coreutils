@@ -4,7 +4,7 @@ go 1.23.0
 
 require (
 	go.etcd.io/bbolt v1.3.11
-	go.sia.tech/core v0.4.8-0.20240928172751-311e17d5e7c0
+	go.sia.tech/core v0.4.8-0.20240928202806-0e77790bd8bf
 	go.sia.tech/mux v1.3.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.27.0

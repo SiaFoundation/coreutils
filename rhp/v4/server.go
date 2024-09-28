@@ -75,7 +75,7 @@ type (
 		// Address returns the host's address
 		Address() types.Address
 
-		// FundTransaction funds a transaction with the specified amount of
+		// FundV2Transaction funds a transaction with the specified amount of
 		// Siacoins. If useUnconfirmed is true, the transaction may spend
 		// unconfirmed outputs. The outputs spent by the transaction are locked
 		// until they are released by ReleaseInputs.
@@ -87,10 +87,11 @@ type (
 		ReleaseInputs(txns []types.Transaction, v2txns []types.V2Transaction)
 	}
 
-	// A SectorStore is an interface for reading and writing sectors.
-	SectorStore interface {
-		ReadSector(types.Hash256) ([rhp4.SectorSize]byte, error)
-		// WriteSector stores a sector and returns its root hash.
+	// A Sectors is an interface for reading and writing sectors.
+	Sectors interface {
+		// ReadSector retrieves a sector by its root
+		ReadSector(root types.Hash256) ([rhp4.SectorSize]byte, error)
+		// WriteSector stores a sector
 		WriteSector(root types.Hash256, data *[rhp4.SectorSize]byte, expiration uint64) error
 	}
 
@@ -105,24 +106,27 @@ type (
 		// LockV2Contract locks a contract and returns its current state.
 		// The returned function must be called to release the lock.
 		LockV2Contract(types.FileContractID) (RevisionState, func(), error)
-		// AddV2Contract adds a new contract to the host
+		// AddV2Contract adds a new contract to the host.
 		AddV2Contract(TransactionSet, Usage) error
-		// RenewV2Contract finalizes an existing contract and adds its renewal
+		// RenewV2Contract finalizes an existing contract and adds its renewal.
 		RenewV2Contract(TransactionSet, Usage) error
 		// ReviseV2Contract atomically revises a contract and updates its sector
-		// roots and usage
+		// roots and usage.
 		ReviseV2Contract(contractID types.FileContractID, revision types.V2FileContract, roots []types.Hash256, usage Usage) error
 		// ContractElement returns the contract state element for the given
-		// contract ID
+		// contract ID.
 		ContractElement(types.FileContractID) (types.ChainIndex, types.V2FileContractElement, error)
 
+		// AccountBalance returns the balance of an account.
 		AccountBalance(rhp4.Account) (types.Currency, error)
+		// CreditAccountsWithContract atomically revises a contract and credits the account.
 		CreditAccountsWithContract([]rhp4.AccountDeposit, types.FileContractID, types.V2FileContract) ([]types.Currency, error)
+		// DebitAccount debits an account.
 		DebitAccount(rhp4.Account, types.Currency) error
 	}
 
-	// SettingsReporter reports the host's current settings.
-	SettingsReporter interface {
+	// Settings reports the host's current settings.
+	Settings interface {
 		RHP4Settings() rhp4.HostSettings
 	}
 
@@ -132,18 +136,16 @@ type (
 		priceTableValidity        time.Duration
 		contractProofWindowBuffer uint64
 
-		log *zap.Logger
-
 		chain      ChainManager
 		syncer     Syncer
 		wallet     Wallet
-		sectors    SectorStore
+		sectors    Sectors
 		contractor Contractor
-		settings   SettingsReporter
+		settings   Settings
 	}
 )
 
-func (s *Server) lockContractForRevision(contractID types.FileContractID) (RevisionState, func(), error) {
+func (s *Server) lockContractForRevision(contractID types.FileContractID) (rev RevisionState, unlock func(), _ error) {
 	rev, unlock, err := s.contractor.LockV2Contract(contractID)
 	switch {
 	case err != nil:
@@ -176,16 +178,12 @@ func (s *Server) handleRPCReadSector(stream net.Conn) error {
 		return errorDecodingError("failed to read request: %v", err)
 	}
 
-	prices, token := req.Prices, req.Token
-	if err := prices.Validate(s.hostKey.PublicKey()); err != nil {
-		return errorBadRequest("price table invalid: %v", err)
-	} else if err := token.Validate(); err != nil {
-		return errorBadRequest("account token invalid: %v", err)
-	} else if err := req.Validate(); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey()); err != nil {
 		return errorBadRequest("request invalid: %v", err)
 	}
+	prices, token := req.Prices, req.Token
 
-	if err := s.contractor.DebitAccount(req.Token.Account, prices.RPCReadSectorCost(req.Length)); err != nil {
+	if err := s.contractor.DebitAccount(token.Account, prices.RPCReadSectorCost(req.Length)); err != nil {
 		return fmt.Errorf("failed to debit account: %w", err)
 	}
 
@@ -207,25 +205,11 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 	if err := rhp4.ReadRequest(stream, &req); err != nil {
 		return errorDecodingError("failed to read request: %v", err)
 	}
-	prices, token := req.Prices, req.Token
-	if err := prices.Validate(s.hostKey.PublicKey()); err != nil {
-		return errorBadRequest("price table invalid: %v", err)
-	} else if err := token.Validate(); err != nil {
-		return errorBadRequest("account token invalid: %v", err)
-	}
-
 	settings := s.settings.RHP4Settings()
-
-	switch {
-	case req.DataLength > rhp4.SectorSize:
-		return errorBadRequest("sector size %v exceeds maximum %v", req.DataLength, rhp4.SectorSize)
-	case req.DataLength%rhp4.LeafSize != 0:
-		return errorBadRequest("sector length %v must be a multiple of segment size %v", req.DataLength, rhp4.LeafSize)
-	case req.Duration > settings.MaxSectorDuration:
-		return errorBadRequest("sector duration %v exceeds maximum %v", req.Duration, settings.MaxSectorDuration)
-	case settings.RemainingStorage < rhp4.SectorSize:
-		return rhp4.ErrNotEnoughStorage
+	if err := req.Validate(s.hostKey.PublicKey(), settings.MaxSectorDuration); err != nil {
+		return errorBadRequest("request invalid: %v", err)
 	}
+	prices := req.Prices
 
 	var sector [rhp4.SectorSize]byte
 	sr := io.LimitReader(stream, int64(req.DataLength))
@@ -260,15 +244,11 @@ func (s *Server) handleRPCModifySectors(stream net.Conn) error {
 		return errorDecodingError("failed to read request: %v", err)
 	}
 
-	prices := req.Prices
-	if err := prices.Validate(s.hostKey.PublicKey()); err != nil {
-		return errorBadRequest("price table invalid: %v", err)
-	}
 	settings := s.settings.RHP4Settings()
-
-	if err := rhp4.ValidateModifyActions(req.Actions, settings.MaxModifyActions); err != nil {
-		return errorBadRequest("modify actions invalid: %v", err)
+	if err := req.Validate(s.hostKey.PublicKey(), settings.MaxModifyActions); err != nil {
+		return errorBadRequest("request invalid: %v", err)
 	}
+	prices := req.Prices
 
 	cs := s.chain.TipState()
 
@@ -419,11 +399,6 @@ func (s *Server) handleRPCSectorRoots(stream net.Conn) error {
 		return errorDecodingError("failed to read request: %v", err)
 	}
 
-	prices := req.Prices
-	if err := prices.Validate(s.hostKey.PublicKey()); err != nil {
-		return fmt.Errorf("price table invalid: %w", err)
-	}
-
 	state, unlock, err := s.lockContractForRevision(req.ContractID)
 	if err != nil {
 		return fmt.Errorf("failed to lock contract: %w", err)
@@ -431,9 +406,10 @@ func (s *Server) handleRPCSectorRoots(stream net.Conn) error {
 	defer unlock()
 
 	// validate the request fields
-	if err := req.Validate(state.Revision); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), state.Revision); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
+	prices := req.Prices
 
 	// update the revision
 	revision, err := rhp4.ReviseForSectorRoots(state.Revision, prices, req.Length)
@@ -490,21 +466,12 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	}
 
 	ourKey := s.hostKey.PublicKey()
-	prices := req.Prices
-	if err := prices.Validate(ourKey); err != nil {
+	settings := s.settings.RHP4Settings()
+	tip := s.chain.Tip()
+	if err := req.Validate(ourKey, tip, settings.MaxCollateral, settings.MaxContractDuration); err != nil {
 		return err
 	}
-
-	// get current settings and tip
-	settings := s.settings.RHP4Settings()
-	// set the prices to match the signed prices
-	settings.Prices = req.Prices
-	tip := s.chain.Tip()
-
-	// validate the request
-	if err := req.Validate(settings, tip); err != nil {
-		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
-	}
+	prices := req.Prices
 
 	formationTxn := types.V2Transaction{
 		MinerFee:      req.MinerFee,
@@ -629,14 +596,11 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 		return fmt.Errorf("price table invalid: %w", err)
 	}
 
-	// get the settings and update the prices to match the signed prices
 	settings := s.settings.RHP4Settings()
-	settings.Prices = prices
-	// get the current tip
 	tip := s.chain.Tip()
 
 	// validate the request
-	if err := req.Validate(settings, tip); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), tip, settings.MaxCollateral, settings.MaxContractDuration); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
@@ -812,18 +776,10 @@ func (s *Server) handleRPCVerifySector(stream net.Conn) error {
 	var req rhp4.RPCVerifySectorRequest
 	if err := rhp4.ReadRequest(stream, &req); err != nil {
 		return errorDecodingError("failed to read request: %v", err)
-	} else if err := req.Validate(); err != nil {
+	} else if err := req.Validate(s.hostKey.PublicKey()); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
-
-	prices := req.Prices
-	if err := prices.Validate(s.hostKey.PublicKey()); err != nil {
-		return fmt.Errorf("failed to validate price table: %w", err)
-	}
-	token := req.Token
-	if err := token.Validate(); err != nil {
-		return fmt.Errorf("failed to validate token: %w", err)
-	}
+	prices, token := req.Prices, req.Token
 
 	if err := s.contractor.DebitAccount(token.Account, prices.RPCVerifySectorCost()); err != nil {
 		return fmt.Errorf("failed to debit account: %w", err)
@@ -1061,13 +1017,11 @@ func errorDecodingError(f string, p ...any) error {
 }
 
 // NewServer creates a new RHP4 server
-func NewServer(pk types.PrivateKey, cm ChainManager, syncer Syncer, contracts Contractor, wallet Wallet, settings SettingsReporter, sectors SectorStore, opts ...ServerOption) *Server {
+func NewServer(pk types.PrivateKey, cm ChainManager, syncer Syncer, contracts Contractor, wallet Wallet, settings Settings, sectors Sectors, opts ...ServerOption) *Server {
 	s := &Server{
 		hostKey:                   pk,
 		priceTableValidity:        30 * time.Minute,
 		contractProofWindowBuffer: 10,
-
-		log: zap.NewNop(),
 
 		chain:      cm,
 		syncer:     syncer,

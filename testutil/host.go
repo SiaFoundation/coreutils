@@ -21,7 +21,7 @@ type EphemeralSectorStore struct {
 	sectors map[types.Hash256][proto4.SectorSize]byte
 }
 
-var _ rhp4.SectorStore = (*EphemeralSectorStore)(nil)
+var _ rhp4.Sectors = (*EphemeralSectorStore)(nil)
 
 // ReadSector reads a sector from the EphemeralSectorStore.
 func (es *EphemeralSectorStore) ReadSector(root types.Hash256) ([proto4.SectorSize]byte, error) {
@@ -285,7 +285,7 @@ type EphemeralSettingsReporter struct {
 	settings proto4.HostSettings
 }
 
-var _ rhp4.SettingsReporter = (*EphemeralSettingsReporter)(nil)
+var _ rhp4.Settings = (*EphemeralSettingsReporter)(nil)
 
 // RHP4Settings implements the rhp4.SettingsReporter interface.
 func (esr *EphemeralSettingsReporter) RHP4Settings() proto4.HostSettings {

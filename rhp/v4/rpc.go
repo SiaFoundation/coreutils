@@ -33,7 +33,10 @@ type (
 	// A TransportClient is a generic multiplexer for outgoing streams.
 	TransportClient interface {
 		DialStream(context.Context) net.Conn
+
 		FrameSize() int
+		PeerKey() types.PublicKey
+
 		Close() error
 	}
 
@@ -180,7 +183,7 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 		Offset: offset,
 		Length: length,
 	}
-	if err := req.Validate(); err != nil {
+	if err := req.Validate(t.PeerKey()); err != nil {
 		return RPCReadSectorResult{}, fmt.Errorf("invalid request: %w", err)
 	}
 
@@ -222,7 +225,7 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 		DataLength: uint64(length),
 	}
 
-	if err := req.Validate(); err != nil {
+	if err := req.Validate(t.PeerKey(), req.Duration); err != nil {
 		return RPCWriteSectorResult{}, fmt.Errorf("invalid request: %w", err)
 	}
 
@@ -408,7 +411,7 @@ func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, 
 		RenterSignature: revision.RenterSignature,
 	}
 
-	if err := req.Validate(revision); err != nil {
+	if err := req.Validate(contract.Revision.HostPublicKey, revision); err != nil {
 		return RPCSectorRootsResult{}, fmt.Errorf("invalid request: %w", err)
 	}
 
@@ -443,7 +446,7 @@ func RPCAccountBalance(ctx context.Context, t TransportClient, account rhp4.Acco
 func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, hostKey types.PublicKey, hostAddress types.Address, params rhp4.RPCFormContractParams) (RPCFormContractResult, error) {
 	fc := rhp4.NewContract(p, params, hostKey, hostAddress)
 	formationTxn := types.V2Transaction{
-		MinerFee:      types.Siacoins(1),
+		MinerFee:      types.Siacoins(1), // TODO: be better
 		FileContracts: []types.V2FileContract{fc},
 	}
 
@@ -562,7 +565,7 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRenewContractParams) (RPCRenewContractResult, error) {
 	renewal := rhp4.NewRenewal(existing, p, params)
 	renewalTxn := types.V2Transaction{
-		MinerFee: types.Siacoins(1),
+		MinerFee: types.Siacoins(1), // TODO: something about this
 		FileContractResolutions: []types.V2FileContractResolution{
 			{
 				Parent: types.V2FileContractElement{

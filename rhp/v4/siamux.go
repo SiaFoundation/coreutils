@@ -18,9 +18,9 @@ const (
 
 // siaMuxClientTransport is a TransportClient that uses the SiaMux multiplexer.
 type siaMuxClientTransport struct {
-	m *mux.Mux
-
-	close chan struct{}
+	m        *mux.Mux
+	theirKey types.PublicKey
+	close    chan struct{}
 }
 
 // Close implements the [TransportClient] interface.
@@ -35,6 +35,10 @@ func (t *siaMuxClientTransport) Close() error {
 
 func (t *siaMuxClientTransport) FrameSize() int {
 	return 1440 * 3 // from SiaMux handshake.go
+}
+
+func (t *siaMuxClientTransport) PeerKey() types.PublicKey {
+	return t.theirKey
 }
 
 // DialStream implements the [TransportClient] interface. The stream lifetime is
@@ -63,7 +67,8 @@ func DialSiaMux(ctx context.Context, addr string, theirKey types.PublicKey) (Tra
 		return nil, fmt.Errorf("failed to establish siamux connection: %w", err)
 	}
 	return &siaMuxClientTransport{
-		m:     m,
-		close: make(chan struct{}),
+		m:        m,
+		theirKey: theirKey,
+		close:    make(chan struct{}),
 	}, nil
 }
