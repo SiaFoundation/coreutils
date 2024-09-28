@@ -138,20 +138,23 @@ type (
 	}
 )
 
-// RPCSettings returns the current settings of the host
-func RPCSettings(ctx context.Context, t TransportClient) (rhp4.HostSettings, error) {
+func callSingleRoundtripRPC(ctx context.Context, t TransportClient, rpcID types.Specifier, req, resp rhp4.Object) error {
 	s := t.DialStream(ctx)
 	defer s.Close()
 
-	if err := rhp4.WriteRequest(s, rhp4.RPCSettingsID, nil); err != nil {
-		return rhp4.HostSettings{}, fmt.Errorf("failed to write request: %w", err)
+	if err := rhp4.WriteRequest(s, rpcID, req); err != nil {
+		return fmt.Errorf("failed to write request: %w", err)
+	} else if err := rhp4.ReadResponse(s, resp); err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
 	}
+	return nil
+}
 
+// RPCSettings returns the current settings of the host
+func RPCSettings(ctx context.Context, t TransportClient) (rhp4.HostSettings, error) {
 	var resp rhp4.RPCSettingsResponse
-	if err := rhp4.ReadResponse(s, &resp); err != nil {
-		return rhp4.HostSettings{}, fmt.Errorf("failed to read response: %w", err)
-	}
-	return resp.Settings, nil
+	err := callSingleRoundtripRPC(ctx, t, rhp4.RPCSettingsID, nil, &resp)
+	return resp.Settings, err
 }
 
 // RPCReadSector reads a sector from the host
@@ -193,7 +196,7 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 
 // RPCWriteSector writes a sector to the host
 func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, data []byte, duration uint64) (RPCWriteSectorResult, error) {
-	req := &rhp4.RPCWriteSectorRequest{
+	req := rhp4.RPCWriteSectorRequest{
 		Prices:   prices,
 		Token:    token,
 		Duration: duration,
@@ -220,16 +223,9 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 		}
 	}()
 
-	s := t.DialStream(ctx)
-	defer s.Close()
-
-	if err := rhp4.WriteRequest(s, rhp4.RPCWriteSectorID, req); err != nil {
-		return RPCWriteSectorResult{}, fmt.Errorf("failed to write request: %w", err)
-	}
-
 	var resp rhp4.RPCWriteSectorResponse
-	if err := rhp4.ReadResponse(s, &resp); err != nil {
-		return RPCWriteSectorResult{}, fmt.Errorf("failed to read response: %w", err)
+	if err := callSingleRoundtripRPC(ctx, t, rhp4.RPCWriteSectorID, &req, &resp); err != nil {
+		return RPCWriteSectorResult{}, err
 	}
 
 	expected := <-ch
@@ -244,23 +240,16 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 
 // RPCVerifySector verifies that the host is properly storing a sector
 func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256) (RPCVerifySectorResult, error) {
-	req := &rhp4.RPCVerifySectorRequest{
+	req := rhp4.RPCVerifySectorRequest{
 		Prices:    prices,
 		Token:     token,
 		Root:      root,
 		LeafIndex: frand.Uint64n(rhp4.LeavesPerSector),
 	}
 
-	s := t.DialStream(ctx)
-	defer s.Close()
-
-	if err := rhp4.WriteRequest(s, rhp4.RPCVerifySectorID, req); err != nil {
-		return RPCVerifySectorResult{}, fmt.Errorf("failed to write request: %w", err)
-	}
-
 	var resp rhp4.RPCVerifySectorResponse
-	if err := rhp4.ReadResponse(s, &resp); err != nil {
-		return RPCVerifySectorResult{}, fmt.Errorf("failed to read response: %w", err)
+	if err := callSingleRoundtripRPC(ctx, t, rhp4.RPCVerifySectorID, &req, &resp); err != nil {
+		return RPCVerifySectorResult{}, err
 	}
 
 	// TODO: validate proof
@@ -271,15 +260,15 @@ func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPri
 
 // RPCModifySectors modifies sectors on the host
 func RPCModifySectors(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, actions []rhp4.WriteAction) (RPCModifySectorsResult, error) {
-	s := t.DialStream(ctx)
-	defer s.Close()
-
 	req := rhp4.RPCModifySectorsRequest{
 		ContractID: contract.ID,
 		Prices:     prices,
 		Actions:    actions,
 	}
 	req.ChallengeSignature = sk.SignHash(req.ChallengeSigHash(contract.Revision.RevisionNumber + 1))
+
+	s := t.DialStream(ctx)
+	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCModifySectorsID, &req); err != nil {
 		return RPCModifySectorsResult{}, fmt.Errorf("failed to write request: %w", err)
@@ -339,22 +328,15 @@ func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State,
 		RenterSignature: revision.RenterSignature,
 	}
 
-	s := t.DialStream(ctx)
-	defer s.Close()
-
-	if err := rhp4.WriteRequest(s, rhp4.RPCFundAccountsID, &req); err != nil {
-		return RPCFundAccountResult{}, fmt.Errorf("failed to write request: %w", err)
-	}
-
 	var resp rhp4.RPCFundAccountsResponse
-	if err := rhp4.ReadResponse(s, &resp); err != nil {
-		return RPCFundAccountResult{}, fmt.Errorf("failed to read response: %w", err)
-	} else if len(resp.Balances) != len(deposits) {
-		return RPCFundAccountResult{}, fmt.Errorf("expected %v balances, got %v", len(deposits), len(resp.Balances))
+	if err := callSingleRoundtripRPC(ctx, t, rhp4.RPCFundAccountsID, &req, &resp); err != nil {
+		return RPCFundAccountResult{}, err
 	}
 
-	// validate the host's signature
-	if !contract.Revision.HostPublicKey.VerifyHash(sigHash, resp.HostSignature) {
+	// validate the response
+	if len(resp.Balances) != len(deposits) {
+		return RPCFundAccountResult{}, fmt.Errorf("expected %v balances, got %v", len(deposits), len(resp.Balances))
+	} else if !contract.Revision.HostPublicKey.VerifyHash(sigHash, resp.HostSignature) {
 		return RPCFundAccountResult{}, rhp4.ErrInvalidSignature
 	}
 	revision.HostSignature = resp.HostSignature
@@ -376,18 +358,10 @@ func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State,
 
 // RPCLatestRevision returns the latest revision of a contract
 func RPCLatestRevision(ctx context.Context, t TransportClient, contractID types.FileContractID) (types.V2FileContract, error) {
-	s := t.DialStream(ctx)
-	defer s.Close()
-
-	if err := rhp4.WriteRequest(s, rhp4.RPCLatestRevisionID, &rhp4.RPCLatestRevisionRequest{ContractID: contractID}); err != nil {
-		return types.V2FileContract{}, fmt.Errorf("failed to write request: %w", err)
-	}
-
+	req := rhp4.RPCLatestRevisionRequest{ContractID: contractID}
 	var resp rhp4.RPCLatestRevisionResponse
-	if err := rhp4.ReadResponse(s, &resp); err != nil {
-		return types.V2FileContract{}, fmt.Errorf("failed to read response: %w", err)
-	}
-	return resp.Contract, nil
+	err := callSingleRoundtripRPC(ctx, t, rhp4.RPCLatestRevisionID, &req, &resp)
+	return resp.Contract, err
 }
 
 // RPCSectorRoots returns the sector roots for a contract
@@ -411,16 +385,9 @@ func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, 
 		return RPCSectorRootsResult{}, fmt.Errorf("invalid request: %w", err)
 	}
 
-	s := t.DialStream(ctx)
-	defer s.Close()
-
-	if err := rhp4.WriteRequest(s, rhp4.RPCSectorRootsID, &req); err != nil {
-		return RPCSectorRootsResult{}, fmt.Errorf("failed to write request: %w", err)
-	}
-
 	var resp rhp4.RPCSectorRootsResponse
-	if err := rhp4.ReadResponse(s, &resp); err != nil {
-		return RPCSectorRootsResult{}, fmt.Errorf("failed to read response: %w", err)
+	if err := callSingleRoundtripRPC(ctx, t, rhp4.RPCSectorRootsID, &req, &resp); err != nil {
+		return RPCSectorRootsResult{}, err
 	}
 
 	// validate host signature
@@ -439,18 +406,10 @@ func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, 
 
 // RPCAccountBalance returns the balance of an account
 func RPCAccountBalance(ctx context.Context, t TransportClient, account rhp4.Account) (types.Currency, error) {
-	s := t.DialStream(ctx)
-	defer s.Close()
-
-	if err := rhp4.WriteRequest(s, rhp4.RPCAccountBalanceID, &rhp4.RPCAccountBalanceRequest{Account: account}); err != nil {
-		return types.Currency{}, fmt.Errorf("failed to write request: %w", err)
-	}
-
+	req := &rhp4.RPCAccountBalanceRequest{Account: account}
 	var resp rhp4.RPCAccountBalanceResponse
-	if err := rhp4.ReadResponse(s, &resp); err != nil {
-		return types.Currency{}, fmt.Errorf("failed to read response: %w", err)
-	}
-	return resp.Balance, nil
+	err := callSingleRoundtripRPC(ctx, t, rhp4.RPCAccountBalanceID, req, &resp)
+	return resp.Balance, err
 }
 
 // RPCFormContract forms a contract with a host
@@ -551,7 +510,7 @@ func RPCFormContract(ctx context.Context, t TransportClient, cr ChainReader, sig
 	formationTxnID := formationTxn.ID()
 	hostFormationTxnID := hostFormationTxn.ID()
 	if formationTxnID != hostFormationTxnID {
-		return RPCFormContractResult{}, fmt.Errorf("expected transaction IDs to match %v != %v", formationTxnID, hostFormationTxnID)
+		return RPCFormContractResult{}, errors.New("transaction ID mismatch")
 	}
 
 	// validate the host signature

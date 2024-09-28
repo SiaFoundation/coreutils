@@ -1,6 +1,7 @@
 package rhp
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -36,8 +37,8 @@ type (
 )
 
 type (
-	// A TransportListener is a generic multiplexer for incoming streams.
-	TransportListener interface {
+	// A TransportMux is a generic multiplexer for incoming streams.
+	TransportMux interface {
 		AcceptStream() (net.Conn, error)
 		Close() error
 	}
@@ -63,13 +64,13 @@ type (
 		UpdatesSince(index types.ChainIndex, maxBlocks int) (rus []chain.RevertUpdate, aus []chain.ApplyUpdate, err error)
 	}
 
-	// A Syncer broadcasts transactions to its peers
+	// A Syncer broadcasts transactions to its peers.
 	Syncer interface {
 		// BroadcastV2TransactionSet broadcasts a transaction set to the network.
 		BroadcastV2TransactionSet(types.ChainIndex, []types.V2Transaction)
 	}
 
-	// A Wallet manages Siacoins and funds transactions
+	// A Wallet manages Siacoins and funds transactions.
 	Wallet interface {
 		// Address returns the host's address
 		Address() types.Address
@@ -86,20 +87,20 @@ type (
 		ReleaseInputs(txns []types.Transaction, v2txns []types.V2Transaction)
 	}
 
-	// A SectorStore is an interface for reading and writing sectors
+	// A SectorStore is an interface for reading and writing sectors.
 	SectorStore interface {
 		ReadSector(types.Hash256) ([rhp4.SectorSize]byte, error)
 		// WriteSector stores a sector and returns its root hash.
 		WriteSector(root types.Hash256, data *[rhp4.SectorSize]byte, expiration uint64) error
 	}
 
-	// A RevisionState pairs a contract revision with its sector roots
+	// A RevisionState pairs a contract revision with its sector roots.
 	RevisionState struct {
 		Revision types.V2FileContract
 		Roots    []types.Hash256
 	}
 
-	// Contractor is an interface for managing a host's contracts
+	// Contractor is an interface for managing a host's contracts.
 	Contractor interface {
 		// LockV2Contract locks a contract and returns its current state.
 		// The returned function must be called to release the lock.
@@ -120,12 +121,12 @@ type (
 		DebitAccount(rhp4.Account, types.Currency) error
 	}
 
-	// SettingsReporter reports the host's current settings
+	// SettingsReporter reports the host's current settings.
 	SettingsReporter interface {
 		RHP4Settings() rhp4.HostSettings
 	}
 
-	// A Server handles incoming RHP4 RPC
+	// A Server handles incoming RHP4 RPC.
 	Server struct {
 		hostKey                   types.PrivateKey
 		priceTableValidity        time.Duration
@@ -226,21 +227,25 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 		return rhp4.ErrNotEnoughStorage
 	}
 
-	// read the sector data
 	var sector [rhp4.SectorSize]byte
-	if _, err := io.ReadFull(stream, sector[:req.DataLength]); err != nil {
+	sr := io.LimitReader(stream, int64(req.DataLength))
+	if req.DataLength < rhp4.SectorSize {
+		// if the data is less than a full sector, the reader needs to be padded
+		// with zeros to calculate the sector root
+		sr = io.MultiReader(sr, bytes.NewReader(sector[req.DataLength:]))
+	}
+
+	buf := bytes.NewBuffer(sector[:0])
+	root, err := rhp4.ReaderRoot(io.TeeReader(sr, buf))
+	if err != nil {
 		return errorDecodingError("failed to read sector data: %v", err)
 	}
 
-	// calculate the cost
 	cost := prices.RPCWriteSectorCost(req.DataLength, req.Duration)
-	// debit the account
 	if err := s.contractor.DebitAccount(req.Token.Account, cost); err != nil {
 		return fmt.Errorf("failed to debit account: %w", err)
 	}
 
-	// store the sector
-	root := rhp4.SectorRoot(&sector)
 	if err := s.sectors.WriteSector(root, &sector, req.Duration); err != nil {
 		return fmt.Errorf("failed to store sector: %w", err)
 	}
@@ -401,7 +406,7 @@ func (s *Server) handleRPCLatestRevision(stream net.Conn) error {
 	if err != nil {
 		return fmt.Errorf("failed to lock contract: %w", err)
 	}
-	defer unlock()
+	unlock()
 
 	return rhp4.WriteResponse(stream, &rhp4.RPCLatestRevisionResponse{
 		Contract: state.Revision,
@@ -1020,7 +1025,7 @@ func (s *Server) HostKey() types.PrivateKey {
 }
 
 // Serve accepts incoming streams on the provided multiplexer and handles them
-func (s *Server) Serve(t TransportListener, log *zap.Logger) error {
+func (s *Server) Serve(t TransportMux, log *zap.Logger) error {
 	defer t.Close()
 
 	for {

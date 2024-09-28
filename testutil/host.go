@@ -44,8 +44,6 @@ func (es *EphemeralSectorStore) WriteSector(root types.Hash256, sector *[proto4.
 
 // An EphemeralContractor is an in-memory minimal rhp4.Contractor for testing.
 type EphemeralContractor struct {
-	mu sync.Mutex // protects the fields below
-
 	tip              types.ChainIndex
 	contractElements map[types.FileContractID]types.V2FileContractElement
 	contracts        map[types.FileContractID]types.V2FileContract
@@ -53,6 +51,8 @@ type EphemeralContractor struct {
 	locks            map[types.FileContractID]bool
 
 	accounts map[proto4.Account]types.Currency
+
+	mu sync.Mutex
 }
 
 var _ rhp4.Contractor = (*EphemeralContractor)(nil)
