@@ -39,7 +39,7 @@ type (
 		V2TransactionSet(basis types.ChainIndex, txn types.V2Transaction) (types.ChainIndex, []types.V2Transaction, error)
 	}
 
-	// A ContractSigner is a minimal interface for contract signing
+	// A ContractSigner is a minimal interface for contract signing.
 	ContractSigner interface {
 		SignHash(types.Hash256) types.Signature
 	}
@@ -81,56 +81,56 @@ type (
 )
 
 type (
-	// An AccountBalance pairs an account with its current balance
+	// An AccountBalance pairs an account with its current balance.
 	AccountBalance struct {
 		Account rhp4.Account   `json:"account"`
 		Balance types.Currency `json:"balance"`
 	}
 
-	// RPCWriteSectorResult contains the result of executing the write sector RPC
+	// RPCWriteSectorResult contains the result of executing the write sector RPC.
 	RPCWriteSectorResult struct {
 		Root types.Hash256  `json:"root"`
 		Cost types.Currency `json:"cost"`
 	}
 
-	// RPCReadSectorResult contains the result of executing the read sector RPC
+	// RPCReadSectorResult contains the result of executing the read sector RPC.
 	RPCReadSectorResult struct {
 		Cost types.Currency `json:"cost"`
 	}
 
-	// RPCVerifySectorResult contains the result of executing the verify sector RPC
+	// RPCVerifySectorResult contains the result of executing the verify sector RPC.
 	RPCVerifySectorResult struct {
 		Cost types.Currency `json:"cost"`
 	}
 
-	// RPCModifySectorsResult contains the result of executing the modify sectors RPC
+	// RPCModifySectorsResult contains the result of executing the modify sectors RPC.
 	RPCModifySectorsResult struct {
 		Revision types.V2FileContract `json:"revision"`
 		Cost     types.Currency       `json:"cost"`
 	}
 
-	// RPCFundAccountResult contains the result of executing the fund accounts RPC
+	// RPCFundAccountResult contains the result of executing the fund accounts RPC.
 	RPCFundAccountResult struct {
 		Revision types.V2FileContract `json:"revision"`
 		Balances []AccountBalance     `json:"balances"`
 		Cost     types.Currency       `json:"cost"`
 	}
 
-	// RPCSectorRootsResult contains the result of executing the sector roots RPC
+	// RPCSectorRootsResult contains the result of executing the sector roots RPC.
 	RPCSectorRootsResult struct {
 		Revision types.V2FileContract `json:"revision"`
 		Roots    []types.Hash256      `json:"roots"`
 		Cost     types.Currency       `json:"cost"`
 	}
 
-	// RPCFormContractResult contains the result of executing the form contract RPC
+	// RPCFormContractResult contains the result of executing the form contract RPC.
 	RPCFormContractResult struct {
 		Contract     ContractRevision `json:"contract"`
 		FormationSet TransactionSet   `json:"formationSet"`
 		Cost         types.Currency   `json:"cost"`
 	}
 
-	// RPCRenewContractResult contains the result of executing the renew contract RPC
+	// RPCRenewContractResult contains the result of executing the renew contract RPC.
 	RPCRenewContractResult struct {
 		Contract   ContractRevision `json:"contract"`
 		RenewalSet TransactionSet   `json:"renewalSet"`
@@ -150,14 +150,14 @@ func callSingleRoundtripRPC(ctx context.Context, t TransportClient, rpcID types.
 	return nil
 }
 
-// RPCSettings returns the current settings of the host
+// RPCSettings returns the current settings of the host.
 func RPCSettings(ctx context.Context, t TransportClient) (rhp4.HostSettings, error) {
 	var resp rhp4.RPCSettingsResponse
 	err := callSingleRoundtripRPC(ctx, t, rhp4.RPCSettingsID, nil, &resp)
 	return resp.Settings, err
 }
 
-// RPCReadSector reads a sector from the host
+// RPCReadSector reads a sector from the host.
 func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256, offset, length uint64, w io.Writer) (RPCReadSectorResult, error) {
 	req := &rhp4.RPCReadSectorRequest{
 		Prices: prices,
@@ -194,7 +194,7 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 	}, nil
 }
 
-// RPCWriteSector writes a sector to the host
+// RPCWriteSector writes a sector to the host.
 func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, data []byte, duration uint64) (RPCWriteSectorResult, error) {
 	req := rhp4.RPCWriteSectorRequest{
 		Prices:   prices,
@@ -258,7 +258,7 @@ func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPri
 	}, nil
 }
 
-// RPCModifySectors modifies sectors on the host
+// RPCModifySectors modifies sectors on the host.
 func RPCModifySectors(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, actions []rhp4.WriteAction) (RPCModifySectorsResult, error) {
 	req := rhp4.RPCModifySectorsRequest{
 		ContractID: contract.ID,
@@ -309,7 +309,7 @@ func RPCModifySectors(ctx context.Context, t TransportClient, cs consensus.State
 	}, nil
 }
 
-// RPCFundAccounts funds accounts on the host
+// RPCFundAccounts funds accounts on the host.
 func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State, signer ContractSigner, contract ContractRevision, deposits []rhp4.AccountDeposit) (RPCFundAccountResult, error) {
 	var total types.Currency
 	for _, deposit := range deposits {
@@ -356,7 +356,7 @@ func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State,
 	}, nil
 }
 
-// RPCLatestRevision returns the latest revision of a contract
+// RPCLatestRevision returns the latest revision of a contract.
 func RPCLatestRevision(ctx context.Context, t TransportClient, contractID types.FileContractID) (types.V2FileContract, error) {
 	req := rhp4.RPCLatestRevisionRequest{ContractID: contractID}
 	var resp rhp4.RPCLatestRevisionResponse
@@ -364,7 +364,7 @@ func RPCLatestRevision(ctx context.Context, t TransportClient, contractID types.
 	return resp.Contract, err
 }
 
-// RPCSectorRoots returns the sector roots for a contract
+// RPCSectorRoots returns the sector roots for a contract.
 func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, signer ContractSigner, contract ContractRevision, offset, length uint64) (RPCSectorRootsResult, error) {
 	revision, err := rhp4.ReviseForSectorRoots(contract.Revision, prices, length)
 	if err != nil {
@@ -404,7 +404,7 @@ func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, 
 	}, nil
 }
 
-// RPCAccountBalance returns the balance of an account
+// RPCAccountBalance returns the balance of an account.
 func RPCAccountBalance(ctx context.Context, t TransportClient, account rhp4.Account) (types.Currency, error) {
 	req := &rhp4.RPCAccountBalanceRequest{Account: account}
 	var resp rhp4.RPCAccountBalanceResponse
@@ -532,7 +532,7 @@ func RPCFormContract(ctx context.Context, t TransportClient, cr ChainReader, sig
 	}, nil
 }
 
-// RPCRenewContract renews a contract with a host
+// RPCRenewContract renews a contract with a host.
 func RPCRenewContract(ctx context.Context, t TransportClient, cr ChainReader, signer FormContractSigner, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRenewContractParams) (RPCRenewContractResult, error) {
 	renewal := rhp4.NewRenewal(existing, p, params)
 	renewalTxn := types.V2Transaction{
