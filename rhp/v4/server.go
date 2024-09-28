@@ -22,7 +22,7 @@ import (
 // can differ from the current tip.
 const maxBasisDiff = 20
 
-var protocolVersion = [3]byte{0, 0, 1}
+var protocolVersion = [3]byte{4, 0, 0}
 
 type (
 	// Usage contains the revenue and risked collateral for a contract.

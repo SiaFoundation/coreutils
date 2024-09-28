@@ -1,6 +1,7 @@
 package rhp
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -19,18 +20,33 @@ var (
 	ErrInvalidRoot = errors.New("invalid root")
 )
 
+var zeros = zeroReader{}
+
+type zeroReader struct{}
+
+func (r zeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}
+
 type (
 	// A TransportClient is a generic multiplexer for outgoing streams.
 	TransportClient interface {
 		DialStream(context.Context) net.Conn
+		FrameSize() int
 		Close() error
 	}
 
-	// A ChainReader reports the chain state and manages the transaction pool.
-	ChainReader interface {
-		Tip() types.ChainIndex
-		TipState() consensus.State
+	// A ReaderLen is an io.Reader that also provides the length method.
+	ReaderLen interface {
+		io.Reader
+		Len() (int, error)
+	}
 
+	// A TxPool manages the transaction pool.
+	TxPool interface {
 		// V2TransactionSet returns the full transaction set and basis necessary
 		// for broadcasting a transaction. The transaction will be updated if
 		// the provided basis does not match the current tip. The transaction set
@@ -195,46 +211,57 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 }
 
 // RPCWriteSector writes a sector to the host.
-func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, data []byte, duration uint64) (RPCWriteSectorResult, error) {
-	req := rhp4.RPCWriteSectorRequest{
-		Prices:   prices,
-		Token:    token,
-		Duration: duration,
-		Sector:   data,
+func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, rl ReaderLen, duration uint64) (RPCWriteSectorResult, error) {
+	length, err := rl.Len()
+	if err != nil {
+		return RPCWriteSectorResult{}, fmt.Errorf("failed to get length: %w", err)
+	}
+
+	req := rhp4.RPCWriteSectorStreamingRequest{
+		Prices:     prices,
+		Token:      token,
+		Duration:   duration,
+		DataLength: uint64(length),
 	}
 
 	if err := req.Validate(); err != nil {
 		return RPCWriteSectorResult{}, fmt.Errorf("invalid request: %w", err)
 	}
 
-	// calculate the root in a separate goroutine to avoid blocking the
-	// RPC
-	ch := make(chan types.Hash256, 1)
-	go func() {
-		if len(data) == rhp4.SectorSize {
-			// dealing with a full sector, avoid copying
-			ch <- rhp4.SectorRoot((*[rhp4.SectorSize]byte)(data))
-			return
-		} else {
-			// pad the data to a full sector
-			var sector [rhp4.SectorSize]byte
-			copy(sector[:], data)
-			ch <- rhp4.SectorRoot(&sector)
-		}
-	}()
+	stream := t.DialStream(ctx)
+	defer stream.Close()
+
+	bw := bufio.NewWriterSize(stream, t.FrameSize())
+
+	if err := rhp4.WriteRequest(bw, rhp4.RPCWriteSectorID, &req); err != nil {
+		return RPCWriteSectorResult{}, fmt.Errorf("failed to write request: %w", err)
+	}
+
+	sr := io.LimitReader(rl, int64(req.DataLength))
+	tr := io.TeeReader(sr, bw)
+	if req.DataLength < rhp4.SectorSize {
+		// if the data is less than a full sector, the reader needs to be padded
+		// with zeros to calculate the sector root
+		tr = io.MultiReader(tr, io.LimitReader(zeros, int64(rhp4.SectorSize-req.DataLength)))
+	}
+
+	root, err := rhp4.ReaderRoot(tr)
+	if err != nil {
+		return RPCWriteSectorResult{}, fmt.Errorf("failed to calculate root: %w", err)
+	} else if err := bw.Flush(); err != nil {
+		return RPCWriteSectorResult{}, fmt.Errorf("failed to flush: %w", err)
+	}
 
 	var resp rhp4.RPCWriteSectorResponse
-	if err := callSingleRoundtripRPC(ctx, t, rhp4.RPCWriteSectorID, &req, &resp); err != nil {
-		return RPCWriteSectorResult{}, err
-	}
-
-	expected := <-ch
-	if expected != resp.Root {
+	if err := rhp4.ReadResponse(stream, &resp); err != nil {
+		return RPCWriteSectorResult{}, fmt.Errorf("failed to read response: %w", err)
+	} else if resp.Root != root {
 		return RPCWriteSectorResult{}, ErrInvalidRoot
 	}
+
 	return RPCWriteSectorResult{
 		Root: resp.Root,
-		Cost: prices.RPCWriteSectorCost(uint64(len(data)), duration),
+		Cost: prices.RPCWriteSectorCost(uint64(length), duration),
 	}, nil
 }
 
@@ -413,8 +440,7 @@ func RPCAccountBalance(ctx context.Context, t TransportClient, account rhp4.Acco
 }
 
 // RPCFormContract forms a contract with a host
-func RPCFormContract(ctx context.Context, t TransportClient, cr ChainReader, signer FormContractSigner, p rhp4.HostPrices, hostKey types.PublicKey, hostAddress types.Address, params rhp4.RPCFormContractParams) (RPCFormContractResult, error) {
-	cs := cr.TipState()
+func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, hostKey types.PublicKey, hostAddress types.Address, params rhp4.RPCFormContractParams) (RPCFormContractResult, error) {
 	fc := rhp4.NewContract(p, params, hostKey, hostAddress)
 	formationTxn := types.V2Transaction{
 		MinerFee:      types.Siacoins(1),
@@ -427,7 +453,7 @@ func RPCFormContract(ctx context.Context, t TransportClient, cr ChainReader, sig
 		return RPCFormContractResult{}, fmt.Errorf("failed to fund transaction: %w", err)
 	}
 
-	basis, formationSet, err := cr.V2TransactionSet(basis, formationTxn)
+	basis, formationSet, err := tp.V2TransactionSet(basis, formationTxn)
 	if err != nil {
 		signer.ReleaseInputs([]types.V2Transaction{formationTxn})
 		return RPCFormContractResult{}, fmt.Errorf("failed to get transaction set: %w", err)
@@ -533,7 +559,7 @@ func RPCFormContract(ctx context.Context, t TransportClient, cr ChainReader, sig
 }
 
 // RPCRenewContract renews a contract with a host.
-func RPCRenewContract(ctx context.Context, t TransportClient, cr ChainReader, signer FormContractSigner, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRenewContractParams) (RPCRenewContractResult, error) {
+func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRenewContractParams) (RPCRenewContractResult, error) {
 	renewal := rhp4.NewRenewal(existing, p, params)
 	renewalTxn := types.V2Transaction{
 		MinerFee: types.Siacoins(1),
@@ -552,7 +578,6 @@ func RPCRenewContract(ctx context.Context, t TransportClient, cr ChainReader, si
 		},
 	}
 
-	cs := cr.TipState()
 	renterCost, hostCost := rhp4.RenewalCost(cs, p, renewal, renewalTxn.MinerFee)
 
 	basis := cs.Index // start with a decent basis and overwrite it if a setup transaction is needed
@@ -571,7 +596,7 @@ func RPCRenewContract(ctx context.Context, t TransportClient, cr ChainReader, si
 		}
 		signer.SignV2Inputs(&setupTxn, toSign)
 
-		basis, renewalParents, err = cr.V2TransactionSet(basis, setupTxn)
+		basis, renewalParents, err = tp.V2TransactionSet(basis, setupTxn)
 		if err != nil {
 			return RPCRenewContractResult{}, fmt.Errorf("failed to get transaction set: %w", err)
 		}

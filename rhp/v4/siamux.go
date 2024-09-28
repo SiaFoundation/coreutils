@@ -33,6 +33,10 @@ func (t *siaMuxClientTransport) Close() error {
 	return t.m.Close()
 }
 
+func (t *siaMuxClientTransport) FrameSize() int {
+	return 1440 * 3 // from SiaMux handshake.go
+}
+
 // DialStream implements the [TransportClient] interface. The stream lifetime is
 // scoped to the context; if the context is canceled, the stream is closed.
 func (t *siaMuxClientTransport) DialStream(ctx context.Context) net.Conn {
