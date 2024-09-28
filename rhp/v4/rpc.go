@@ -172,7 +172,7 @@ func RPCSettings(ctx context.Context, t TransportClient) (rhp4.HostSettings, err
 }
 
 // RPCReadSector reads a sector from the host.
-func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256, offset, length uint64, w io.Writer) (RPCReadSectorResult, error) {
+func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, w io.Writer, root types.Hash256, offset, length uint64) (RPCReadSectorResult, error) {
 	req := &rhp4.RPCReadSectorRequest{
 		Prices: prices,
 		Token:  token,
@@ -303,6 +303,8 @@ func RPCModifySectors(ctx context.Context, t TransportClient, cs consensus.State
 	if err := rhp4.ReadResponse(s, &resp); err != nil {
 		return RPCModifySectorsResult{}, fmt.Errorf("failed to read response: %w", err)
 	}
+
+	// TODO: verify proof
 
 	revision, err := rhp4.ReviseForModifySectors(contract.Revision, req, resp)
 	if err != nil {

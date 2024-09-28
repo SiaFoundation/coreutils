@@ -812,7 +812,7 @@ func TestReadWriteSector(t *testing.T) {
 
 	// read the sector back
 	buf := bytes.NewBuffer(nil)
-	_, err = rhp4.RPCReadSector(context.Background(), transport, settings.Prices, token, writeResult.Root, 0, 64, buf)
+	_, err = rhp4.RPCReadSector(context.Background(), transport, settings.Prices, token, buf, writeResult.Root, 0, 64)
 	if err != nil {
 		t.Fatal(err)
 	} else if !bytes.Equal(buf.Bytes(), data[:64]) {
@@ -1364,7 +1364,7 @@ func BenchmarkRead(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		buf.Reset()
 		// store the sector
-		_, err = rhp4.RPCReadSector(context.Background(), transport, settings.Prices, token, roots[i], 0, proto4.SectorSize, buf)
+		_, err = rhp4.RPCReadSector(context.Background(), transport, settings.Prices, token, buf, roots[i], 0, proto4.SectorSize)
 		if err != nil {
 			b.Fatal(err)
 		} else if !bytes.Equal(buf.Bytes(), sectors[i][:]) {
