@@ -22,9 +22,7 @@ type (
 	}
 
 	// A Protocol is a string identifying a network protocol that a host may be
-	// reached on. It should be in the form of "protocol/transport". There may be
-	// additional useful information after the transport, separated by forward
-	// slashes.
+	// reached on.
 	Protocol string
 
 	// A NetAddress is a pair of protocol and address that a host may be reached on

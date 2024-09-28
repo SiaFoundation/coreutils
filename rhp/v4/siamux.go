@@ -6,7 +6,14 @@ import (
 	"net"
 
 	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils/chain"
 	"go.sia.tech/mux/v2"
+)
+
+// A Protocol is a string identifying a network protocol that a host may be
+// reached on.
+const (
+	ProtocolTCPSiaMux chain.Protocol = "siamux"
 )
 
 // siaMuxClientTransport is a TransportClient that uses the SiaMux multiplexer.
