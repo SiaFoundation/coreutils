@@ -23,6 +23,14 @@ type EphemeralSectorStore struct {
 
 var _ rhp4.Sectors = (*EphemeralSectorStore)(nil)
 
+// HasSector checks if a sector is stored in the store.
+func (es *EphemeralSectorStore) HasSector(root types.Hash256) (bool, error) {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	_, ok := es.sectors[root]
+	return ok, nil
+}
+
 // ReadSector reads a sector from the EphemeralSectorStore.
 func (es *EphemeralSectorStore) ReadSector(root types.Hash256) ([proto4.SectorSize]byte, error) {
 	es.mu.Lock()

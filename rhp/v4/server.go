@@ -89,6 +89,8 @@ type (
 
 	// A Sectors is an interface for reading and writing sectors.
 	Sectors interface {
+		// HasSector returns true if the sector is stored.
+		HasSector(root types.Hash256) (bool, error)
 		// ReadSector retrieves a sector by its root
 		ReadSector(root types.Hash256) ([rhp4.SectorSize]byte, error)
 		// WriteSector stores a sector
@@ -147,13 +149,12 @@ type (
 
 func (s *Server) lockContractForRevision(contractID types.FileContractID) (rev RevisionState, unlock func(), _ error) {
 	rev, unlock, err := s.contractor.LockV2Contract(contractID)
-	switch {
-	case err != nil:
-		return RevisionState{}, nil, err
-	case rev.Revision.ProofHeight <= s.chain.Tip().Height+s.contractProofWindowBuffer:
+	if err != nil {
+		return RevisionState{}, nil, fmt.Errorf("failed to lock contract: %w", err)
+	} else if rev.Revision.ProofHeight <= s.chain.Tip().Height+s.contractProofWindowBuffer {
 		unlock()
 		return RevisionState{}, nil, errorBadRequest("contract too close to proof window")
-	case rev.Revision.RevisionNumber >= types.MaxRevisionNumber:
+	} else if rev.Revision.RevisionNumber >= types.MaxRevisionNumber {
 		unlock()
 		return RevisionState{}, nil, errorBadRequest("contract is locked for revision")
 	}
@@ -263,21 +264,15 @@ func (s *Server) handleRPCModifySectors(stream net.Conn) error {
 	}
 
 	fc := state.Revision
-	duration := fc.ExpirationHeight - prices.TipHeight
-	cost, collateral := prices.RPCModifySectorsCost(req.Actions, duration)
-
+	cost := prices.RPCModifySectorsCost(req.Actions)
 	// validate the payment without modifying the contract
 	if fc.RenterOutput.Value.Cmp(cost) < 0 {
 		return rhp4.NewRPCError(rhp4.ErrorCodePayment, fmt.Sprintf("renter output value %v is less than cost %v", fc.RenterOutput.Value, cost))
-	} else if fc.MissedHostValue.Cmp(collateral) < 0 {
-		return rhp4.NewRPCError(rhp4.ErrorCodePayment, fmt.Sprintf("missed host value %v is less than collateral %v", fc.MissedHostValue, collateral))
 	}
 
 	roots := state.Roots
 	for _, action := range req.Actions {
 		switch action.Type {
-		case rhp4.ActionAppend:
-			roots = append(roots, action.Root)
 		case rhp4.ActionTrim:
 			if action.N > uint64(len(roots)) {
 				return errorBadRequest("trim count %v exceeds sector count %v", action.N, len(roots))
@@ -304,25 +299,21 @@ func (s *Server) handleRPCModifySectors(stream net.Conn) error {
 	if err := rhp4.WriteResponse(stream, &resp); err != nil {
 		return fmt.Errorf("failed to write response: %w", err)
 	}
-
 	var renterSigResponse rhp4.RPCModifySectorsSecondResponse
 	if err := rhp4.ReadResponse(stream, &renterSigResponse); err != nil {
 		return errorDecodingError("failed to read renter signature response: %v", err)
 	}
 
-	// revise contract
-	revision, err := rhp4.ReviseForModifySectors(fc, req, resp)
+	revision, err := rhp4.ReviseForModifySectors(fc, prices, resp.Proof[len(resp.Proof)-1], req.Actions)
 	if err != nil {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}
 	sigHash := cs.ContractSigHash(revision)
 
-	// validate the renter signature
 	if !fc.RenterPublicKey.VerifyHash(sigHash, renterSigResponse.RenterSignature) {
 		return rhp4.ErrInvalidSignature
 	}
 	revision.RenterSignature = renterSigResponse.RenterSignature
-	// sign the revision
 	revision.HostSignature = s.hostKey.SignHash(sigHash)
 
 	err = s.contractor.ReviseV2Contract(req.ContractID, revision, roots, Usage{
@@ -332,6 +323,82 @@ func (s *Server) handleRPCModifySectors(stream net.Conn) error {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}
 	return rhp4.WriteResponse(stream, &rhp4.RPCModifySectorsThirdResponse{
+		HostSignature: revision.HostSignature,
+	})
+}
+
+func (s *Server) handleRPCAppendSectors(stream net.Conn) error {
+	var req rhp4.RPCAppendSectorsRequest
+	if err := rhp4.ReadRequest(stream, &req); err != nil {
+		return errorDecodingError("failed to read request: %v", err)
+	}
+
+	settings := s.settings.RHP4Settings()
+	if err := req.Validate(s.hostKey.PublicKey(), settings.MaxModifyActions); err != nil {
+		return errorBadRequest("request invalid: %v", err)
+	}
+	prices := req.Prices
+
+	cs := s.chain.TipState()
+
+	state, unlock, err := s.lockContractForRevision(req.ContractID)
+	if err != nil {
+		return fmt.Errorf("failed to lock contract: %w", err)
+	}
+	defer unlock()
+
+	if !req.ValidChallengeSignature(state.Revision) {
+		return errorBadRequest("invalid challenge signature")
+	}
+
+	fc := state.Revision
+	roots := state.Roots
+	accepted := make([]bool, len(req.Sectors))
+	var appended uint64
+	for i, root := range req.Sectors {
+		if ok, err := s.sectors.HasSector(root); err != nil {
+			return fmt.Errorf("failed to check sector: %w", err)
+		} else if !ok {
+			continue
+		}
+		accepted[i] = true
+		roots = append(roots, root)
+		appended++
+	}
+
+	resp := rhp4.RPCAppendSectorsResponse{
+		Accepted: accepted,
+		Proof:    []types.Hash256{rhp4.MetaRoot(roots)}, // TODO implement proof
+	}
+	if err := rhp4.WriteResponse(stream, &resp); err != nil {
+		return fmt.Errorf("failed to write response: %w", err)
+	}
+
+	revision, err := rhp4.ReviseForAppendSectors(fc, req.Prices, resp.Proof[len(resp.Proof)-1], appended)
+	if err != nil {
+		return fmt.Errorf("failed to revise contract: %w", err)
+	}
+	sigHash := cs.ContractSigHash(revision)
+
+	var renterSigResponse rhp4.RPCAppendSectorsSecondResponse
+	if err := rhp4.ReadResponse(stream, &renterSigResponse); err != nil {
+		return errorDecodingError("failed to read renter signature response: %v", err)
+	} else if !fc.RenterPublicKey.VerifyHash(sigHash, renterSigResponse.RenterSignature) {
+		return rhp4.ErrInvalidSignature
+	}
+
+	revision.RenterSignature = renterSigResponse.RenterSignature
+	revision.HostSignature = s.hostKey.SignHash(sigHash)
+
+	cost, collateral := req.Prices.RPCAppendSectorsCost(appended, fc.ExpirationHeight-prices.TipHeight)
+	err = s.contractor.ReviseV2Contract(req.ContractID, revision, roots, Usage{
+		StorageRevenue:   cost,
+		RiskedCollateral: collateral,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to revise contract: %w", err)
+	}
+	return rhp4.WriteResponse(stream, &rhp4.RPCAppendSectorsThirdResponse{
 		HostSignature: revision.HostSignature,
 	})
 }
@@ -946,6 +1013,8 @@ func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 		err = s.handleRPCLatestRevision(stream)
 	case rhp4.RPCModifySectorsID:
 		err = s.handleRPCModifySectors(stream)
+	case rhp4.RPCAppendSectorsID:
+		err = s.handleRPCAppendSectors(stream)
 	case rhp4.RPCReadSectorID:
 		err = s.handleRPCReadSector(stream)
 	case rhp4.RPCRenewContractID:

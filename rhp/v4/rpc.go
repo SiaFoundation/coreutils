@@ -126,6 +126,14 @@ type (
 		Cost     types.Currency       `json:"cost"`
 	}
 
+	// RPCAppendSectorResults contains the result of executing the append sectors
+	// RPC.
+	RPCAppendSectorsResult struct {
+		Revision types.V2FileContract `json:"revision"`
+		Cost     types.Currency       `json:"cost"`
+		Sectors  []types.Hash256      `json:"sectors"`
+	}
+
 	// RPCFundAccountResult contains the result of executing the fund accounts RPC.
 	RPCFundAccountResult struct {
 		Revision types.V2FileContract `json:"revision"`
@@ -287,7 +295,7 @@ func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPri
 }
 
 // RPCModifySectors modifies sectors on the host.
-func RPCModifySectors(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, actions []rhp4.WriteAction) (RPCModifySectorsResult, error) {
+func RPCModifySectors(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, actions []rhp4.ModifyAction) (RPCModifySectorsResult, error) {
 	req := rhp4.RPCModifySectorsRequest{
 		ContractID: contract.ID,
 		Prices:     prices,
@@ -308,8 +316,8 @@ func RPCModifySectors(ctx context.Context, t TransportClient, cs consensus.State
 	}
 
 	// TODO: verify proof
-
-	revision, err := rhp4.ReviseForModifySectors(contract.Revision, req, resp)
+	root := resp.Proof[len(resp.Proof)-1]
+	revision, err := rhp4.ReviseForModifySectors(contract.Revision, prices, root, actions)
 	if err != nil {
 		return RPCModifySectorsResult{}, fmt.Errorf("failed to revise contract: %w", err)
 	}
@@ -336,6 +344,62 @@ func RPCModifySectors(ctx context.Context, t TransportClient, cs consensus.State
 	return RPCModifySectorsResult{
 		Revision: revision,
 		Cost:     contract.Revision.RenterOutput.Value.Sub(revision.RenterOutput.Value),
+	}, nil
+}
+
+func RPCAppendSectors(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, roots []types.Hash256) (RPCAppendSectorsResult, error) {
+	req := rhp4.RPCAppendSectorsRequest{
+		Prices:     prices,
+		Sectors:    roots,
+		ContractID: contract.ID,
+	}
+	req.ChallengeSignature = sk.SignHash(req.ChallengeSigHash(contract.Revision.RevisionNumber + 1))
+
+	s := t.DialStream(ctx)
+	defer s.Close()
+
+	if err := rhp4.WriteRequest(s, rhp4.RPCAppendSectorsID, &req); err != nil {
+		return RPCAppendSectorsResult{}, fmt.Errorf("failed to write request: %w", err)
+	}
+
+	var resp rhp4.RPCAppendSectorsResponse
+	if err := rhp4.ReadResponse(s, &resp); err != nil {
+		return RPCAppendSectorsResult{}, fmt.Errorf("failed to read response: %w", err)
+	} else if len(resp.Accepted) != len(roots) {
+		return RPCAppendSectorsResult{}, errors.New("host returned less roots")
+	}
+	appended := make([]types.Hash256, 0, len(roots))
+	for i := range resp.Accepted {
+		if resp.Accepted[i] {
+			appended = append(appended, roots[i])
+		}
+	}
+
+	root := resp.Proof[len(resp.Proof)-1]
+	revision, err := rhp4.ReviseForAppendSectors(contract.Revision, prices, root, uint64(len(appended)))
+	if err != nil {
+		return RPCAppendSectorsResult{}, fmt.Errorf("failed to revise contract: %w", err)
+	}
+	sigHash := cs.ContractSigHash(revision)
+	revision.RenterSignature = sk.SignHash(sigHash)
+
+	signatureResp := rhp4.RPCAppendSectorsSecondResponse{
+		RenterSignature: revision.RenterSignature,
+	}
+	if err := rhp4.WriteResponse(s, &signatureResp); err != nil {
+		return RPCAppendSectorsResult{}, fmt.Errorf("failed to write signature response: %w", err)
+	}
+
+	var hostSignature rhp4.RPCAppendSectorsThirdResponse
+	if err := rhp4.ReadResponse(s, &hostSignature); err != nil {
+		return RPCAppendSectorsResult{}, fmt.Errorf("failed to read host signatures: %w", err)
+	} else if !contract.Revision.HostPublicKey.VerifyHash(sigHash, hostSignature.HostSignature) {
+		return RPCAppendSectorsResult{}, rhp4.ErrInvalidSignature
+	}
+	return RPCAppendSectorsResult{
+		Revision: revision,
+		Cost:     contract.Revision.RenterOutput.Value.Sub(revision.RenterOutput.Value),
+		Sectors:  appended,
 	}, nil
 }
 

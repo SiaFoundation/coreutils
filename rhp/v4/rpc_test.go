@@ -820,6 +820,124 @@ func TestReadWriteSector(t *testing.T) {
 	}
 }
 
+func TestAppendSectors(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	n, genesis := testutil.V2Network()
+	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
+
+	cm, s, w := startTestNode(t, n, genesis, log)
+
+	// fund the wallet with two UTXOs
+	mineAndSync(t, cm, w.Address(), 146, w)
+
+	sr := testutil.NewEphemeralSettingsReporter()
+	sr.Update(proto4.HostSettings{
+		Release:             "test",
+		AcceptingContracts:  true,
+		WalletAddress:       w.Address(),
+		MaxCollateral:       types.Siacoins(10000),
+		MaxContractDuration: 1000,
+		MaxSectorDuration:   3 * 144,
+		MaxModifyActions:    100,
+		RemainingStorage:    100 * proto4.SectorSize,
+		TotalStorage:        100 * proto4.SectorSize,
+		Prices: proto4.HostPrices{
+			ContractPrice: types.Siacoins(1).Div64(5), // 0.2 SC
+			StoragePrice:  types.NewCurrency64(100),   // 100 H / byte / block
+			IngressPrice:  types.NewCurrency64(100),   // 100 H / byte
+			EgressPrice:   types.NewCurrency64(100),   // 100 H / byte
+			Collateral:    types.NewCurrency64(200),
+		},
+	})
+	ss := testutil.NewEphemeralSectorStore()
+	c := testutil.NewEphemeralContractor(cm)
+
+	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
+
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fundAndSign := &fundAndSign{w, renterKey}
+	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
+	formResult, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+		RenterPublicKey: renterKey.PublicKey(),
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := formResult.Contract
+
+	cs := cm.TipState()
+	account := proto4.Account(renterKey.PublicKey())
+
+	accountFundAmount := types.Siacoins(25)
+	fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
+		{Account: account, Amount: accountFundAmount},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision.Revision = fundResult.Revision
+
+	token := proto4.AccountToken{
+		Account:    account,
+		ValidUntil: time.Now().Add(time.Hour),
+	}
+	tokenSigHash := token.SigHash()
+	token.Signature = renterKey.SignHash(tokenSigHash)
+
+	// store random sectors
+	roots := make([]types.Hash256, 0, 10)
+	for i := 0; i < 10; i++ {
+		var sector [proto4.SectorSize]byte
+		frand.Read(sector[:])
+		root := proto4.SectorRoot(&sector)
+
+		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, NewReaderLen(sector[:]), 5)
+		if err != nil {
+			t.Fatal(err)
+		} else if writeResult.Root != root {
+			t.Fatal("root mismatch")
+		}
+		roots = append(roots, root)
+	}
+
+	// corrupt a random root
+	excludedIndex := frand.Intn(len(roots))
+	roots[excludedIndex] = frand.Entropy256()
+
+	// append the sectors to the contract
+	appendResult, err := rhp4.RPCAppendSectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, roots)
+	if err != nil {
+		t.Fatal(err)
+	} else if len(appendResult.Sectors) != len(roots)-1 {
+		t.Fatalf("expected %v, got %v", len(roots)-1, len(appendResult.Sectors))
+	}
+	roots = append(roots[:excludedIndex], roots[excludedIndex+1:]...)
+	if appendResult.Revision.FileMerkleRoot != proto4.MetaRoot(roots) {
+		t.Fatal("root mismatch")
+	}
+
+	// read the sectors back
+	buf := bytes.NewBuffer(make([]byte, 0, proto4.SectorSize))
+	for _, root := range roots {
+		buf.Reset()
+
+		_, err = rhp4.RPCReadSector(context.Background(), transport, settings.Prices, token, buf, root, 0, proto4.SectorSize)
+		if err != nil {
+			t.Fatal(err)
+		} else if proto4.SectorRoot((*[proto4.SectorSize]byte)(buf.Bytes())) != root {
+			t.Fatal("data mismatch")
+		}
+	}
+}
+
 func TestVerifySector(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
@@ -1013,26 +1131,19 @@ func TestRPCModifySectors(t *testing.T) {
 	}
 
 	// append all the sector roots to the contract
-	var actions []proto4.WriteAction
-	for _, root := range roots {
-		actions = append(actions, proto4.WriteAction{
-			Type: proto4.ActionAppend,
-			Root: root,
-		})
-	}
-	modifyResult, err := rhp4.RPCModifySectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, actions)
+	appendResult, err := rhp4.RPCAppendSectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, roots)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertRevision(t, modifyResult.Revision, roots)
-	revision.Revision = modifyResult.Revision
+	assertRevision(t, appendResult.Revision, roots)
+	revision.Revision = appendResult.Revision
 
 	// swap two random sectors
 	swapA, swapB := frand.Uint64n(uint64(len(roots)/2)), frand.Uint64n(uint64(len(roots)/2))+uint64(len(roots)/2)
-	actions = []proto4.WriteAction{
+	actions := []proto4.ModifyAction{
 		{Type: proto4.ActionSwap, A: swapA, B: swapB},
 	}
-	modifyResult, err = rhp4.RPCModifySectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, actions)
+	modifyResult, err := rhp4.RPCModifySectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, actions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1041,7 +1152,7 @@ func TestRPCModifySectors(t *testing.T) {
 	revision.Revision = modifyResult.Revision
 
 	// delete the last 10 sectors
-	actions = []proto4.WriteAction{
+	actions = []proto4.ModifyAction{
 		{Type: proto4.ActionTrim, N: uint64(len(roots) / 2)},
 	}
 	modifyResult, err = rhp4.RPCModifySectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, actions)
@@ -1055,7 +1166,7 @@ func TestRPCModifySectors(t *testing.T) {
 	// update a random sector with one of the trimmed sectors
 	updateIdx := frand.Intn(len(roots))
 	trimmedIdx := frand.Intn(len(trimmed))
-	actions = []proto4.WriteAction{
+	actions = []proto4.ModifyAction{
 		{Type: proto4.ActionUpdate, Root: trimmed[trimmedIdx], A: uint64(updateIdx)},
 	}
 
@@ -1169,14 +1280,11 @@ func TestRPCSectorRoots(t *testing.T) {
 		}
 		roots = append(roots, writeResult.Root)
 
-		modifyResult, err := rhp4.RPCModifySectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, []proto4.WriteAction{
-			{Type: proto4.ActionAppend, Root: writeResult.Root},
-		})
+		appendResult, err := rhp4.RPCAppendSectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, []types.Hash256{writeResult.Root})
 		if err != nil {
 			t.Fatal(err)
 		}
-		revision.Revision = modifyResult.Revision
-
+		revision.Revision = appendResult.Revision
 		checkRoots(t, roots)
 	}
 }
@@ -1444,10 +1552,12 @@ func BenchmarkContractUpload(b *testing.B) {
 	token.Signature = renterKey.SignHash(token.SigHash())
 
 	var sectors [][proto4.SectorSize]byte
+	roots := make([]types.Hash256, 0, b.N)
 	for i := 0; i < b.N; i++ {
 		var sector [proto4.SectorSize]byte
 		frand.Read(sector[:256])
 		sectors = append(sectors, sector)
+		roots = append(roots, proto4.SectorRoot(&sector))
 	}
 
 	b.ResetTimer()
@@ -1455,7 +1565,6 @@ func BenchmarkContractUpload(b *testing.B) {
 	b.SetBytes(proto4.SectorSize)
 
 	var wg sync.WaitGroup
-	actions := make([]proto4.WriteAction, b.N)
 	for i := 0; i < b.N; i++ {
 		wg.Add(1)
 		go func(i int) {
@@ -1463,20 +1572,18 @@ func BenchmarkContractUpload(b *testing.B) {
 			writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, NewReaderLen(sectors[i][:]), 5)
 			if err != nil {
 				b.Error(err)
-			}
-			actions[i] = proto4.WriteAction{
-				Type: proto4.ActionAppend,
-				Root: writeResult.Root,
+			} else if writeResult.Root != roots[i] {
+				b.Errorf("expected %v, got %v", roots[i], writeResult.Root)
 			}
 		}(i)
 	}
 
 	wg.Wait()
 
-	modifyResult, err := rhp4.RPCModifySectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, actions)
+	appendResult, err := rhp4.RPCAppendSectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, roots)
 	if err != nil {
 		b.Fatal(err)
-	} else if modifyResult.Revision.Filesize != uint64(b.N)*proto4.SectorSize {
-		b.Fatalf("expected %v sectors, got %v", b.N, modifyResult.Revision.Filesize/proto4.SectorSize)
+	} else if appendResult.Revision.Filesize != uint64(b.N)*proto4.SectorSize {
+		b.Fatalf("expected %v sectors, got %v", b.N, appendResult.Revision.Filesize/proto4.SectorSize)
 	}
 }
