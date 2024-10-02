@@ -126,7 +126,7 @@ type (
 		Cost     types.Currency       `json:"cost"`
 	}
 
-	// RPCAppendSectorResults contains the result of executing the append sectors
+	// RPCAppendSectorsResult contains the result of executing the append sectors
 	// RPC.
 	RPCAppendSectorsResult struct {
 		Revision types.V2FileContract `json:"revision"`
@@ -347,6 +347,7 @@ func RPCModifySectors(ctx context.Context, t TransportClient, cs consensus.State
 	}, nil
 }
 
+// RPCAppendSectors appends sectors a host is storing to a contract.
 func RPCAppendSectors(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, roots []types.Hash256) (RPCAppendSectorsResult, error) {
 	req := rhp4.RPCAppendSectorsRequest{
 		Prices:     prices,
