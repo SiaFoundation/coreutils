@@ -12,15 +12,10 @@ import (
 	"go.sia.tech/core/consensus"
 	rhp4 "go.sia.tech/core/rhp/v4"
 	"go.sia.tech/core/types"
-	"go.sia.tech/coreutils/chain"
 	"go.sia.tech/coreutils/wallet"
 	"go.uber.org/zap"
 	"lukechampine.com/frand"
 )
-
-// maxBasisDiff is the maximum number of blocks by which a transaction's basis
-// can differ from the current tip.
-const maxBasisDiff = 20
 
 var protocolVersion = [3]byte{4, 0, 0}
 
@@ -59,9 +54,16 @@ type (
 		AddV2PoolTransactions(types.ChainIndex, []types.V2Transaction) (known bool, err error)
 		// RecommendedFee returns the recommended fee per weight
 		RecommendedFee() types.Currency
-		// UpdatesSince returns at most max updates on the path between index and the
-		// Manager's current tip.
-		UpdatesSince(index types.ChainIndex, maxBlocks int) (rus []chain.RevertUpdate, aus []chain.ApplyUpdate, err error)
+
+		UpdateStateElement(se *types.StateElement, from, to types.ChainIndex) error
+		// UpdateV2TransactionSet updates the basis of a transaction set from "from" to "to".
+		// If from and to are equal, the transaction set is returned as-is.
+		// Any transactions that were confirmed are removed from the set.
+		// Any ephemeral state elements that were created by an update are updated.
+		//
+		// If it is undesirable to modify the transaction set, deep-copy it
+		// before calling this method.
+		UpdateV2TransactionSet(txns []types.V2Transaction, from, to types.ChainIndex) ([]types.V2Transaction, error)
 	}
 
 	// A Syncer broadcasts transactions to its peers.
@@ -580,9 +582,14 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 
 	// update renter input basis to reflect our funding basis
 	if basis != req.Basis {
-		if err := updateSiacoinElementBasis(s.chain, req.Basis, basis, formationTxn.SiacoinInputs[:len(req.RenterInputs)]); err != nil {
+		hostInputs := formationTxn.SiacoinInputs[len(formationTxn.SiacoinInputs)-len(req.RenterInputs)]
+		formationTxn.SiacoinInputs = formationTxn.SiacoinInputs[:len(formationTxn.SiacoinInputs)-len(req.RenterInputs)]
+		txnset, err := s.chain.UpdateV2TransactionSet([]types.V2Transaction{formationTxn}, req.Basis, basis)
+		if err != nil {
 			return errorBadRequest("failed to update renter inputs from %q to %q: %v", req.Basis, basis, err)
 		}
+		formationTxn = txnset[0]
+		formationTxn.SiacoinInputs = append(formationTxn.SiacoinInputs, hostInputs)
 	}
 
 	// send the host inputs to the renter
@@ -684,20 +691,12 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 		return errorBadRequest("invalid challenge signature")
 	}
 
+	cs := s.chain.TipState()
 	renewal := rhp4.NewRenewal(existing, prices, req.Renewal)
-
-	// create the renewal transaction
+	renterCost, hostCost := rhp4.RenewalCost(cs, prices, renewal, req.MinerFee)
 	renewalTxn := types.V2Transaction{
 		MinerFee: req.MinerFee,
-		FileContractResolutions: []types.V2FileContractResolution{
-			{
-				Resolution: &renewal,
-			},
-		},
 	}
-	// calculate the renter funding
-	cs := s.chain.TipState()
-	renterCost, hostCost := rhp4.RenewalCost(cs, prices, renewal, renewalTxn.MinerFee)
 
 	// add the renter inputs
 	var renterInputSum types.Currency
@@ -708,61 +707,49 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 		renterInputSum = renterInputSum.Add(si.SiacoinOutput.Value)
 	}
 
-	// validate the renter added enough inputs
-	if !renterInputSum.Equals(renterCost) {
+	if n := renterInputSum.Cmp(renterCost); n < 0 {
 		return errorBadRequest("expected renter to fund %v, got %v", renterInputSum, renterCost)
+	} else if n > 0 {
+		// if the renter added too much, add a change output
+		renewalTxn.SiacoinOutputs = append(renewalTxn.SiacoinOutputs, types.SiacoinOutput{
+			Address: renewal.NewContract.RenterOutput.Address,
+			Value:   renterInputSum.Sub(renterCost),
+		})
 	}
 
-	fceBasis, fce, err := s.contractor.ContractElement(req.Renewal.ContractID)
+	elementBasis, fce, err := s.contractor.ContractElement(req.Renewal.ContractID)
 	if err != nil {
 		return fmt.Errorf("failed to get contract element: %w", err)
 	}
-	renewalTxn.FileContractResolutions[0].Parent = fce
 
-	basis := cs.Index // start with a decent basis and overwrite it if a setup transaction is needed
-	var renewalParents []types.V2Transaction
-	if !hostCost.IsZero() {
-		// fund the locked collateral
-		setupTxn := types.V2Transaction{
-			SiacoinOutputs: []types.SiacoinOutput{
-				{Address: renewal.NewContract.HostOutput.Address, Value: hostCost},
-			},
-		}
-
-		var toSign []int
-		basis, toSign, err = s.wallet.FundV2Transaction(&setupTxn, hostCost, true)
-		if errors.Is(err, wallet.ErrNotEnoughFunds) {
-			return rhp4.ErrHostFundError
-		} else if err != nil {
-			return fmt.Errorf("failed to fund transaction: %w", err)
-		}
-		// sign the transaction inputs
-		s.wallet.SignV2Inputs(&setupTxn, toSign)
-
-		basis, renewalParents, err = s.chain.V2TransactionSet(basis, setupTxn)
-		if err != nil {
-			return fmt.Errorf("failed to get setup transaction set: %w", err)
-		}
-
-		renewalTxn.SiacoinInputs = append(renewalTxn.SiacoinInputs, types.V2SiacoinInput{
-			Parent: renewalParents[len(renewalParents)-1].EphemeralSiacoinOutput(0),
-		})
-		s.wallet.SignV2Inputs(&renewalTxn, []int{len(renewalTxn.SiacoinInputs) - 1})
+	basis, toSign, err := s.wallet.FundV2Transaction(&renewalTxn, hostCost, true)
+	if errors.Is(err, wallet.ErrNotEnoughFunds) {
+		return rhp4.ErrHostFundError
+	} else if err != nil {
+		return fmt.Errorf("failed to fund transaction: %w", err)
 	}
 
-	// update renter input basis to reflect our funding basis
+	// update renter inputs to reflect our chain basis
 	if basis != req.Basis {
-		if err := updateSiacoinElementBasis(s.chain, req.Basis, basis, renewalTxn.SiacoinInputs[:len(req.RenterInputs)]); err != nil {
+		hostInputs := renewalTxn.SiacoinInputs[len(renewalTxn.SiacoinInputs)-len(req.RenterInputs):]
+		renewalTxn.SiacoinInputs = renewalTxn.SiacoinInputs[:len(renewalTxn.SiacoinInputs)-len(req.RenterInputs)]
+		updated, err := s.chain.UpdateV2TransactionSet([]types.V2Transaction{renewalTxn}, req.Basis, basis)
+		if err != nil {
 			return errorBadRequest("failed to update renter inputs from %q to %q: %v", req.Basis, basis, err)
 		}
-	}
-	// update the file contract element to reflect the funding basis
-	if fceBasis != basis {
-		if err := updateStateElementBasis(s.chain, fceBasis, basis, &fce.StateElement); err != nil {
-			return errorBadRequest("failed to update file contract basis: %v", err)
-		}
+		renewalTxn = updated[0]
+		renewalTxn.SiacoinInputs = append(renewalTxn.SiacoinInputs, hostInputs...)
 	}
 
+	if elementBasis != basis {
+		if err := s.chain.UpdateStateElement(&fce.StateElement, elementBasis, basis); err != nil {
+			return fmt.Errorf("failed to update contract element: %w", err)
+		}
+	}
+	renewalTxn.FileContractResolutions = []types.V2FileContractResolution{
+		{Parent: fce, Resolution: &renewal},
+	}
+	s.wallet.SignV2Inputs(&renewalTxn, toSign)
 	// send the host inputs to the renter
 	hostInputsResp := rhp4.RPCRenewContractResponse{
 		HostInputs: renewalTxn.SiacoinInputs[len(req.RenterInputs):],
@@ -787,11 +774,9 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	renewal.RenterSignature = renterSigResp.RenterRenewalSignature
 
 	// apply the renter's signatures
-	for i := range renewalTxn.SiacoinInputs[:len(req.RenterInputs)] {
-		renewalTxn.SiacoinInputs[i].SatisfiedPolicy = renterSigResp.RenterSatisfiedPolicies[i]
+	for i, policy := range renterSigResp.RenterSatisfiedPolicies {
+		renewalTxn.SiacoinInputs[i].SatisfiedPolicy = policy
 	}
-
-	// sign the renewal
 	renewal.HostSignature = s.hostKey.SignHash(renewalSigHash)
 
 	// add the renter's parents to our transaction pool to ensure they are valid
@@ -802,19 +787,12 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 		}
 	}
 
-	// add the setup parents to the transaction pool
-	if len(renewalParents) > 0 {
-		if _, err := s.chain.AddV2PoolTransactions(basis, renewalParents); err != nil {
-			return errorBadRequest("failed to add setup parents to transaction pool: %v", err)
-		}
-	}
-
 	// get the full updated transaction set for the renewal transaction
 	basis, renewalSet, err := s.chain.V2TransactionSet(basis, renewalTxn)
 	if err != nil {
 		return fmt.Errorf("failed to get transaction set: %w", err)
 	} else if _, err = s.chain.AddV2PoolTransactions(basis, renewalSet); err != nil {
-		return errorBadRequest("failed to broadcast setup transaction: %v", err)
+		return errorBadRequest("failed to broadcast renewal set: %v", err)
 	}
 	// broadcast the transaction set
 	s.syncer.BroadcastV2TransactionSet(basis, renewalSet)
@@ -862,130 +840,6 @@ func (s *Server) handleRPCVerifySector(stream net.Conn) error {
 		Leaf: ([64]byte)(sector[rhp4.LeafSize*req.LeafIndex:]),
 	}
 	return rhp4.WriteResponse(stream, &resp)
-}
-
-func updateStateElementBasis(cm ChainManager, base, target types.ChainIndex, element *types.StateElement) error {
-	reverted, applied, err := cm.UpdatesSince(base, 144)
-	if err != nil {
-		return err
-	}
-
-	if len(reverted)+len(applied) > maxBasisDiff {
-		return fmt.Errorf("too many updates between %v and %v", base, target)
-	}
-
-	for _, cru := range reverted {
-		revertedIndex := types.ChainIndex{
-			Height: cru.State.Index.Height + 1,
-			ID:     cru.Block.ParentID,
-		}
-		if revertedIndex == target {
-			return nil
-		}
-
-		cru.UpdateElementProof(element)
-		base = revertedIndex
-	}
-
-	for _, cau := range applied {
-		if cau.State.Index == target {
-			return nil
-		}
-
-		modified := make(map[types.Hash256]types.StateElement)
-		cau.ForEachSiacoinElement(func(sce types.SiacoinElement, created bool, spent bool) {
-			if created {
-				modified[sce.ID] = sce.StateElement
-			}
-		})
-
-		cau.UpdateElementProof(element)
-		base = cau.State.Index
-	}
-
-	if base != target {
-		return fmt.Errorf("failed to update basis to target %v, current %v", target, base)
-	}
-	return nil
-}
-
-// updateSiacoinElementBasis is a helper to update a transaction's siacoin elements
-// to the target basis. If an error is returned, inputs must be considered invalid.
-func updateSiacoinElementBasis(cm ChainManager, base, target types.ChainIndex, inputs []types.V2SiacoinInput) error {
-	reverted, applied, err := cm.UpdatesSince(base, 144)
-	if err != nil {
-		return err
-	}
-
-	if len(reverted)+len(applied) > maxBasisDiff {
-		return fmt.Errorf("too many updates between %v and %v", base, target)
-	}
-
-	for _, cru := range reverted {
-		revertedIndex := types.ChainIndex{
-			Height: cru.State.Index.Height + 1,
-			ID:     cru.Block.ParentID,
-		}
-		if revertedIndex == target {
-			return nil
-		}
-
-		modified := make(map[types.Hash256]types.StateElement)
-		cru.ForEachSiacoinElement(func(sce types.SiacoinElement, created bool, spent bool) {
-			if created {
-				modified[sce.ID] = types.StateElement{
-					ID:        sce.ID,
-					LeafIndex: types.UnassignedLeafIndex,
-				}
-			}
-		})
-
-		for i := range inputs {
-			if se, ok := modified[inputs[i].Parent.ID]; ok {
-				inputs[i].Parent.StateElement = se
-			}
-
-			if inputs[i].Parent.LeafIndex == types.UnassignedLeafIndex {
-				continue
-			} else if inputs[i].Parent.LeafIndex >= cru.State.Elements.NumLeaves {
-				return fmt.Errorf("siacoin input %v is not in the correct state", inputs[i].Parent.ID)
-			}
-			cru.UpdateElementProof(&inputs[i].Parent.StateElement)
-		}
-		base = revertedIndex
-	}
-
-	for _, cau := range applied {
-		if cau.State.Index == target {
-			return nil
-		}
-
-		modified := make(map[types.Hash256]types.StateElement)
-		cau.ForEachSiacoinElement(func(sce types.SiacoinElement, created bool, spent bool) {
-			if created {
-				modified[sce.ID] = sce.StateElement
-			}
-		})
-
-		for i := range inputs {
-			if se, ok := modified[inputs[i].Parent.ID]; ok {
-				inputs[i].Parent.StateElement = se
-			}
-
-			if inputs[i].Parent.LeafIndex == types.UnassignedLeafIndex {
-				continue
-			} else if inputs[i].Parent.LeafIndex >= cau.State.Elements.NumLeaves {
-				return fmt.Errorf("siacoin input %v is not in the correct state", inputs[i].Parent.ID)
-			}
-			cau.UpdateElementProof(&inputs[i].Parent.StateElement)
-		}
-		base = cau.State.Index
-	}
-
-	if base != target {
-		return fmt.Errorf("failed to update basis to target %v, current %v", target, base)
-	}
-	return nil
 }
 
 func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {

@@ -949,7 +949,7 @@ func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transacti
 	m.revalidatePool()
 
 	// update the transaction's basis to match tip
-	_, txns, err := m.updateV2TransactionSet(basis, []types.V2Transaction{txn})
+	txns, err := m.UpdateV2TransactionSet([]types.V2Transaction{txn}, basis, m.tipState.Index)
 	if err != nil {
 		return types.ChainIndex{}, nil, fmt.Errorf("failed to update transaction set basis: %w", err)
 	} else if len(txns) == 0 {
@@ -1086,37 +1086,76 @@ func (m *Manager) AddPoolTransactions(txns []types.Transaction) (known bool, err
 	return
 }
 
-// updateV2TransactionSet updates the basis of a transaction set to the current
-// tip. If the basis is already the tip, the transaction set is returned as-is.
-// Any transactions that were confirmed are removed from the set. Any ephemeral
-// state elements that were created by an update are updated.
-//
-// If it is undesirable to modify the transaction set, deep-copy it
-// before calling this method.
-func (m *Manager) updateV2TransactionSet(basis types.ChainIndex, txns []types.V2Transaction) (types.ChainIndex, []types.V2Transaction, error) {
-	if basis == m.tipState.Index {
-		return basis, txns, nil
+// UpdateStateElement updates the basis of a state element from "from" to "to".
+// If from and to are equal, the state element is not modified.
+func (m *Manager) UpdateStateElement(se *types.StateElement, from, to types.ChainIndex) error {
+	if from == to {
+		return nil
 	}
 
-	// bring txns up-to-date
-	revert, apply, err := m.reorgPath(basis, m.tipState.Index)
+	revert, apply, err := m.reorgPath(from, to)
 	if err != nil {
-		return types.ChainIndex{}, nil, fmt.Errorf("couldn't determine reorg path from %v to %v: %w", basis, m.tipState.Index, err)
+		return fmt.Errorf("couldn't determine reorg path from %v to %v: %w", from, to, err)
 	} else if len(revert)+len(apply) > 144 {
-		return types.ChainIndex{}, nil, fmt.Errorf("reorg path from %v to %v is too long (-%v +%v)", basis, m.tipState.Index, len(revert), len(apply))
+		return fmt.Errorf("reorg path from %v to %v is too long (-%v +%v)", from, to, len(revert), len(apply))
 	}
 	for _, index := range revert {
 		b, _, cs, ok := blockAndParent(m.store, index.ID)
 		if !ok {
-			return types.ChainIndex{}, nil, fmt.Errorf("missing reverted block at index %v", index)
+			return fmt.Errorf("missing reverted block at index %v", index)
 		} else if b.V2 == nil {
-			return types.ChainIndex{}, nil, fmt.Errorf("reorg path from %v to %v contains a non-v2 block (%v)", basis, m.tipState.Index, index)
+			return fmt.Errorf("reorg path from %v to %v contains a non-v2 block (%v)", from, to, index)
+		}
+		// NOTE: since we are post-hardfork, we don't need a v1 supplement
+		cru := consensus.RevertBlock(cs, b, consensus.V1BlockSupplement{})
+		cru.UpdateElementProof(se)
+	}
+
+	for _, index := range apply {
+		b, _, cs, ok := blockAndParent(m.store, index.ID)
+		if !ok {
+			return fmt.Errorf("missing applied block at index %v", index)
+		} else if b.V2 == nil {
+			return fmt.Errorf("reorg path from %v to %v contains a non-v2 block (%v)", from, to, index)
+		}
+		// NOTE: since we are post-hardfork, we don't need a v1 supplement or ancestorTimestamp
+		_, cau := consensus.ApplyBlock(cs, b, consensus.V1BlockSupplement{}, time.Time{})
+		cau.UpdateElementProof(se)
+	}
+	return nil
+}
+
+// UpdateV2TransactionSet updates the basis of a transaction set from "from" to "to".
+// If from and to are equal, the transaction set is returned as-is.
+// Any transactions that were confirmed are removed from the set.
+// Any ephemeral state elements that were created by an update are updated.
+//
+// If it is undesirable to modify the transaction set, deep-copy it
+// before calling this method.
+func (m *Manager) UpdateV2TransactionSet(txns []types.V2Transaction, from, to types.ChainIndex) ([]types.V2Transaction, error) {
+	if from == to {
+		return txns, nil
+	}
+
+	// bring txns up-to-date
+	revert, apply, err := m.reorgPath(from, to)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't determine reorg path from %v to %v: %w", from, to, err)
+	} else if len(revert)+len(apply) > 144 {
+		return nil, fmt.Errorf("reorg path from %v to %v is too long (-%v +%v)", from, to, len(revert), len(apply))
+	}
+	for _, index := range revert {
+		b, _, cs, ok := blockAndParent(m.store, index.ID)
+		if !ok {
+			return nil, fmt.Errorf("missing reverted block at index %v", index)
+		} else if b.V2 == nil {
+			return nil, fmt.Errorf("reorg path from %v to %v contains a non-v2 block (%v)", from, to, index)
 		}
 		// NOTE: since we are post-hardfork, we don't need a v1 supplement
 		cru := consensus.RevertBlock(cs, b, consensus.V1BlockSupplement{})
 		for i := range txns {
 			if !updateTxnProofs(&txns[i], cru.UpdateElementProof, cs.Elements.NumLeaves) {
-				return types.ChainIndex{}, nil, fmt.Errorf("transaction %v references element that does not exist in our chain", txns[i].ID())
+				return nil, fmt.Errorf("transaction %v references element that does not exist in our chain", txns[i].ID())
 			}
 		}
 	}
@@ -1124,9 +1163,9 @@ func (m *Manager) updateV2TransactionSet(basis types.ChainIndex, txns []types.V2
 	for _, index := range apply {
 		b, _, cs, ok := blockAndParent(m.store, index.ID)
 		if !ok {
-			return types.ChainIndex{}, nil, fmt.Errorf("missing applied block at index %v", index)
+			return nil, fmt.Errorf("missing applied block at index %v", index)
 		} else if b.V2 == nil {
-			return types.ChainIndex{}, nil, fmt.Errorf("reorg path from %v to %v contains a non-v2 block (%v)", basis, m.tipState.Index, index)
+			return nil, fmt.Errorf("reorg path from %v to %v contains a non-v2 block (%v)", from, to, index)
 		}
 		// NOTE: since we are post-hardfork, we don't need a v1 supplement or ancestorTimestamp
 		cs, cau := consensus.ApplyBlock(cs, b, consensus.V1BlockSupplement{}, time.Time{})
@@ -1154,7 +1193,6 @@ func (m *Manager) updateV2TransactionSet(basis types.ChainIndex, txns []types.V2
 				// remove any transactions that were confirmed in this block
 				continue
 			}
-			rem = append(rem, txns[i])
 
 			// update the state elements for any confirmed ephemeral elements
 			for j := range txns[i].SiacoinInputs {
@@ -1182,11 +1220,12 @@ func (m *Manager) updateV2TransactionSet(basis types.ChainIndex, txns []types.V2
 
 			// NOTE: all elements guaranteed to exist from here on, so no
 			// need to check this return value
-			updateTxnProofs(&rem[len(rem)-1], cau.UpdateElementProof, cs.Elements.NumLeaves)
+			updateTxnProofs(&txns[i], cau.UpdateElementProof, cs.Elements.NumLeaves)
+			rem = append(rem, txns[i])
 		}
 		txns = rem
 	}
-	return m.tipState.Index, txns, nil
+	return txns, nil
 }
 
 // AddV2PoolTransactions validates a transaction set and adds it to the txpool.
@@ -1220,7 +1259,7 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 	}
 
 	// update the transaction set to the current tip
-	_, txns, err := m.updateV2TransactionSet(basis, txns)
+	txns, err := m.UpdateV2TransactionSet(txns, basis, m.tipState.Index)
 	if err != nil {
 		return false, m.markBadTxnSet(setID, fmt.Errorf("failed to update set basis: %w", err))
 	} else if len(txns) == 0 {

@@ -649,48 +649,28 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 	}
 
 	renterCost, hostCost := rhp4.RenewalCost(cs, p, renewal, renewalTxn.MinerFee)
-
-	basis := cs.Index // start with a decent basis and overwrite it if a setup transaction is needed
-	var renewalParents []types.V2Transaction
-	if !renterCost.IsZero() {
-		setupTxn := types.V2Transaction{
-			SiacoinOutputs: []types.SiacoinOutput{
-				{Address: renewal.NewContract.RenterOutput.Address, Value: renterCost},
-			},
-		}
-		var err error
-		var toSign []int
-		basis, toSign, err = signer.FundV2Transaction(&setupTxn, renterCost)
-		if err != nil {
-			return RPCRenewContractResult{}, fmt.Errorf("failed to fund transaction: %w", err)
-		}
-		signer.SignV2Inputs(&setupTxn, toSign)
-
-		basis, renewalParents, err = tp.V2TransactionSet(basis, setupTxn)
-		if err != nil {
-			return RPCRenewContractResult{}, fmt.Errorf("failed to get transaction set: %w", err)
-		}
-		setupTxn = renewalParents[len(renewalParents)-1]
-
-		renewalTxn.SiacoinInputs = append(renewalTxn.SiacoinInputs, types.V2SiacoinInput{
-			Parent: setupTxn.EphemeralSiacoinOutput(0),
-		})
-		signer.SignV2Inputs(&renewalTxn, []int{0})
-	}
-
-	renterSiacoinElements := make([]types.SiacoinElement, 0, len(renewalTxn.SiacoinInputs))
-	for _, i := range renewalTxn.SiacoinInputs {
-		renterSiacoinElements = append(renterSiacoinElements, i.Parent)
-	}
-
 	req := rhp4.RPCRenewContractRequest{
-		Prices:        p,
-		Renewal:       params,
-		MinerFee:      renewalTxn.MinerFee,
-		Basis:         basis,
-		RenterInputs:  renterSiacoinElements,
-		RenterParents: renewalParents,
+		Prices:   p,
+		Renewal:  params,
+		MinerFee: renewalTxn.MinerFee,
+		Basis:    cs.Index,
 	}
+
+	basis, toSign, err := signer.FundV2Transaction(&renewalTxn, renterCost)
+	if err != nil {
+		return RPCRenewContractResult{}, fmt.Errorf("failed to fund transaction: %w", err)
+	}
+	signer.SignV2Inputs(&renewalTxn, toSign)
+
+	req.Basis, req.RenterParents, err = tp.V2TransactionSet(basis, renewalTxn)
+	if err != nil {
+		return RPCRenewContractResult{}, fmt.Errorf("failed to get transaction set: %w", err)
+	}
+	for _, si := range renewalTxn.SiacoinInputs {
+		req.RenterInputs = append(req.RenterInputs, si.Parent)
+	}
+	req.RenterParents = req.RenterParents[:len(req.RenterParents)-1] // last transaction is the renewal
+
 	sigHash := req.ChallengeSigHash(existing.RevisionNumber)
 	req.ChallengeSignature = signer.SignHash(sigHash)
 
@@ -714,8 +694,14 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 	}
 
 	// verify the host added enough inputs
-	if !hostInputSum.Equals(hostCost) {
+	if n := hostInputSum.Cmp(hostCost); n < 0 {
 		return RPCRenewContractResult{}, fmt.Errorf("expected host to fund %v, got %v", hostCost, hostInputSum)
+	} else if n > 0 {
+		// add change output
+		renewalTxn.SiacoinOutputs = append(renewalTxn.SiacoinOutputs, types.SiacoinOutput{
+			Address: existing.HostOutput.Address,
+			Value:   hostInputSum.Sub(hostCost),
+		})
 	}
 
 	// sign the renter inputs
@@ -728,7 +714,7 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 	renterPolicyResp := rhp4.RPCRenewContractSecondResponse{
 		RenterRenewalSignature: renewal.RenterSignature,
 	}
-	for _, si := range renewalTxn.SiacoinInputs[:len(renterSiacoinElements)] {
+	for _, si := range renewalTxn.SiacoinInputs[:len(req.RenterInputs)] {
 		renterPolicyResp.RenterSatisfiedPolicies = append(renterPolicyResp.RenterSatisfiedPolicies, si.SatisfiedPolicy)
 	}
 	if err := rhp4.WriteResponse(s, &renterPolicyResp); err != nil {
