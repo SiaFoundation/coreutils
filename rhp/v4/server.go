@@ -55,7 +55,6 @@ type (
 		// RecommendedFee returns the recommended fee per weight
 		RecommendedFee() types.Currency
 
-		UpdateStateElement(se *types.StateElement, from, to types.ChainIndex) error
 		// UpdateV2TransactionSet updates the basis of a transaction set from "from" to "to".
 		// If from and to are equal, the transaction set is returned as-is.
 		// Any transactions that were confirmed are removed from the set.
@@ -729,7 +728,7 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 		return fmt.Errorf("failed to fund transaction: %w", err)
 	}
 
-	// update renter inputs to reflect our chain basis
+	// update renter inputs to reflect our chain state
 	if basis != req.Basis {
 		hostInputs := renewalTxn.SiacoinInputs[len(renewalTxn.SiacoinInputs)-len(req.RenterInputs):]
 		renewalTxn.SiacoinInputs = renewalTxn.SiacoinInputs[:len(renewalTxn.SiacoinInputs)-len(req.RenterInputs)]
@@ -742,9 +741,16 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	}
 
 	if elementBasis != basis {
-		if err := s.chain.UpdateStateElement(&fce.StateElement, elementBasis, basis); err != nil {
+		tempTxn := types.V2Transaction{
+			FileContractResolutions: []types.V2FileContractResolution{
+				{Parent: fce, Resolution: &renewal},
+			},
+		}
+		updated, err := s.chain.UpdateV2TransactionSet([]types.V2Transaction{tempTxn}, elementBasis, basis)
+		if err != nil {
 			return fmt.Errorf("failed to update contract element: %w", err)
 		}
+		fce = updated[0].FileContractResolutions[0].Parent
 	}
 	renewalTxn.FileContractResolutions = []types.V2FileContractResolution{
 		{Parent: fce, Resolution: &renewal},

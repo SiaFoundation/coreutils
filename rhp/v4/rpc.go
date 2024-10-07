@@ -653,7 +653,6 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 		Prices:   p,
 		Renewal:  params,
 		MinerFee: renewalTxn.MinerFee,
-		Basis:    cs.Index,
 	}
 
 	basis, toSign, err := signer.FundV2Transaction(&renewalTxn, renterCost)

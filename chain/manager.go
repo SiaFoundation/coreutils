@@ -1041,103 +1041,7 @@ func (m *Manager) markBadTxnSet(setID types.Hash256, err error) error {
 	return err
 }
 
-// AddPoolTransactions validates a transaction set and adds it to the txpool. If
-// any transaction references an element (SiacoinOutput, SiafundOutput, or
-// FileContract) not present in the blockchain, that element must be created by
-// a previous transaction in the set.
-//
-// If any transaction in the set is invalid, the entire set is rejected and none
-// of the transactions are added to the pool. If all of the transactions are
-// already known to the pool, AddPoolTransactions returns true.
-func (m *Manager) AddPoolTransactions(txns []types.Transaction) (known bool, err error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.revalidatePool()
-
-	setID, known := m.checkDupTxnSet(txns, nil)
-	if known {
-		return true, m.txpool.invalidTxnSets[setID]
-	}
-
-	// validate as a standalone set
-	ms := consensus.NewMidState(m.tipState)
-	for _, txn := range txns {
-		ts := m.store.SupplementTipTransaction(txn)
-		if err := consensus.ValidateTransaction(ms, txn, ts); err != nil {
-			return false, m.markBadTxnSet(setID, fmt.Errorf("transaction %v is invalid: %w", txn.ID(), err))
-		}
-		ms.ApplyTransaction(txn, ts)
-	}
-
-	for _, txn := range txns {
-		txid := txn.ID()
-		if _, ok := m.txpool.indices[txid]; ok {
-			continue // skip transactions already in pool
-		}
-		m.txpool.ms.ApplyTransaction(txn, m.store.SupplementTipTransaction(txn))
-		m.txpool.indices[txid] = len(m.txpool.txns)
-		m.txpool.txns = append(m.txpool.txns, txn)
-		m.txpool.weight += m.tipState.TransactionWeight(txn)
-	}
-
-	// invalidate caches
-	m.txpool.medianFee = nil
-	m.txpool.parentMap = nil
-	return
-}
-
-// UpdateStateElement updates the basis of a state element from "from" to "to".
-// If from and to are equal, the state element is not modified.
-func (m *Manager) UpdateStateElement(se *types.StateElement, from, to types.ChainIndex) error {
-	if from == to {
-		return nil
-	}
-
-	revert, apply, err := m.reorgPath(from, to)
-	if err != nil {
-		return fmt.Errorf("couldn't determine reorg path from %v to %v: %w", from, to, err)
-	} else if len(revert)+len(apply) > 144 {
-		return fmt.Errorf("reorg path from %v to %v is too long (-%v +%v)", from, to, len(revert), len(apply))
-	}
-	for _, index := range revert {
-		b, _, cs, ok := blockAndParent(m.store, index.ID)
-		if !ok {
-			return fmt.Errorf("missing reverted block at index %v", index)
-		} else if b.V2 == nil {
-			return fmt.Errorf("reorg path from %v to %v contains a non-v2 block (%v)", from, to, index)
-		}
-		// NOTE: since we are post-hardfork, we don't need a v1 supplement
-		cru := consensus.RevertBlock(cs, b, consensus.V1BlockSupplement{})
-		cru.UpdateElementProof(se)
-	}
-
-	for _, index := range apply {
-		b, _, cs, ok := blockAndParent(m.store, index.ID)
-		if !ok {
-			return fmt.Errorf("missing applied block at index %v", index)
-		} else if b.V2 == nil {
-			return fmt.Errorf("reorg path from %v to %v contains a non-v2 block (%v)", from, to, index)
-		}
-		// NOTE: since we are post-hardfork, we don't need a v1 supplement or ancestorTimestamp
-		_, cau := consensus.ApplyBlock(cs, b, consensus.V1BlockSupplement{}, time.Time{})
-		cau.UpdateElementProof(se)
-	}
-	return nil
-}
-
-// UpdateV2TransactionSet updates the basis of a transaction set from "from" to "to".
-// If from and to are equal, the transaction set is returned as-is.
-// Any transactions that were confirmed are removed from the set.
-// Any ephemeral state elements that were created by an update are updated.
-//
-// If it is undesirable to modify the transaction set, deep-copy it
-// before calling this method.
-func (m *Manager) UpdateV2TransactionSet(txns []types.V2Transaction, from, to types.ChainIndex) ([]types.V2Transaction, error) {
-	if from == to {
-		return txns, nil
-	}
-
-	// bring txns up-to-date
+func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to types.ChainIndex) ([]types.V2Transaction, error) {
 	revert, apply, err := m.reorgPath(from, to)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't determine reorg path from %v to %v: %w", from, to, err)
@@ -1228,6 +1132,68 @@ func (m *Manager) UpdateV2TransactionSet(txns []types.V2Transaction, from, to ty
 	return txns, nil
 }
 
+// AddPoolTransactions validates a transaction set and adds it to the txpool. If
+// any transaction references an element (SiacoinOutput, SiafundOutput, or
+// FileContract) not present in the blockchain, that element must be created by
+// a previous transaction in the set.
+//
+// If any transaction in the set is invalid, the entire set is rejected and none
+// of the transactions are added to the pool. If all of the transactions are
+// already known to the pool, AddPoolTransactions returns true.
+func (m *Manager) AddPoolTransactions(txns []types.Transaction) (known bool, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.revalidatePool()
+
+	setID, known := m.checkDupTxnSet(txns, nil)
+	if known {
+		return true, m.txpool.invalidTxnSets[setID]
+	}
+
+	// validate as a standalone set
+	ms := consensus.NewMidState(m.tipState)
+	for _, txn := range txns {
+		ts := m.store.SupplementTipTransaction(txn)
+		if err := consensus.ValidateTransaction(ms, txn, ts); err != nil {
+			return false, m.markBadTxnSet(setID, fmt.Errorf("transaction %v is invalid: %w", txn.ID(), err))
+		}
+		ms.ApplyTransaction(txn, ts)
+	}
+
+	for _, txn := range txns {
+		txid := txn.ID()
+		if _, ok := m.txpool.indices[txid]; ok {
+			continue // skip transactions already in pool
+		}
+		m.txpool.ms.ApplyTransaction(txn, m.store.SupplementTipTransaction(txn))
+		m.txpool.indices[txid] = len(m.txpool.txns)
+		m.txpool.txns = append(m.txpool.txns, txn)
+		m.txpool.weight += m.tipState.TransactionWeight(txn)
+	}
+
+	// invalidate caches
+	m.txpool.medianFee = nil
+	m.txpool.parentMap = nil
+	return
+}
+
+// UpdateV2TransactionSet updates the basis of a transaction set from "from" to "to".
+// If from and to are equal, the transaction set is returned as-is.
+// Any transactions that were confirmed are removed from the set.
+// Any ephemeral state elements that were created by an update are updated.
+//
+// If it is undesirable to modify the transaction set, deep-copy it
+// before calling this method.
+func (m *Manager) UpdateV2TransactionSet(txns []types.V2Transaction, from, to types.ChainIndex) ([]types.V2Transaction, error) {
+	if from == to {
+		return txns, nil
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.updateV2TransactionProofs(txns, from, to)
+}
+
 // AddV2PoolTransactions validates a transaction set and adds it to the txpool.
 // If any transaction references an element (SiacoinOutput, SiafundOutput, or
 // FileContract) not present in the blockchain, that element must be created by
@@ -1259,7 +1225,7 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 	}
 
 	// update the transaction set to the current tip
-	txns, err := m.UpdateV2TransactionSet(txns, basis, m.tipState.Index)
+	txns, err := m.updateV2TransactionProofs(txns, basis, m.tipState.Index)
 	if err != nil {
 		return false, m.markBadTxnSet(setID, fmt.Errorf("failed to update set basis: %w", err))
 	} else if len(txns) == 0 {
