@@ -657,6 +657,170 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	})
 }
 
+func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
+	var req rhp4.RPCRefreshContractRequest
+	if err := rhp4.ReadRequest(stream, &req); err != nil {
+		return errorDecodingError("failed to read request: %v", err)
+	}
+
+	// validate prices
+	prices := req.Prices
+	if err := prices.Validate(s.hostKey.PublicKey()); err != nil {
+		return fmt.Errorf("price table invalid: %w", err)
+	}
+
+	// lock the existing contract
+	state, unlock, err := s.lockContractForRevision(req.Refresh.ContractID)
+	if err != nil {
+		return fmt.Errorf("failed to lock contract %q: %w", req.Refresh.ContractID, err)
+	}
+	defer unlock()
+
+	// validate challenge signature
+	existing := state.Revision
+	if !req.ValidChallengeSignature(existing) {
+		return errorBadRequest("invalid challenge signature")
+	}
+
+	// validate the request
+	settings := s.settings.RHP4Settings()
+	if err := req.Validate(s.hostKey.PublicKey(), state.Revision.ExpirationHeight, settings.MaxCollateral); err != nil {
+		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
+	}
+
+	cs := s.chain.TipState()
+	renewal := rhp4.RefreshContract(existing, prices, req.Refresh)
+	renterCost, hostCost := rhp4.RefreshCost(cs, prices, renewal, req.MinerFee)
+	renewalTxn := types.V2Transaction{
+		MinerFee: req.MinerFee,
+	}
+
+	// add the renter inputs
+	var renterInputSum types.Currency
+	for _, si := range req.RenterInputs {
+		renewalTxn.SiacoinInputs = append(renewalTxn.SiacoinInputs, types.V2SiacoinInput{
+			Parent: si,
+		})
+		renterInputSum = renterInputSum.Add(si.SiacoinOutput.Value)
+	}
+
+	if n := renterInputSum.Cmp(renterCost); n < 0 {
+		return errorBadRequest("expected renter to fund %v, got %v", renterInputSum, renterCost)
+	} else if n > 0 {
+		// if the renter added too much, add a change output
+		renewalTxn.SiacoinOutputs = append(renewalTxn.SiacoinOutputs, types.SiacoinOutput{
+			Address: renewal.NewContract.RenterOutput.Address,
+			Value:   renterInputSum.Sub(renterCost),
+		})
+	}
+
+	elementBasis, fce, err := s.contractor.ContractElement(req.Refresh.ContractID)
+	if err != nil {
+		return fmt.Errorf("failed to get contract element: %w", err)
+	}
+
+	basis, toSign, err := s.wallet.FundV2Transaction(&renewalTxn, hostCost, true)
+	if errors.Is(err, wallet.ErrNotEnoughFunds) {
+		return rhp4.ErrHostFundError
+	} else if err != nil {
+		return fmt.Errorf("failed to fund transaction: %w", err)
+	}
+
+	// update renter inputs to reflect our chain state
+	if basis != req.Basis {
+		hostInputs := renewalTxn.SiacoinInputs[len(renewalTxn.SiacoinInputs)-len(req.RenterInputs):]
+		renewalTxn.SiacoinInputs = renewalTxn.SiacoinInputs[:len(renewalTxn.SiacoinInputs)-len(req.RenterInputs)]
+		updated, err := s.chain.UpdateV2TransactionSet([]types.V2Transaction{renewalTxn}, req.Basis, basis)
+		if err != nil {
+			return errorBadRequest("failed to update renter inputs from %q to %q: %v", req.Basis, basis, err)
+		}
+		renewalTxn = updated[0]
+		renewalTxn.SiacoinInputs = append(renewalTxn.SiacoinInputs, hostInputs...)
+	}
+
+	if elementBasis != basis {
+		tempTxn := types.V2Transaction{
+			FileContractResolutions: []types.V2FileContractResolution{
+				{Parent: fce, Resolution: &renewal},
+			},
+		}
+		updated, err := s.chain.UpdateV2TransactionSet([]types.V2Transaction{tempTxn}, elementBasis, basis)
+		if err != nil {
+			return fmt.Errorf("failed to update contract element: %w", err)
+		}
+		fce = updated[0].FileContractResolutions[0].Parent
+	}
+	renewalTxn.FileContractResolutions = []types.V2FileContractResolution{
+		{Parent: fce, Resolution: &renewal},
+	}
+	s.wallet.SignV2Inputs(&renewalTxn, toSign)
+	// send the host inputs to the renter
+	hostInputsResp := rhp4.RPCRefreshContractResponse{
+		HostInputs: renewalTxn.SiacoinInputs[len(req.RenterInputs):],
+	}
+	if err := rhp4.WriteResponse(stream, &hostInputsResp); err != nil {
+		return fmt.Errorf("failed to send host inputs: %w", err)
+	}
+
+	// read the renter's signatures
+	var renterSigResp rhp4.RPCRefreshContractSecondResponse
+	if err := rhp4.ReadResponse(stream, &renterSigResp); err != nil {
+		return errorDecodingError("failed to read renter signatures: %v", err)
+	} else if len(renterSigResp.RenterSatisfiedPolicies) != len(req.RenterInputs) {
+		return errorBadRequest("expected %v satisfied policies, got %v", len(req.RenterInputs), len(renterSigResp.RenterSatisfiedPolicies))
+	}
+
+	// validate the renter's signature
+	renewalSigHash := cs.RenewalSigHash(renewal)
+	if !existing.RenterPublicKey.VerifyHash(renewalSigHash, renterSigResp.RenterRenewalSignature) {
+		return rhp4.ErrInvalidSignature
+	}
+	renewal.RenterSignature = renterSigResp.RenterRenewalSignature
+
+	// apply the renter's signatures
+	for i, policy := range renterSigResp.RenterSatisfiedPolicies {
+		renewalTxn.SiacoinInputs[i].SatisfiedPolicy = policy
+	}
+	renewal.HostSignature = s.hostKey.SignHash(renewalSigHash)
+
+	// add the renter's parents to our transaction pool to ensure they are valid
+	// and update the proofs.
+	if len(req.RenterParents) > 0 {
+		if _, err := s.chain.AddV2PoolTransactions(req.Basis, req.RenterParents); err != nil {
+			return errorBadRequest("failed to add formation parents to transaction pool: %v", err)
+		}
+	}
+
+	// get the full updated transaction set for the renewal transaction
+	basis, renewalSet, err := s.chain.V2TransactionSet(basis, renewalTxn)
+	if err != nil {
+		return fmt.Errorf("failed to get transaction set: %w", err)
+	} else if _, err = s.chain.AddV2PoolTransactions(basis, renewalSet); err != nil {
+		return errorBadRequest("failed to broadcast renewal set: %v", err)
+	}
+	// broadcast the transaction set
+	s.syncer.BroadcastV2TransactionSet(basis, renewalSet)
+
+	// add the contract to the contractor
+	err = s.contractor.RenewV2Contract(TransactionSet{
+		Transactions: renewalSet,
+		Basis:        basis,
+	}, Usage{
+		RPCRevenue:       prices.ContractPrice,
+		StorageRevenue:   renewal.NewContract.HostOutput.Value.Sub(renewal.NewContract.TotalCollateral).Sub(prices.ContractPrice),
+		RiskedCollateral: renewal.NewContract.TotalCollateral.Sub(renewal.NewContract.MissedHostValue),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to add contract: %w", err)
+	}
+
+	// send the finalized transaction set to the renter
+	return rhp4.WriteResponse(stream, &rhp4.RPCRefreshContractThirdResponse{
+		Basis:          basis,
+		TransactionSet: renewalSet,
+	})
+}
+
 func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	var req rhp4.RPCRenewContractRequest
 	if err := rhp4.ReadRequest(stream, &req); err != nil {
@@ -669,20 +833,20 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 		return fmt.Errorf("price table invalid: %w", err)
 	}
 
-	settings := s.settings.RHP4Settings()
-	tip := s.chain.Tip()
-
-	// validate the request
-	if err := req.Validate(s.hostKey.PublicKey(), tip, settings.MaxCollateral, settings.MaxContractDuration); err != nil {
-		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
-	}
-
 	// lock the existing contract
 	state, unlock, err := s.lockContractForRevision(req.Renewal.ContractID)
 	if err != nil {
 		return fmt.Errorf("failed to lock contract %q: %w", req.Renewal.ContractID, err)
 	}
 	defer unlock()
+
+	settings := s.settings.RHP4Settings()
+	tip := s.chain.Tip()
+
+	// validate the request
+	if err := req.Validate(s.hostKey.PublicKey(), tip, state.Revision.ProofHeight, settings.MaxCollateral, settings.MaxContractDuration); err != nil {
+		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
+	}
 
 	// validate challenge signature
 	existing := state.Revision
@@ -691,7 +855,7 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	}
 
 	cs := s.chain.TipState()
-	renewal := rhp4.NewRenewal(existing, prices, req.Renewal)
+	renewal := rhp4.RenewContract(existing, prices, req.Renewal)
 	renterCost, hostCost := rhp4.RenewalCost(cs, prices, renewal, req.MinerFee)
 	renewalTxn := types.V2Transaction{
 		MinerFee: req.MinerFee,
@@ -863,24 +1027,29 @@ func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 	switch id {
 	case rhp4.RPCSettingsID:
 		err = s.handleRPCSettings(stream)
-	case rhp4.RPCAccountBalanceID:
-		err = s.handleRPCAccountBalance(stream)
+	// contract
 	case rhp4.RPCFormContractID:
 		err = s.handleRPCFormContract(stream)
-	case rhp4.RPCFundAccountsID:
-		err = s.handleRPCFundAccounts(stream)
+	case rhp4.RPCRefreshContractID:
+		err = s.handleRPCRefreshContract(stream)
+	case rhp4.RPCRenewContractID:
+		err = s.handleRPCRenewContract(stream)
 	case rhp4.RPCLatestRevisionID:
 		err = s.handleRPCLatestRevision(stream)
 	case rhp4.RPCModifySectorsID:
 		err = s.handleRPCModifySectors(stream)
+	case rhp4.RPCSectorRootsID:
+		err = s.handleRPCSectorRoots(stream)
+	// account
+	case rhp4.RPCAccountBalanceID:
+		err = s.handleRPCAccountBalance(stream)
+	case rhp4.RPCFundAccountsID:
+		err = s.handleRPCFundAccounts(stream)
+	// sector
 	case rhp4.RPCAppendSectorsID:
 		err = s.handleRPCAppendSectors(stream)
 	case rhp4.RPCReadSectorID:
 		err = s.handleRPCReadSector(stream)
-	case rhp4.RPCRenewContractID:
-		err = s.handleRPCRenewContract(stream)
-	case rhp4.RPCSectorRootsID:
-		err = s.handleRPCSectorRoots(stream)
 	case rhp4.RPCWriteSectorID:
 		err = s.handleRPCWriteSector(stream)
 	case rhp4.RPCVerifySectorID:
