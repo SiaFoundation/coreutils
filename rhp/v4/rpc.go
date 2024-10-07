@@ -659,7 +659,6 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 	if err != nil {
 		return RPCRenewContractResult{}, fmt.Errorf("failed to fund transaction: %w", err)
 	}
-	signer.SignV2Inputs(&renewalTxn, toSign)
 
 	req.Basis, req.RenterParents, err = tp.V2TransactionSet(basis, renewalTxn)
 	if err != nil {
@@ -704,7 +703,7 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 	}
 
 	// sign the renter inputs
-	signer.SignV2Inputs(&renewalTxn, []int{0})
+	signer.SignV2Inputs(&renewalTxn, toSign)
 	// sign the renewal
 	renewalSigHash := cs.RenewalSigHash(renewal)
 	renewal.RenterSignature = signer.SignHash(renewalSigHash)
