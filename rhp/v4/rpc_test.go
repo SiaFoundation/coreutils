@@ -376,10 +376,11 @@ func TestRPCRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	fundAndSign := &fundAndSign{w, renterKey}
 
-	t.Run("no allowance or collateral", func(t *testing.T) {
-		fundAndSign := &fundAndSign{w, renterKey}
-		renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
+	formContractFundAccount := func(t *testing.T, renterAllowance, hostCollateral, accountBalance types.Currency) rhp4.ContractRevision {
+		t.Helper()
+
 		result, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 			RenterPublicKey: renterKey.PublicKey(),
 			RenterAddress:   w.Address(),
@@ -405,16 +406,20 @@ func TestRPCRefresh(t *testing.T) {
 		// fund an account to transfer funds to the host
 		cs := cm.TipState()
 		account := proto4.Account(renterKey.PublicKey())
-		accountFundAmount := types.Siacoins(25)
 		fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
-			{Account: account, Amount: accountFundAmount},
+			{Account: account, Amount: accountBalance},
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		revision.Revision = fundResult.Revision
+		return revision
+	}
 
-		// renew the contract
+	t.Run("no allowance or collateral", func(t *testing.T) {
+		revision := formContractFundAccount(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+
+		// refresh the contract
 		_, err = rhp4.RPCRefreshContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRefreshContractParams{
 			ContractID: revision.ID,
 			Allowance:  types.ZeroCurrency,
@@ -422,49 +427,14 @@ func TestRPCRefresh(t *testing.T) {
 		})
 		if err == nil {
 			t.Fatal(err)
-		} else if !strings.Contains(err.Error(), "allowance is zero") {
+		} else if !strings.Contains(err.Error(), "allowance must be greater than zero") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("valid refresh", func(t *testing.T) {
-		fundAndSign := &fundAndSign{w, renterKey}
-		renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-		result, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
-			RenterPublicKey: renterKey.PublicKey(),
-			RenterAddress:   w.Address(),
-			Allowance:       renterAllowance,
-			Collateral:      hostCollateral,
-			ProofHeight:     cm.Tip().Height + 50,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		revision := result.Contract
-
-		// verify the transaction set is valid
-		if known, err := cm.AddV2PoolTransactions(result.FormationSet.Basis, result.FormationSet.Transactions); err != nil {
-			t.Fatal(err)
-		} else if !known {
-			t.Fatal("expected transaction set to be known")
-		}
-
-		// mine a few blocks to confirm the contract
-		mineAndSync(t, cm, types.VoidAddress, 10, w, c)
-
-		// fund an account to transfer funds to the host
-		cs := cm.TipState()
-		account := proto4.Account(renterKey.PublicKey())
-		accountFundAmount := types.Siacoins(25)
-		fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
-			{Account: account, Amount: accountFundAmount},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		revision.Revision = fundResult.Revision
-
-		// renew the contract
+		revision := formContractFundAccount(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+		// refresh the contract
 		refreshResult, err := rhp4.RPCRefreshContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRefreshContractParams{
 			ContractID: revision.ID,
 			Allowance:  types.Siacoins(10),
@@ -519,10 +489,11 @@ func TestRPCRenew(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	fundAndSign := &fundAndSign{w, renterKey}
 
-	t.Run("same duration", func(t *testing.T) {
-		fundAndSign := &fundAndSign{w, renterKey}
-		renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
+	formContractFundAccount := func(t *testing.T, renterAllowance, hostCollateral, accountBalance types.Currency) rhp4.ContractRevision {
+		t.Helper()
+
 		result, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 			RenterPublicKey: renterKey.PublicKey(),
 			RenterAddress:   w.Address(),
@@ -548,14 +519,18 @@ func TestRPCRenew(t *testing.T) {
 		// fund an account to transfer funds to the host
 		cs := cm.TipState()
 		account := proto4.Account(renterKey.PublicKey())
-		accountFundAmount := types.Siacoins(25)
 		fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
-			{Account: account, Amount: accountFundAmount},
+			{Account: account, Amount: accountBalance},
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		revision.Revision = fundResult.Revision
+		return revision
+	}
+
+	t.Run("same duration", func(t *testing.T) {
+		revision := formContractFundAccount(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
 
 		// renew the contract
 		_, err = rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
@@ -572,41 +547,7 @@ func TestRPCRenew(t *testing.T) {
 	})
 
 	t.Run("partial rollover", func(t *testing.T) {
-		fundAndSign := &fundAndSign{w, renterKey}
-		renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-		result, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
-			RenterPublicKey: renterKey.PublicKey(),
-			RenterAddress:   w.Address(),
-			Allowance:       renterAllowance,
-			Collateral:      hostCollateral,
-			ProofHeight:     cm.Tip().Height + 50,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		revision := result.Contract
-
-		// verify the transaction set is valid
-		if known, err := cm.AddV2PoolTransactions(result.FormationSet.Basis, result.FormationSet.Transactions); err != nil {
-			t.Fatal(err)
-		} else if !known {
-			t.Fatal("expected transaction set to be known")
-		}
-
-		// mine a few blocks to confirm the contract
-		mineAndSync(t, cm, types.VoidAddress, 10, w, c)
-
-		// fund an account to transfer funds to the host
-		cs := cm.TipState()
-		account := proto4.Account(renterKey.PublicKey())
-		accountFundAmount := types.Siacoins(25)
-		fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
-			{Account: account, Amount: accountFundAmount},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		revision.Revision = fundResult.Revision
+		revision := formContractFundAccount(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
 
 		// renew the contract
 		renewResult, err := rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
@@ -628,41 +569,7 @@ func TestRPCRenew(t *testing.T) {
 	})
 
 	t.Run("full rollover", func(t *testing.T) {
-		fundAndSign := &fundAndSign{w, renterKey}
-		renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-		formResult, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
-			RenterPublicKey: renterKey.PublicKey(),
-			RenterAddress:   w.Address(),
-			Allowance:       renterAllowance,
-			Collateral:      hostCollateral,
-			ProofHeight:     cm.Tip().Height + 50,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		revision := formResult.Contract
-
-		// verify the transaction set is valid
-		if known, err := cm.AddV2PoolTransactions(formResult.FormationSet.Basis, formResult.FormationSet.Transactions); err != nil {
-			t.Fatal(err)
-		} else if !known {
-			t.Fatal("expected transaction set to be known")
-		}
-
-		// mine a few blocks to confirm the contract
-		mineAndSync(t, cm, types.VoidAddress, 10, w, c)
-
-		// fund an account to transfer funds to the host
-		cs := cm.TipState()
-		account := proto4.Account(renterKey.PublicKey())
-		accountFundAmount := types.Siacoins(25)
-		fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
-			{Account: account, Amount: accountFundAmount},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		revision.Revision = fundResult.Revision
+		revision := formContractFundAccount(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
 
 		// renew the contract
 		renewResult, err := rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
@@ -684,41 +591,7 @@ func TestRPCRenew(t *testing.T) {
 	})
 
 	t.Run("no rollover", func(t *testing.T) {
-		fundAndSign := &fundAndSign{w, renterKey}
-		renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-		formResult, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
-			RenterPublicKey: renterKey.PublicKey(),
-			RenterAddress:   w.Address(),
-			Allowance:       renterAllowance,
-			Collateral:      hostCollateral,
-			ProofHeight:     cm.Tip().Height + 50,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		revision := formResult.Contract
-
-		// verify the transaction set is valid
-		if known, err := cm.AddV2PoolTransactions(formResult.FormationSet.Basis, formResult.FormationSet.Transactions); err != nil {
-			t.Fatal(err)
-		} else if !known {
-			t.Fatal("expected transaction set to be known")
-		}
-
-		// mine a few blocks to confirm the contract
-		mineAndSync(t, cm, types.VoidAddress, 10, w, c)
-
-		// fund an account to transfer funds to the host
-		cs := cm.TipState()
-		account := proto4.Account(renterKey.PublicKey())
-		accountFundAmount := types.Siacoins(100)
-		fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
-			{Account: account, Amount: accountFundAmount},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		revision.Revision = fundResult.Revision
+		revision := formContractFundAccount(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
 
 		// renew the contract
 		renewResult, err := rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
