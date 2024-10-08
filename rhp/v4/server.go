@@ -185,6 +185,12 @@ func (s *Server) handleRPCReadSector(stream net.Conn) error {
 	}
 	prices, token := req.Prices, req.Token
 
+	if exists, err := s.sectors.HasSector(req.Root); err != nil {
+		return fmt.Errorf("failed to check sector: %w", err)
+	} else if !exists {
+		return rhp4.ErrSectorNotFound
+	}
+
 	if err := s.contractor.DebitAccount(token.Account, prices.RPCReadSectorCost(req.Length)); err != nil {
 		return fmt.Errorf("failed to debit account: %w", err)
 	}

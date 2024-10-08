@@ -233,6 +233,8 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 	length, err := rl.Len()
 	if err != nil {
 		return RPCWriteSectorResult{}, fmt.Errorf("failed to get length: %w", err)
+	} else if length == 0 {
+		return RPCWriteSectorResult{}, errors.New("cannot write zero-length sector")
 	}
 
 	req := rhp4.RPCWriteSectorStreamingRequest{

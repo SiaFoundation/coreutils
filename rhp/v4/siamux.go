@@ -18,9 +18,9 @@ const (
 
 // siaMuxClientTransport is a TransportClient that uses the SiaMux multiplexer.
 type siaMuxClientTransport struct {
-	m        *mux.Mux
-	theirKey types.PublicKey
-	close    chan struct{}
+	m       *mux.Mux
+	peerKey types.PublicKey
+	close   chan struct{}
 }
 
 // Close implements the [TransportClient] interface.
@@ -38,7 +38,7 @@ func (t *siaMuxClientTransport) FrameSize() int {
 }
 
 func (t *siaMuxClientTransport) PeerKey() types.PublicKey {
-	return t.theirKey
+	return t.peerKey
 }
 
 // DialStream implements the [TransportClient] interface. The stream lifetime is
@@ -56,19 +56,19 @@ func (t *siaMuxClientTransport) DialStream(ctx context.Context) net.Conn {
 }
 
 // DialSiaMux creates a new TransportClient using the SiaMux multiplexer.
-func DialSiaMux(ctx context.Context, addr string, theirKey types.PublicKey) (TransportClient, error) {
+func DialSiaMux(ctx context.Context, addr string, peerKey types.PublicKey) (TransportClient, error) {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %q: %w", addr, err)
 	}
 
-	m, err := mux.Dial(conn, theirKey[:])
+	m, err := mux.Dial(conn, peerKey[:])
 	if err != nil {
 		return nil, fmt.Errorf("failed to establish siamux connection: %w", err)
 	}
 	return &siaMuxClientTransport{
-		m:        m,
-		theirKey: theirKey,
-		close:    make(chan struct{}),
+		m:       m,
+		peerKey: peerKey,
+		close:   make(chan struct{}),
 	}, nil
 }
