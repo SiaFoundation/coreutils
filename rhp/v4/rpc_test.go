@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -339,15 +340,13 @@ func TestFormContractBasis(t *testing.T) {
 	}
 }
 
-func TestRenewContractPartialRollover(t *testing.T) {
+func TestRPCRefresh(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
-
 	cm, s, w := startTestNode(t, n, genesis, log)
-
-	// fund the wallet with two UTXOs
-	mineAndSync(t, cm, w.Address(), 146, w)
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), 150, w)
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	sr.Update(proto4.HostSettings{
@@ -377,71 +376,90 @@ func TestRenewContractPartialRollover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	fundAndSign := &fundAndSign{w, renterKey}
-	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	result, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
-		RenterPublicKey: renterKey.PublicKey(),
-		RenterAddress:   w.Address(),
-		Allowance:       renterAllowance,
-		Collateral:      hostCollateral,
-		ProofHeight:     cm.Tip().Height + 50,
+
+	formContractFundAccount := func(t *testing.T, renterAllowance, hostCollateral, accountBalance types.Currency) rhp4.ContractRevision {
+		t.Helper()
+
+		result, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+			RenterPublicKey: renterKey.PublicKey(),
+			RenterAddress:   w.Address(),
+			Allowance:       renterAllowance,
+			Collateral:      hostCollateral,
+			ProofHeight:     cm.Tip().Height + 50,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		revision := result.Contract
+
+		// verify the transaction set is valid
+		if known, err := cm.AddV2PoolTransactions(result.FormationSet.Basis, result.FormationSet.Transactions); err != nil {
+			t.Fatal(err)
+		} else if !known {
+			t.Fatal("expected transaction set to be known")
+		}
+
+		// mine a few blocks to confirm the contract
+		mineAndSync(t, cm, types.VoidAddress, 10, w, c)
+
+		// fund an account to transfer funds to the host
+		cs := cm.TipState()
+		account := proto4.Account(renterKey.PublicKey())
+		fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
+			{Account: account, Amount: accountBalance},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		revision.Revision = fundResult.Revision
+		return revision
+	}
+
+	t.Run("no allowance or collateral", func(t *testing.T) {
+		revision := formContractFundAccount(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+
+		// refresh the contract
+		_, err = rhp4.RPCRefreshContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRefreshContractParams{
+			ContractID: revision.ID,
+			Allowance:  types.ZeroCurrency,
+			Collateral: types.ZeroCurrency,
+		})
+		if err == nil {
+			t.Fatal(err)
+		} else if !strings.Contains(err.Error(), "allowance must be greater than zero") {
+			t.Fatalf("unexpected error: %v", err)
+		}
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	revision := result.Contract
 
-	// verify the transaction set is valid
-	if known, err := cm.AddV2PoolTransactions(result.FormationSet.Basis, result.FormationSet.Transactions); err != nil {
-		t.Fatal(err)
-	} else if !known {
-		t.Fatal("expected transaction set to be known")
-	}
+	t.Run("valid refresh", func(t *testing.T) {
+		revision := formContractFundAccount(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+		// refresh the contract
+		refreshResult, err := rhp4.RPCRefreshContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRefreshContractParams{
+			ContractID: revision.ID,
+			Allowance:  types.Siacoins(10),
+			Collateral: types.Siacoins(20),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	// mine a few blocks to confirm the contract
-	mineAndSync(t, cm, types.VoidAddress, 10, w, c)
-
-	// fund an account to transfer funds to the host
-	cs := cm.TipState()
-	account := proto4.Account(renterKey.PublicKey())
-	accountFundAmount := types.Siacoins(25)
-	fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
-		{Account: account, Amount: accountFundAmount},
+		// verify the transaction set is valid
+		if known, err := cm.AddV2PoolTransactions(refreshResult.RenewalSet.Basis, refreshResult.RenewalSet.Transactions); err != nil {
+			t.Fatal(err)
+		} else if !known {
+			t.Fatal("expected transaction set to be known")
+		}
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	revision.Revision = fundResult.Revision
-
-	// renew the contract
-	renewResult, err := rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
-		ContractID:  revision.ID,
-		Allowance:   types.Siacoins(150),
-		Collateral:  types.Siacoins(300),
-		ProofHeight: revision.Revision.ProofHeight + 10,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// verify the transaction set is valid
-	if known, err := cm.AddV2PoolTransactions(renewResult.RenewalSet.Basis, renewResult.RenewalSet.Transactions); err != nil {
-		t.Fatal(err)
-	} else if !known {
-		t.Fatal("expected transaction set to be known")
-	}
 }
 
-func TestRenewContractFullRollover(t *testing.T) {
+func TestRPCRenew(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
-
 	cm, s, w := startTestNode(t, n, genesis, log)
-
-	// fund the wallet with two UTXOs
-	mineAndSync(t, cm, w.Address(), 146, w)
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), 150, w)
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	sr.Update(proto4.HostSettings{
@@ -471,154 +489,128 @@ func TestRenewContractFullRollover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	fundAndSign := &fundAndSign{w, renterKey}
-	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	formResult, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
-		RenterPublicKey: renterKey.PublicKey(),
-		RenterAddress:   w.Address(),
-		Allowance:       renterAllowance,
-		Collateral:      hostCollateral,
-		ProofHeight:     cm.Tip().Height + 50,
+
+	formContractFundAccount := func(t *testing.T, renterAllowance, hostCollateral, accountBalance types.Currency) rhp4.ContractRevision {
+		t.Helper()
+
+		result, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+			RenterPublicKey: renterKey.PublicKey(),
+			RenterAddress:   w.Address(),
+			Allowance:       renterAllowance,
+			Collateral:      hostCollateral,
+			ProofHeight:     cm.Tip().Height + 50,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		revision := result.Contract
+
+		// verify the transaction set is valid
+		if known, err := cm.AddV2PoolTransactions(result.FormationSet.Basis, result.FormationSet.Transactions); err != nil {
+			t.Fatal(err)
+		} else if !known {
+			t.Fatal("expected transaction set to be known")
+		}
+
+		// mine a few blocks to confirm the contract
+		mineAndSync(t, cm, types.VoidAddress, 10, w, c)
+
+		// fund an account to transfer funds to the host
+		cs := cm.TipState()
+		account := proto4.Account(renterKey.PublicKey())
+		fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
+			{Account: account, Amount: accountBalance},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		revision.Revision = fundResult.Revision
+		return revision
+	}
+
+	t.Run("same duration", func(t *testing.T) {
+		revision := formContractFundAccount(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+
+		// renew the contract
+		_, err = rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
+			ContractID:  revision.ID,
+			Allowance:   types.Siacoins(150),
+			Collateral:  types.Siacoins(300),
+			ProofHeight: revision.Revision.ProofHeight,
+		})
+		if err == nil {
+			t.Fatal(err)
+		} else if !strings.Contains(err.Error(), "renewal proof height must be greater than existing proof height") {
+			t.Fatalf("unexpected error: %v", err)
+		}
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	revision := formResult.Contract
 
-	// verify the transaction set is valid
-	if known, err := cm.AddV2PoolTransactions(formResult.FormationSet.Basis, formResult.FormationSet.Transactions); err != nil {
-		t.Fatal(err)
-	} else if !known {
-		t.Fatal("expected transaction set to be known")
-	}
+	t.Run("partial rollover", func(t *testing.T) {
+		revision := formContractFundAccount(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
 
-	// mine a few blocks to confirm the contract
-	mineAndSync(t, cm, types.VoidAddress, 10, w, c)
+		// renew the contract
+		renewResult, err := rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
+			ContractID:  revision.ID,
+			Allowance:   types.Siacoins(150),
+			Collateral:  types.Siacoins(300),
+			ProofHeight: revision.Revision.ProofHeight + 10,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	// fund an account to transfer funds to the host
-	cs := cm.TipState()
-	account := proto4.Account(renterKey.PublicKey())
-	accountFundAmount := types.Siacoins(25)
-	fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
-		{Account: account, Amount: accountFundAmount},
+		// verify the transaction set is valid
+		if known, err := cm.AddV2PoolTransactions(renewResult.RenewalSet.Basis, renewResult.RenewalSet.Transactions); err != nil {
+			t.Fatal(err)
+		} else if !known {
+			t.Fatal("expected transaction set to be known")
+		}
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	revision.Revision = fundResult.Revision
 
-	// renew the contract
-	renewResult, err := rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
-		ContractID:  revision.ID,
-		Allowance:   types.Siacoins(50),
-		Collateral:  types.Siacoins(100),
-		ProofHeight: revision.Revision.ProofHeight + 10,
+	t.Run("full rollover", func(t *testing.T) {
+		revision := formContractFundAccount(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+
+		// renew the contract
+		renewResult, err := rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
+			ContractID:  revision.ID,
+			Allowance:   types.Siacoins(50),
+			Collateral:  types.Siacoins(100),
+			ProofHeight: revision.Revision.ProofHeight + 10,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// verify the transaction set is valid
+		if known, err := cm.AddV2PoolTransactions(renewResult.RenewalSet.Basis, renewResult.RenewalSet.Transactions); err != nil {
+			t.Fatal(err)
+		} else if !known {
+			t.Fatal("expected transaction set to be known")
+		}
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 
-	// verify the transaction set is valid
-	if known, err := cm.AddV2PoolTransactions(renewResult.RenewalSet.Basis, renewResult.RenewalSet.Transactions); err != nil {
-		t.Fatal(err)
-	} else if !known {
-		t.Fatal("expected transaction set to be known")
-	}
-}
+	t.Run("no rollover", func(t *testing.T) {
+		revision := formContractFundAccount(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
 
-func TestRenewContractNoRollover(t *testing.T) {
-	log := zaptest.NewLogger(t)
-	n, genesis := testutil.V2Network()
-	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
+		// renew the contract
+		renewResult, err := rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
+			ContractID:  revision.ID,
+			Allowance:   types.Siacoins(150),
+			Collateral:  types.Siacoins(300),
+			ProofHeight: revision.Revision.ProofHeight + 10,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	cm, s, w := startTestNode(t, n, genesis, log)
-
-	// fund the wallet with two UTXOs
-	mineAndSync(t, cm, w.Address(), 146, w)
-
-	sr := testutil.NewEphemeralSettingsReporter()
-	sr.Update(proto4.HostSettings{
-		Release:             "test",
-		AcceptingContracts:  true,
-		WalletAddress:       w.Address(),
-		MaxCollateral:       types.Siacoins(10000),
-		MaxContractDuration: 1000,
-		MaxSectorDuration:   3 * 144,
-		MaxModifyActions:    100,
-		RemainingStorage:    100 * proto4.SectorSize,
-		TotalStorage:        100 * proto4.SectorSize,
-		Prices: proto4.HostPrices{
-			ContractPrice: types.Siacoins(1).Div64(5), // 0.2 SC
-			StoragePrice:  types.NewCurrency64(100),   // 100 H / byte / block
-			IngressPrice:  types.NewCurrency64(100),   // 100 H / byte
-			EgressPrice:   types.NewCurrency64(100),   // 100 H / byte
-			Collateral:    types.NewCurrency64(200),
-		},
+		// verify the transaction set is valid
+		if known, err := cm.AddV2PoolTransactions(renewResult.RenewalSet.Basis, renewResult.RenewalSet.Transactions); err != nil {
+			t.Fatal(err)
+		} else if !known {
+			t.Fatal("expected transaction set to be known")
+		}
 	})
-	ss := testutil.NewEphemeralSectorStore()
-	c := testutil.NewEphemeralContractor(cm)
-
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
-
-	settings, err := rhp4.RPCSettings(context.Background(), transport)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	fundAndSign := &fundAndSign{w, renterKey}
-	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	formResult, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
-		RenterPublicKey: renterKey.PublicKey(),
-		RenterAddress:   w.Address(),
-		Allowance:       renterAllowance,
-		Collateral:      hostCollateral,
-		ProofHeight:     cm.Tip().Height + 50,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	revision := formResult.Contract
-
-	// verify the transaction set is valid
-	if known, err := cm.AddV2PoolTransactions(formResult.FormationSet.Basis, formResult.FormationSet.Transactions); err != nil {
-		t.Fatal(err)
-	} else if !known {
-		t.Fatal("expected transaction set to be known")
-	}
-
-	// mine a few blocks to confirm the contract
-	mineAndSync(t, cm, types.VoidAddress, 10, w, c)
-
-	// fund an account to transfer funds to the host
-	cs := cm.TipState()
-	account := proto4.Account(renterKey.PublicKey())
-	accountFundAmount := types.Siacoins(100)
-	fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
-		{Account: account, Amount: accountFundAmount},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	revision.Revision = fundResult.Revision
-
-	// renew the contract
-	renewResult, err := rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
-		ContractID:  revision.ID,
-		Allowance:   types.Siacoins(150),
-		Collateral:  types.Siacoins(300),
-		ProofHeight: revision.Revision.ProofHeight + 10,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// verify the transaction set is valid
-	if known, err := cm.AddV2PoolTransactions(renewResult.RenewalSet.Basis, renewResult.RenewalSet.Transactions); err != nil {
-		t.Fatal(err)
-	} else if !known {
-		t.Fatal("expected transaction set to be known")
-	}
 }
 
 func TestAccounts(t *testing.T) {
