@@ -18,6 +18,8 @@ var (
 	// ErrInvalidRoot is returned when RPCWrite returns a sector root that does
 	// not match the expected value.
 	ErrInvalidRoot = errors.New("invalid root")
+	// ErrInvalidProof is returned when an RPC returns an invalid Merkle proof.
+	ErrInvalidProof = errors.New("invalid proof")
 )
 
 var zeros = zeroReader{}
@@ -216,12 +218,13 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 		return RPCReadSectorResult{}, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	// TODO: verify proof
-	n, err := io.Copy(w, io.LimitReader(s, int64(resp.DataLength)))
-	if err != nil {
+	rpv := rhp4.NewRangeProofVerifier(offset, length)
+	if n, err := rpv.ReadFrom(io.TeeReader(io.LimitReader(s, int64(resp.DataLength)), w)); err != nil {
 		return RPCReadSectorResult{}, fmt.Errorf("failed to read data: %w", err)
 	} else if n != int64(resp.DataLength) {
 		return RPCReadSectorResult{}, io.ErrUnexpectedEOF
+	} else if !rpv.Verify(resp.Proof, root) {
+		return RPCReadSectorResult{}, ErrInvalidProof
 	}
 	return RPCReadSectorResult{
 		Cost: prices.RPCReadSectorCost(length),
@@ -297,9 +300,10 @@ func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPri
 	var resp rhp4.RPCVerifySectorResponse
 	if err := callSingleRoundtripRPC(ctx, t, rhp4.RPCVerifySectorID, &req, &resp); err != nil {
 		return RPCVerifySectorResult{}, err
+	} else if !rhp4.VerifyLeafProof(resp.Proof, resp.Leaf, req.LeafIndex, root) {
+		return RPCVerifySectorResult{}, ErrInvalidProof
 	}
 
-	// TODO: validate proof
 	return RPCVerifySectorResult{
 		Cost: prices.RPCVerifySectorCost(),
 	}, nil
@@ -321,14 +325,15 @@ func RPCModifySectors(ctx context.Context, t TransportClient, cs consensus.State
 		return RPCModifySectorsResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
+	numSectors := (contract.Revision.Filesize + rhp4.SectorSize - 1) / rhp4.SectorSize
 	var resp rhp4.RPCModifySectorsResponse
 	if err := rhp4.ReadResponse(s, &resp); err != nil {
 		return RPCModifySectorsResult{}, fmt.Errorf("failed to read response: %w", err)
+	} else if !rhp4.VerifyModifySectorsProof(actions, numSectors, resp.OldSubtreeHashes, resp.OldLeafHashes, contract.Revision.FileMerkleRoot, resp.NewMerkleRoot) {
+		return RPCModifySectorsResult{}, ErrInvalidProof
 	}
 
-	// TODO: verify proof
-	root := resp.Proof[len(resp.Proof)-1]
-	revision, err := rhp4.ReviseForModifySectors(contract.Revision, prices, root, actions)
+	revision, err := rhp4.ReviseForModifySectors(contract.Revision, prices, resp.NewMerkleRoot, actions)
 	if err != nil {
 		return RPCModifySectorsResult{}, fmt.Errorf("failed to revise contract: %w", err)
 	}
@@ -386,9 +391,12 @@ func RPCAppendSectors(ctx context.Context, t TransportClient, cs consensus.State
 			appended = append(appended, roots[i])
 		}
 	}
+	numSectors := (contract.Revision.Filesize + rhp4.SectorSize - 1) / rhp4.SectorSize
+	if !rhp4.VerifyAppendSectorsProof(numSectors, resp.SubtreeRoots, appended, contract.Revision.FileMerkleRoot, resp.NewMerkleRoot) {
+		return RPCAppendSectorsResult{}, ErrInvalidProof
+	}
 
-	root := resp.Proof[len(resp.Proof)-1]
-	revision, err := rhp4.ReviseForAppendSectors(contract.Revision, prices, root, uint64(len(appended)))
+	revision, err := rhp4.ReviseForAppendSectors(contract.Revision, prices, resp.NewMerkleRoot, uint64(len(appended)))
 	if err != nil {
 		return RPCAppendSectorsResult{}, fmt.Errorf("failed to revise contract: %w", err)
 	}
@@ -491,9 +499,12 @@ func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, 
 		return RPCSectorRootsResult{}, fmt.Errorf("invalid request: %w", err)
 	}
 
+	numSectors := (contract.Revision.Filesize + rhp4.SectorSize - 1) / rhp4.SectorSize
 	var resp rhp4.RPCSectorRootsResponse
 	if err := callSingleRoundtripRPC(ctx, t, rhp4.RPCSectorRootsID, &req, &resp); err != nil {
 		return RPCSectorRootsResult{}, err
+	} else if !rhp4.VerifySectorRootsProof(resp.Proof, resp.Roots, numSectors, offset, offset+length, contract.Revision.FileMerkleRoot) {
+		return RPCSectorRootsResult{}, ErrInvalidProof
 	}
 
 	// validate host signature
@@ -502,7 +513,6 @@ func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, 
 	}
 	revision.HostSignature = resp.HostSignature
 
-	// TODO: validate proof
 	return RPCSectorRootsResult{
 		Revision: revision,
 		Roots:    resp.Roots,

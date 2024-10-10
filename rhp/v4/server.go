@@ -201,10 +201,13 @@ func (s *Server) handleRPCReadSector(stream net.Conn) error {
 	}
 
 	segment := sector[req.Offset : req.Offset+req.Length]
+	start := (req.Offset / rhp4.LeafSize)
+	end := (req.Offset + req.Length + rhp4.LeafSize - 1) / rhp4.LeafSize
+	proof := rhp4.BuildSectorProof(&sector, start, end)
 
 	return rhp4.WriteResponse(stream, &rhp4.RPCReadSectorResponse{
 		Sector: segment,
-		Proof:  nil, // TODO implement proof
+		Proof:  proof,
 	})
 }
 
@@ -286,10 +289,10 @@ func (s *Server) handleRPCModifySectors(stream net.Conn) error {
 			}
 			roots = roots[:len(roots)-int(action.N)]
 		case rhp4.ActionUpdate:
-			if action.A >= uint64(len(roots)) {
+			if action.N >= uint64(len(roots)) {
 				return errorBadRequest("update index %v exceeds sector count %v", action.A, len(roots))
 			}
-			roots[action.A] = action.Root
+			roots[action.N] = action.Root
 		case rhp4.ActionSwap:
 			if action.A >= uint64(len(roots)) || action.B >= uint64(len(roots)) {
 				return errorBadRequest("swap indices %v and %v exceed sector count %v", action.A, action.B, len(roots))
@@ -300,8 +303,11 @@ func (s *Server) handleRPCModifySectors(stream net.Conn) error {
 		}
 	}
 
+	treeHashes, leafHashes := rhp4.BuildModifySectorsProof(req.Actions, state.Roots)
 	resp := rhp4.RPCModifySectorsResponse{
-		Proof: []types.Hash256{rhp4.MetaRoot(roots)}, // TODO implement proof
+		OldSubtreeHashes: treeHashes,
+		OldLeafHashes:    leafHashes,
+		NewMerkleRoot:    rhp4.MetaRoot(roots),
 	}
 	if err := rhp4.WriteResponse(stream, &resp); err != nil {
 		return fmt.Errorf("failed to write response: %w", err)
@@ -311,7 +317,7 @@ func (s *Server) handleRPCModifySectors(stream net.Conn) error {
 		return errorDecodingError("failed to read renter signature response: %v", err)
 	}
 
-	revision, err := rhp4.ReviseForModifySectors(fc, prices, resp.Proof[len(resp.Proof)-1], req.Actions)
+	revision, err := rhp4.ReviseForModifySectors(fc, prices, resp.NewMerkleRoot, req.Actions)
 	if err != nil {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}
@@ -373,15 +379,17 @@ func (s *Server) handleRPCAppendSectors(stream net.Conn) error {
 		appended++
 	}
 
+	subtreeRoots, newRoot := rhp4.BuildAppendProof(state.Roots, roots[len(state.Roots):])
 	resp := rhp4.RPCAppendSectorsResponse{
-		Accepted: accepted,
-		Proof:    []types.Hash256{rhp4.MetaRoot(roots)}, // TODO implement proof
+		Accepted:      accepted,
+		SubtreeRoots:  subtreeRoots,
+		NewMerkleRoot: newRoot,
 	}
 	if err := rhp4.WriteResponse(stream, &resp); err != nil {
 		return fmt.Errorf("failed to write response: %w", err)
 	}
 
-	revision, err := rhp4.ReviseForAppendSectors(fc, req.Prices, resp.Proof[len(resp.Proof)-1], appended)
+	revision, err := rhp4.ReviseForAppendSectors(fc, req.Prices, newRoot, appended)
 	if err != nil {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}
@@ -509,10 +517,13 @@ func (s *Server) handleRPCSectorRoots(stream net.Conn) error {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}
 
+	roots := state.Roots[req.Offset : req.Offset+req.Length]
+	proof := rhp4.BuildSectorRootsProof(state.Roots, req.Offset, req.Offset+req.Length)
+
 	// send the response
 	return rhp4.WriteResponse(stream, &rhp4.RPCSectorRootsResponse{
-		Proof:         nil, // TODO: proof
-		Roots:         state.Roots,
+		Proof:         proof,
+		Roots:         roots,
 		HostSignature: revision.HostSignature,
 	})
 }
@@ -1011,9 +1022,10 @@ func (s *Server) handleRPCVerifySector(stream net.Conn) error {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
-	// TODO: build proof
+	proof := rhp4.BuildSectorProof(&sector, req.LeafIndex, req.LeafIndex+1)
 	resp := rhp4.RPCVerifySectorResponse{
-		Leaf: ([64]byte)(sector[rhp4.LeafSize*req.LeafIndex:]),
+		Proof: proof,
+		Leaf:  ([64]byte)(sector[rhp4.LeafSize*req.LeafIndex:]),
 	}
 	return rhp4.WriteResponse(stream, &resp)
 }
