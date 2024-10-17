@@ -69,6 +69,7 @@ type (
 	Event struct {
 		ID             types.Hash256    `json:"id"`
 		Index          types.ChainIndex `json:"index"`
+		Confirmations  uint64           `json:"confirmations"`
 		Type           string           `json:"type"`
 		Data           EventData        `json:"data"`
 		MaturityHeight uint64           `json:"maturityHeight"`
