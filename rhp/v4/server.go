@@ -94,8 +94,8 @@ type (
 		HasSector(root types.Hash256) (bool, error)
 		// ReadSector retrieves a sector by its root
 		ReadSector(root types.Hash256) ([rhp4.SectorSize]byte, error)
-		// WriteSector stores a sector
-		WriteSector(root types.Hash256, data *[rhp4.SectorSize]byte, expiration uint64) error
+		// StoreSector writes a sector to disk
+		StoreSector(root types.Hash256, data *[rhp4.SectorSize]byte, expiration uint64) error
 	}
 
 	// A RevisionState pairs a contract revision with its sector roots.
@@ -241,7 +241,7 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 		return fmt.Errorf("failed to debit account: %w", err)
 	}
 
-	if err := s.sectors.WriteSector(root, &sector, req.Duration); err != nil {
+	if err := s.sectors.StoreSector(root, &sector, req.Duration); err != nil {
 		return fmt.Errorf("failed to store sector: %w", err)
 	}
 	return rhp4.WriteResponse(stream, &rhp4.RPCWriteSectorResponse{
