@@ -116,9 +116,9 @@ type (
 		// ReviseV2Contract atomically revises a contract and updates its sector
 		// roots and usage.
 		ReviseV2Contract(contractID types.FileContractID, revision types.V2FileContract, roots []types.Hash256, usage Usage) error
-		// ContractElement returns the contract state element for the given
+		// V2FileContractElement returns the contract state element for the given
 		// contract ID.
-		ContractElement(types.FileContractID) (types.ChainIndex, types.V2FileContractElement, error)
+		V2FileContractElement(types.FileContractID) (types.ChainIndex, types.V2FileContractElement, error)
 
 		// AccountBalance returns the balance of an account.
 		AccountBalance(rhp4.Account) (types.Currency, error)
@@ -165,6 +165,7 @@ func (s *Server) lockContractForRevision(contractID types.FileContractID) (rev R
 func (s *Server) handleRPCSettings(stream net.Conn) error {
 	settings := s.settings.RHP4Settings()
 	settings.ProtocolVersion = protocolVersion
+	settings.Prices.TipHeight = s.chain.Tip().Height
 	settings.Prices.ValidUntil = time.Now().Add(s.priceTableValidity)
 	sigHash := settings.Prices.SigHash()
 	settings.Prices.Signature = s.hostKey.SignHash(sigHash)
@@ -731,7 +732,7 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 		})
 	}
 
-	elementBasis, fce, err := s.contractor.ContractElement(req.Refresh.ContractID)
+	elementBasis, fce, err := s.contractor.V2FileContractElement(req.Refresh.ContractID)
 	if err != nil {
 		return fmt.Errorf("failed to get contract element: %w", err)
 	}
@@ -897,7 +898,7 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 		})
 	}
 
-	elementBasis, fce, err := s.contractor.ContractElement(req.Renewal.ContractID)
+	elementBasis, fce, err := s.contractor.V2FileContractElement(req.Renewal.ContractID)
 	if err != nil {
 		return fmt.Errorf("failed to get contract element: %w", err)
 	}

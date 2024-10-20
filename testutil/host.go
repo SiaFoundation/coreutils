@@ -65,8 +65,8 @@ type EphemeralContractor struct {
 
 var _ rhp4.Contractor = (*EphemeralContractor)(nil)
 
-// ContractElement returns the contract state element for the given contract ID.
-func (ec *EphemeralContractor) ContractElement(contractID types.FileContractID) (types.ChainIndex, types.V2FileContractElement, error) {
+// V2FileContractElement returns the contract state element for the given contract ID.
+func (ec *EphemeralContractor) V2FileContractElement(contractID types.FileContractID) (types.ChainIndex, types.V2FileContractElement, error) {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 
