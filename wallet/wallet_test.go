@@ -1860,10 +1860,8 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		finalRevision := fce.V2FileContract
 		finalRevision.RevisionNumber = math.MaxUint64
 		finalRevisionSigHash := cm.TipState().ContractSigHash(finalRevision)
-		finalRevision.RenterSignature = pk.SignHash(finalRevisionSigHash)
-		finalRevision.HostSignature = pk.SignHash(finalRevisionSigHash)
 		// create a renewal
-		finalization := types.V2FileContractFinalization(finalRevision)
+		finalization := types.V2FileContractFinalization(pk.SignHash(finalRevisionSigHash))
 
 		// create the renewal transaction
 		resolutionTxn := types.V2Transaction{
