@@ -62,6 +62,11 @@ func DialSiaMux(ctx context.Context, addr string, peerKey types.PublicKey) (Tran
 		return nil, fmt.Errorf("failed to connect to %q: %w", addr, err)
 	}
 
+	return UpgradeConn(ctx, conn, peerKey)
+}
+
+// UpgradeConn upgrades an existing connection to use the SiaMux multiplexer.
+func UpgradeConn(ctx context.Context, conn net.Conn, peerKey types.PublicKey) (TransportClient, error) {
 	m, err := mux.Dial(conn, peerKey[:])
 	if err != nil {
 		return nil, fmt.Errorf("failed to establish siamux connection: %w", err)
