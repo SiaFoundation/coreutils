@@ -124,8 +124,8 @@ type (
 		Cost types.Currency `json:"cost"`
 	}
 
-	// RPCModifySectorsResult contains the result of executing the modify sectors RPC.
-	RPCModifySectorsResult struct {
+	// RPCRemoveSectorsResult contains the result of executing the remove sectors RPC.
+	RPCRemoveSectorsResult struct {
 		Revision types.V2FileContract `json:"revision"`
 		Cost     types.Currency       `json:"cost"`
 	}
@@ -309,55 +309,55 @@ func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPri
 	}, nil
 }
 
-// RPCModifySectors modifies sectors on the host.
-func RPCModifySectors(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, actions []rhp4.ModifyAction) (RPCModifySectorsResult, error) {
-	req := rhp4.RPCModifySectorsRequest{
+// RPCRemoveSectors modifies sectors on the host.
+func RPCRemoveSectors(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, indices []uint64) (RPCRemoveSectorsResult, error) {
+	req := rhp4.RPCRemoveSectorsRequest{
 		ContractID: contract.ID,
 		Prices:     prices,
-		Actions:    actions,
+		Indices:    indices,
 	}
 	req.ChallengeSignature = sk.SignHash(req.ChallengeSigHash(contract.Revision.RevisionNumber + 1))
 
 	s := t.DialStream(ctx)
 	defer s.Close()
 
-	if err := rhp4.WriteRequest(s, rhp4.RPCModifySectorsID, &req); err != nil {
-		return RPCModifySectorsResult{}, fmt.Errorf("failed to write request: %w", err)
+	if err := rhp4.WriteRequest(s, rhp4.RPCRemoveSectorsID, &req); err != nil {
+		return RPCRemoveSectorsResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
-	numSectors := (contract.Revision.Filesize + rhp4.SectorSize - 1) / rhp4.SectorSize
-	var resp rhp4.RPCModifySectorsResponse
+	// numSectors := (contract.Revision.Filesize + rhp4.SectorSize - 1) / rhp4.SectorSize
+	var resp rhp4.RPCRemoveSectorsResponse
 	if err := rhp4.ReadResponse(s, &resp); err != nil {
-		return RPCModifySectorsResult{}, fmt.Errorf("failed to read response: %w", err)
-	} else if !rhp4.VerifyModifySectorsProof(actions, numSectors, resp.OldSubtreeHashes, resp.OldLeafHashes, contract.Revision.FileMerkleRoot, resp.NewMerkleRoot) {
-		return RPCModifySectorsResult{}, ErrInvalidProof
-	}
+		return RPCRemoveSectorsResult{}, fmt.Errorf("failed to read response: %w", err)
+	} /*else if !rhp4.VerifyModifySectorsProof(actions, numSectors, resp.OldSubtreeHashes, resp.OldLeafHashes, contract.Revision.FileMerkleRoot, resp.NewMerkleRoot) {
+		return RPCRemoveSectorsResult{}, ErrInvalidProof
+	}*/ // TODO: verify proof
 
-	revision, err := rhp4.ReviseForModifySectors(contract.Revision, prices, resp.NewMerkleRoot, actions)
+	revision, err := rhp4.ReviseForRemoveSectors(contract.Revision, prices, resp.NewMerkleRoot, len(indices))
 	if err != nil {
-		return RPCModifySectorsResult{}, fmt.Errorf("failed to revise contract: %w", err)
+		return RPCRemoveSectorsResult{}, fmt.Errorf("failed to revise contract: %w", err)
 	}
 
 	sigHash := cs.ContractSigHash(revision)
 	revision.RenterSignature = sk.SignHash(sigHash)
 
-	signatureResp := rhp4.RPCModifySectorsSecondResponse{
+	signatureResp := rhp4.RPCRemoveSectorsSecondResponse{
 		RenterSignature: revision.RenterSignature,
 	}
 	if err := rhp4.WriteResponse(s, &signatureResp); err != nil {
-		return RPCModifySectorsResult{}, fmt.Errorf("failed to write signature response: %w", err)
+		return RPCRemoveSectorsResult{}, fmt.Errorf("failed to write signature response: %w", err)
 	}
 
-	var hostSignature rhp4.RPCModifySectorsThirdResponse
+	var hostSignature rhp4.RPCRemoveSectorsThirdResponse
 	if err := rhp4.ReadResponse(s, &hostSignature); err != nil {
-		return RPCModifySectorsResult{}, fmt.Errorf("failed to read host signatures: %w", err)
+		return RPCRemoveSectorsResult{}, fmt.Errorf("failed to read host signatures: %w", err)
 	}
 	// validate the host signature
 	if !contract.Revision.HostPublicKey.VerifyHash(sigHash, hostSignature.HostSignature) {
-		return RPCModifySectorsResult{}, rhp4.ErrInvalidSignature
+		return RPCRemoveSectorsResult{}, rhp4.ErrInvalidSignature
 	}
 	// return the signed revision
-	return RPCModifySectorsResult{
+	return RPCRemoveSectorsResult{
 		Revision: revision,
 		Cost:     contract.Revision.RenterOutput.Value.Sub(revision.RenterOutput.Value),
 	}, nil
@@ -495,7 +495,7 @@ func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, 
 		RenterSignature: revision.RenterSignature,
 	}
 
-	if err := req.Validate(contract.Revision.HostPublicKey, revision); err != nil {
+	if err := req.Validate(contract.Revision.HostPublicKey, revision, length); err != nil {
 		return RPCSectorRootsResult{}, fmt.Errorf("invalid request: %w", err)
 	}
 

@@ -250,19 +250,11 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 	})
 }
 
-func (s *Server) handleRPCModifySectors(stream net.Conn) error {
-	var req rhp4.RPCModifySectorsRequest
+func (s *Server) handleRPCRemoveSectors(stream net.Conn) error {
+	var req rhp4.RPCRemoveSectorsRequest
 	if err := rhp4.ReadRequest(stream, &req); err != nil {
 		return errorDecodingError("failed to read request: %v", err)
 	}
-
-	settings := s.settings.RHP4Settings()
-	if err := req.Validate(s.hostKey.PublicKey(), settings.MaxModifyActions); err != nil {
-		return errorBadRequest("request invalid: %v", err)
-	}
-	prices := req.Prices
-
-	cs := s.chain.TipState()
 
 	state, unlock, err := s.lockContractForRevision(req.ContractID)
 	if err != nil {
@@ -275,53 +267,55 @@ func (s *Server) handleRPCModifySectors(stream net.Conn) error {
 	}
 
 	fc := state.Revision
-	cost := prices.RPCModifySectorsCost(req.Actions)
+
+	settings := s.settings.RHP4Settings()
+	if err := req.Validate(s.hostKey.PublicKey(), fc, settings.MaxSectorBatchSize); err != nil {
+		return errorBadRequest("request invalid: %v", err)
+	}
+	prices := req.Prices
+
+	cost := prices.RPCRemoveSectorsCost(len(req.Indices))
 	// validate the payment without modifying the contract
 	if fc.RenterOutput.Value.Cmp(cost) < 0 {
 		return rhp4.NewRPCError(rhp4.ErrorCodePayment, fmt.Sprintf("renter output value %v is less than cost %v", fc.RenterOutput.Value, cost))
 	}
 
-	roots := state.Roots
-	for _, action := range req.Actions {
-		switch action.Type {
-		case rhp4.ActionTrim:
-			if action.N > uint64(len(roots)) {
-				return errorBadRequest("trim count %v exceeds sector count %v", action.N, len(roots))
-			}
-			roots = roots[:len(roots)-int(action.N)]
-		case rhp4.ActionUpdate:
-			if action.N >= uint64(len(roots)) {
-				return errorBadRequest("update index %v exceeds sector count %v", action.A, len(roots))
-			}
-			roots[action.N] = action.Root
-		case rhp4.ActionSwap:
-			if action.A >= uint64(len(roots)) || action.B >= uint64(len(roots)) {
-				return errorBadRequest("swap indices %v and %v exceed sector count %v", action.A, action.B, len(roots))
-			}
-			roots[action.A], roots[action.B] = roots[action.B], roots[action.A]
-		default:
-			return errorBadRequest("unknown action type %v", action.Type)
+	// validate that all indices are within the expected range
+	indices := make(map[uint64]bool)
+	for _, i := range req.Indices {
+		if i >= uint64(len(state.Roots)) {
+			return errorBadRequest("index %v exceeds sector count %v", i, len(state.Roots))
 		}
+		indices[i] = true
 	}
 
-	treeHashes, leafHashes := rhp4.BuildModifySectorsProof(req.Actions, state.Roots)
-	resp := rhp4.RPCModifySectorsResponse{
-		OldSubtreeHashes: treeHashes,
-		OldLeafHashes:    leafHashes,
-		NewMerkleRoot:    rhp4.MetaRoot(roots),
+	roots := state.Roots[:0]
+	for i, root := range state.Roots {
+		if indices[uint64(i)] {
+			continue
+		}
+		roots = append(roots, root)
+	}
+
+	// treeHashes, leafHashes := rhp4.BuildModifySectorsProof(req.Actions, state.Roots) // TODO: build proof
+	resp := rhp4.RPCRemoveSectorsResponse{
+		// OldSubtreeHashes: treeHashes,
+		// OldLeafHashes:    leafHashes,
+		NewMerkleRoot: rhp4.MetaRoot(roots),
 	}
 	if err := rhp4.WriteResponse(stream, &resp); err != nil {
 		return fmt.Errorf("failed to write response: %w", err)
 	}
-	var renterSigResponse rhp4.RPCModifySectorsSecondResponse
+	var renterSigResponse rhp4.RPCRemoveSectorsSecondResponse
 	if err := rhp4.ReadResponse(stream, &renterSigResponse); err != nil {
 		return errorDecodingError("failed to read renter signature response: %v", err)
 	}
 
-	revision, err := rhp4.ReviseForModifySectors(fc, prices, resp.NewMerkleRoot, req.Actions)
+	revision, err := rhp4.ReviseForRemoveSectors(fc, prices, resp.NewMerkleRoot, len(req.Indices))
 	if err != nil {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}
+	cs := s.chain.TipState()
 	sigHash := cs.ContractSigHash(revision)
 
 	if !fc.RenterPublicKey.VerifyHash(sigHash, renterSigResponse.RenterSignature) {
@@ -336,7 +330,7 @@ func (s *Server) handleRPCModifySectors(stream net.Conn) error {
 	if err != nil {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}
-	return rhp4.WriteResponse(stream, &rhp4.RPCModifySectorsThirdResponse{
+	return rhp4.WriteResponse(stream, &rhp4.RPCRemoveSectorsThirdResponse{
 		HostSignature: revision.HostSignature,
 	})
 }
@@ -348,7 +342,7 @@ func (s *Server) handleRPCAppendSectors(stream net.Conn) error {
 	}
 
 	settings := s.settings.RHP4Settings()
-	if err := req.Validate(s.hostKey.PublicKey(), settings.MaxModifyActions); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), settings.MaxSectorBatchSize); err != nil {
 		return errorBadRequest("request invalid: %v", err)
 	}
 	prices := req.Prices
@@ -489,7 +483,8 @@ func (s *Server) handleRPCSectorRoots(stream net.Conn) error {
 	defer unlock()
 
 	// validate the request fields
-	if err := req.Validate(s.hostKey.PublicKey(), state.Revision); err != nil {
+	settings := s.settings.RHP4Settings()
+	if err := req.Validate(s.hostKey.PublicKey(), state.Revision, settings.MaxSectorBatchSize); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 	prices := req.Prices
@@ -1055,8 +1050,8 @@ func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 		err = s.handleRPCRenewContract(stream)
 	case rhp4.RPCLatestRevisionID:
 		err = s.handleRPCLatestRevision(stream)
-	case rhp4.RPCModifySectorsID:
-		err = s.handleRPCModifySectors(stream)
+	case rhp4.RPCRemoveSectorsID:
+		err = s.handleRPCRemoveSectors(stream)
 	case rhp4.RPCSectorRootsID:
 		err = s.handleRPCSectorRoots(stream)
 	// account
