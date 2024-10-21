@@ -106,7 +106,7 @@ func (ec *EphemeralContractor) LockV2Contract(contractID types.FileContractID) (
 }
 
 // AddV2Contract adds a new contract to the host.
-func (ec *EphemeralContractor) AddV2Contract(formationSet rhp4.TransactionSet, _ rhp4.Usage) error {
+func (ec *EphemeralContractor) AddV2Contract(formationSet rhp4.TransactionSet, _ proto4.Usage) error {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 
@@ -130,7 +130,7 @@ func (ec *EphemeralContractor) AddV2Contract(formationSet rhp4.TransactionSet, _
 
 // RenewV2Contract finalizes an existing contract and adds the renewed contract
 // to the host. The existing contract must be locked before calling this method.
-func (ec *EphemeralContractor) RenewV2Contract(renewalSet rhp4.TransactionSet, _ rhp4.Usage) error {
+func (ec *EphemeralContractor) RenewV2Contract(renewalSet rhp4.TransactionSet, _ proto4.Usage) error {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 
@@ -168,7 +168,7 @@ func (ec *EphemeralContractor) RenewV2Contract(renewalSet rhp4.TransactionSet, _
 
 // ReviseV2Contract atomically revises a contract and updates its sector roots
 // and usage.
-func (ec *EphemeralContractor) ReviseV2Contract(contractID types.FileContractID, revision types.V2FileContract, roots []types.Hash256, _ rhp4.Usage) error {
+func (ec *EphemeralContractor) ReviseV2Contract(contractID types.FileContractID, revision types.V2FileContract, roots []types.Hash256, _ proto4.Usage) error {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 
@@ -198,7 +198,7 @@ func (ec *EphemeralContractor) AccountBalance(account proto4.Account) (types.Cur
 // CreditAccountsWithContract credits accounts with the given deposits and
 // revises the contract revision. The contract must be locked before calling
 // this method.
-func (ec *EphemeralContractor) CreditAccountsWithContract(deposits []proto4.AccountDeposit, contractID types.FileContractID, revision types.V2FileContract) ([]types.Currency, error) {
+func (ec *EphemeralContractor) CreditAccountsWithContract(deposits []proto4.AccountDeposit, contractID types.FileContractID, revision types.V2FileContract, _ proto4.Usage) ([]types.Currency, error) {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 
@@ -212,17 +212,17 @@ func (ec *EphemeralContractor) CreditAccountsWithContract(deposits []proto4.Acco
 }
 
 // DebitAccount debits an account by the given amount.
-func (ec *EphemeralContractor) DebitAccount(account proto4.Account, amount types.Currency) error {
+func (ec *EphemeralContractor) DebitAccount(account proto4.Account, usage proto4.Usage) error {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 
 	balance, ok := ec.accounts[account]
 	if !ok {
 		return errors.New("account not found")
-	} else if balance.Cmp(amount) < 0 {
+	} else if balance.Cmp(usage.RenterCost()) < 0 {
 		return errors.New("insufficient funds")
 	}
-	ec.accounts[account] = balance.Sub(amount)
+	ec.accounts[account] = balance.Sub(usage.RenterCost())
 	return nil
 }
 

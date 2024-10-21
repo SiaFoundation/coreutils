@@ -689,8 +689,8 @@ func TestAccounts(t *testing.T) {
 		t.Fatalf("expected %v, got %v", account, fundResult.Balances[0].Account)
 	case fundResult.Balances[0].Balance != accountFundAmount:
 		t.Fatalf("expected %v, got %v", accountFundAmount, fundResult.Balances[0].Balance)
-	case !fundResult.Cost.Equals(accountFundAmount):
-		t.Fatalf("expected %v, got %v", accountFundAmount, fundResult.Cost)
+	case !fundResult.Usage.RenterCost().Equals(accountFundAmount):
+		t.Fatalf("expected %v, got %v", accountFundAmount, fundResult.Usage.RenterCost())
 	case !revised.HostOutput.Value.Equals(hostOutputValue):
 		t.Fatalf("expected %v, got %v", hostOutputValue, revised.HostOutput.Value)
 	case !revised.RenterOutput.Value.Equals(renterOutputValue):
