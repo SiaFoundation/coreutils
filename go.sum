@@ -10,6 +10,8 @@ go.sia.tech/core v0.4.8-0.20241021215433-54b5123bf569 h1:l8bExeZFNmH+fENB9F5buIe
 go.sia.tech/core v0.4.8-0.20241021215433-54b5123bf569/go.mod h1:P3C1BWa/7J4XgdzWuaYHBvLo2RzZ0UBaJM4TG1GWB2g=
 go.sia.tech/core v0.4.8-0.20241021215909-db1d712112bc h1:SDqV2W2HWzlC/DcbWuBzo5Ro12s5az0L/g3otq/ItK4=
 go.sia.tech/core v0.4.8-0.20241021215909-db1d712112bc/go.mod h1:P3C1BWa/7J4XgdzWuaYHBvLo2RzZ0UBaJM4TG1GWB2g=
+go.sia.tech/core v0.4.8-0.20241021220756-063922806c77 h1:8Ynvew8X7nBxByE+/S/yxyPj+77urhvWCUQUgThvZ+0=
+go.sia.tech/core v0.4.8-0.20241021220756-063922806c77/go.mod h1:P3C1BWa/7J4XgdzWuaYHBvLo2RzZ0UBaJM4TG1GWB2g=
 go.sia.tech/mux v1.3.0 h1:hgR34IEkqvfBKUJkAzGi31OADeW2y7D6Bmy/Jcbop9c=
 go.sia.tech/mux v1.3.0/go.mod h1:I46++RD4beqA3cW9Xm9SwXbezwPqLvHhVs9HLpDtt58=
 go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=

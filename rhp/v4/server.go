@@ -527,9 +527,10 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	}
 	prices := req.Prices
 
+	fc, usage := rhp4.NewContract(prices, req.Contract, ourKey, settings.WalletAddress)
 	formationTxn := types.V2Transaction{
 		MinerFee:      req.MinerFee,
-		FileContracts: []types.V2FileContract{rhp4.NewContract(prices, req.Contract, ourKey, settings.WalletAddress)},
+		FileContracts: []types.V2FileContract{fc},
 	}
 
 	// calculate the renter inputs
@@ -629,9 +630,7 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	err = s.contractor.AddV2Contract(TransactionSet{
 		Transactions: formationSet,
 		Basis:        basis,
-	}, rhp4.Usage{
-		RPC: settings.Prices.ContractPrice,
-	})
+	}, usage)
 	if err != nil {
 		return fmt.Errorf("failed to add contract: %w", err)
 	}

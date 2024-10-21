@@ -156,21 +156,24 @@ type (
 	RPCFormContractResult struct {
 		Contract     ContractRevision `json:"contract"`
 		FormationSet TransactionSet   `json:"formationSet"`
-		Cost         types.Currency   `json:"usage"`
+		Cost         types.Currency   `json:"cost"`
+		Usage        rhp4.Usage       `json:"usage"`
 	}
 
 	// RPCRenewContractResult contains the result of executing the renew contract RPC.
 	RPCRenewContractResult struct {
 		Contract   ContractRevision `json:"contract"`
 		RenewalSet TransactionSet   `json:"renewalSet"`
-		Cost       types.Currency   `json:"usage"`
+		Cost       types.Currency   `json:"cost"`
+		Usage      rhp4.Usage       `json:"usage"`
 	}
 
 	// RPCRefreshContractResult contains the result of executing the refresh contract RPC.
 	RPCRefreshContractResult struct {
 		Contract   ContractRevision `json:"contract"`
 		RenewalSet TransactionSet   `json:"renewalSet"`
-		Cost       types.Currency   `json:"usage"`
+		Cost       types.Currency   `json:"cost"`
+		Usage      rhp4.Usage       `json:"usage"`
 	}
 )
 
@@ -530,7 +533,7 @@ func RPCAccountBalance(ctx context.Context, t TransportClient, account rhp4.Acco
 
 // RPCFormContract forms a contract with a host
 func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, hostKey types.PublicKey, hostAddress types.Address, params rhp4.RPCFormContractParams) (RPCFormContractResult, error) {
-	fc := rhp4.NewContract(p, params, hostKey, hostAddress)
+	fc, usage := rhp4.NewContract(p, params, hostKey, hostAddress)
 	formationTxn := types.V2Transaction{
 		MinerFee:      tp.RecommendedFee().Mul64(1000),
 		FileContracts: []types.V2FileContract{fc},
@@ -643,13 +646,14 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 			Basis:        hostTransactionSetResp.Basis,
 			Transactions: hostTransactionSetResp.TransactionSet,
 		},
-		Cost: renterCost,
+		Cost:  renterCost,
+		Usage: usage,
 	}, nil
 }
 
 // RPCRenewContract renews a contract with a host.
 func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRenewContractParams) (RPCRenewContractResult, error) {
-	renewal, _ := rhp4.RenewContract(existing, p, params)
+	renewal, usage := rhp4.RenewContract(existing, p, params)
 	renewalTxn := types.V2Transaction{
 		MinerFee: tp.RecommendedFee().Mul64(1000),
 		FileContractResolutions: []types.V2FileContractResolution{
@@ -770,13 +774,14 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 			Basis:        hostTransactionSetResp.Basis,
 			Transactions: hostTransactionSetResp.TransactionSet,
 		},
-		Cost: renterCost,
+		Cost:  renterCost,
+		Usage: usage,
 	}, nil
 }
 
 // RPCRefreshContract refreshes a contract with a host.
 func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRefreshContractParams) (RPCRefreshContractResult, error) {
-	renewal, _ := rhp4.RefreshContract(existing, p, params)
+	renewal, usage := rhp4.RefreshContract(existing, p, params)
 	renewalTxn := types.V2Transaction{
 		MinerFee: tp.RecommendedFee().Mul64(1000),
 		FileContractResolutions: []types.V2FileContractResolution{
@@ -898,6 +903,7 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 			Basis:        hostTransactionSetResp.Basis,
 			Transactions: hostTransactionSetResp.TransactionSet,
 		},
-		Cost: renterCost,
+		Cost:  renterCost,
+		Usage: usage,
 	}, nil
 }
