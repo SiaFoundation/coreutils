@@ -949,7 +949,7 @@ func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transacti
 	m.revalidatePool()
 
 	// update the transaction's basis to match tip
-	txns, err := m.UpdateV2TransactionSet([]types.V2Transaction{txn}, basis, m.tipState.Index)
+	txns, err := m.updateV2TransactionProofs([]types.V2Transaction{txn}, basis, m.tipState.Index)
 	if err != nil {
 		return types.ChainIndex{}, nil, fmt.Errorf("failed to update transaction set basis: %w", err)
 	} else if len(txns) == 0 {
