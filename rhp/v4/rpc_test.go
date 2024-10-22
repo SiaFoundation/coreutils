@@ -1026,7 +1026,7 @@ func TestVerifySector(t *testing.T) {
 	}
 }
 
-func TestRPCRemoveSectors(t *testing.T) {
+func TestRPCFreeSectors(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
@@ -1144,7 +1144,7 @@ func TestRPCRemoveSectors(t *testing.T) {
 			newRoots = append(newRoots, root)
 		}
 	}
-	removeResult, err := rhp4.RPCRemoveSectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, slices.Collect(maps.Keys(indices)))
+	removeResult, err := rhp4.RPCFreeSectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, slices.Collect(maps.Keys(indices)))
 	if err != nil {
 		t.Fatal(err)
 	}

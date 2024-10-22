@@ -239,8 +239,8 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 	})
 }
 
-func (s *Server) handleRPCRemoveSectors(stream net.Conn) error {
-	var req rhp4.RPCRemoveSectorsRequest
+func (s *Server) handleRPCFreeSectors(stream net.Conn) error {
+	var req rhp4.RPCFreeSectorsRequest
 	if err := rhp4.ReadRequest(stream, &req); err != nil {
 		return errorDecodingError("failed to read request: %v", err)
 	}
@@ -280,21 +280,19 @@ func (s *Server) handleRPCRemoveSectors(stream net.Conn) error {
 		roots = append(roots, root)
 	}
 
-	// treeHashes, leafHashes := rhp4.BuildModifySectorsProof(req.Actions, state.Roots) // TODO: build proof
-	resp := rhp4.RPCRemoveSectorsResponse{
-		// OldSubtreeHashes: treeHashes,
-		// OldLeafHashes:    leafHashes,
+	// TODO: build proof
+	resp := rhp4.RPCFreeSectorsResponse{
 		NewMerkleRoot: rhp4.MetaRoot(roots),
 	}
 	if err := rhp4.WriteResponse(stream, &resp); err != nil {
 		return fmt.Errorf("failed to write response: %w", err)
 	}
-	var renterSigResponse rhp4.RPCRemoveSectorsSecondResponse
+	var renterSigResponse rhp4.RPCFreeSectorsSecondResponse
 	if err := rhp4.ReadResponse(stream, &renterSigResponse); err != nil {
 		return errorDecodingError("failed to read renter signature response: %v", err)
 	}
 
-	revision, usage, err := rhp4.ReviseForRemoveSectors(fc, prices, resp.NewMerkleRoot, len(req.Indices))
+	revision, usage, err := rhp4.ReviseForFreeSectors(fc, prices, resp.NewMerkleRoot, len(req.Indices))
 	if err != nil {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}
@@ -311,7 +309,7 @@ func (s *Server) handleRPCRemoveSectors(stream net.Conn) error {
 	if err != nil {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}
-	return rhp4.WriteResponse(stream, &rhp4.RPCRemoveSectorsThirdResponse{
+	return rhp4.WriteResponse(stream, &rhp4.RPCFreeSectorsThirdResponse{
 		HostSignature: revision.HostSignature,
 	})
 }
@@ -1014,8 +1012,8 @@ func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 		err = s.handleRPCRenewContract(stream)
 	case rhp4.RPCLatestRevisionID:
 		err = s.handleRPCLatestRevision(stream)
-	case rhp4.RPCRemoveSectorsID:
-		err = s.handleRPCRemoveSectors(stream)
+	case rhp4.RPCFreeSectorsID:
+		err = s.handleRPCFreeSectors(stream)
 	case rhp4.RPCSectorRootsID:
 		err = s.handleRPCSectorRoots(stream)
 	// account

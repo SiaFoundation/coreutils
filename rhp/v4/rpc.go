@@ -124,8 +124,8 @@ type (
 		Usage rhp4.Usage `json:"usage"`
 	}
 
-	// RPCRemoveSectorsResult contains the result of executing the remove sectors RPC.
-	RPCRemoveSectorsResult struct {
+	// RPCFreeSectorsResult contains the result of executing the remove sectors RPC.
+	RPCFreeSectorsResult struct {
 		Revision types.V2FileContract `json:"revision"`
 		Usage    rhp4.Usage           `json:"usage"`
 	}
@@ -224,10 +224,10 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 	rpv := rhp4.NewRangeProofVerifier(offset, length)
 	if n, err := rpv.ReadFrom(io.TeeReader(io.LimitReader(s, int64(resp.DataLength)), w)); err != nil {
 		return RPCReadSectorResult{}, fmt.Errorf("failed to read data: %w", err)
-	} else if n != int64(resp.DataLength) {
-		return RPCReadSectorResult{}, io.ErrUnexpectedEOF
 	} else if !rpv.Verify(resp.Proof, root) {
 		return RPCReadSectorResult{}, ErrInvalidProof
+	} else if n != int64(resp.DataLength) {
+		return RPCReadSectorResult{}, io.ErrUnexpectedEOF
 	}
 	return RPCReadSectorResult{
 		Usage: prices.RPCReadSectorCost(length),
@@ -312,9 +312,9 @@ func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPri
 	}, nil
 }
 
-// RPCRemoveSectors modifies sectors on the host.
-func RPCRemoveSectors(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, indices []uint64) (RPCRemoveSectorsResult, error) {
-	req := rhp4.RPCRemoveSectorsRequest{
+// RPCFreeSectors removes sectors from a contract.
+func RPCFreeSectors(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, indices []uint64) (RPCFreeSectorsResult, error) {
+	req := rhp4.RPCFreeSectorsRequest{
 		ContractID: contract.ID,
 		Prices:     prices,
 		Indices:    indices,
@@ -324,43 +324,41 @@ func RPCRemoveSectors(ctx context.Context, t TransportClient, cs consensus.State
 	s := t.DialStream(ctx)
 	defer s.Close()
 
-	if err := rhp4.WriteRequest(s, rhp4.RPCRemoveSectorsID, &req); err != nil {
-		return RPCRemoveSectorsResult{}, fmt.Errorf("failed to write request: %w", err)
+	if err := rhp4.WriteRequest(s, rhp4.RPCFreeSectorsID, &req); err != nil {
+		return RPCFreeSectorsResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
-	// numSectors := (contract.Revision.Filesize + rhp4.SectorSize - 1) / rhp4.SectorSize
-	var resp rhp4.RPCRemoveSectorsResponse
+	var resp rhp4.RPCFreeSectorsResponse
 	if err := rhp4.ReadResponse(s, &resp); err != nil {
-		return RPCRemoveSectorsResult{}, fmt.Errorf("failed to read response: %w", err)
-	} /*else if !rhp4.VerifyModifySectorsProof(actions, numSectors, resp.OldSubtreeHashes, resp.OldLeafHashes, contract.Revision.FileMerkleRoot, resp.NewMerkleRoot) {
-		return RPCRemoveSectorsResult{}, ErrInvalidProof
-	}*/ // TODO: verify proof
+		return RPCFreeSectorsResult{}, fmt.Errorf("failed to read response: %w", err)
+	}
+	// TODO: verify proof
 
-	revision, usage, err := rhp4.ReviseForRemoveSectors(contract.Revision, prices, resp.NewMerkleRoot, len(indices))
+	revision, usage, err := rhp4.ReviseForFreeSectors(contract.Revision, prices, resp.NewMerkleRoot, len(indices))
 	if err != nil {
-		return RPCRemoveSectorsResult{}, fmt.Errorf("failed to revise contract: %w", err)
+		return RPCFreeSectorsResult{}, fmt.Errorf("failed to revise contract: %w", err)
 	}
 
 	sigHash := cs.ContractSigHash(revision)
 	revision.RenterSignature = sk.SignHash(sigHash)
 
-	signatureResp := rhp4.RPCRemoveSectorsSecondResponse{
+	signatureResp := rhp4.RPCFreeSectorsSecondResponse{
 		RenterSignature: revision.RenterSignature,
 	}
 	if err := rhp4.WriteResponse(s, &signatureResp); err != nil {
-		return RPCRemoveSectorsResult{}, fmt.Errorf("failed to write signature response: %w", err)
+		return RPCFreeSectorsResult{}, fmt.Errorf("failed to write signature response: %w", err)
 	}
 
-	var hostSignature rhp4.RPCRemoveSectorsThirdResponse
+	var hostSignature rhp4.RPCFreeSectorsThirdResponse
 	if err := rhp4.ReadResponse(s, &hostSignature); err != nil {
-		return RPCRemoveSectorsResult{}, fmt.Errorf("failed to read host signatures: %w", err)
+		return RPCFreeSectorsResult{}, fmt.Errorf("failed to read host signatures: %w", err)
 	}
 	// validate the host signature
 	if !contract.Revision.HostPublicKey.VerifyHash(sigHash, hostSignature.HostSignature) {
-		return RPCRemoveSectorsResult{}, rhp4.ErrInvalidSignature
+		return RPCFreeSectorsResult{}, rhp4.ErrInvalidSignature
 	}
 	// return the signed revision
-	return RPCRemoveSectorsResult{
+	return RPCFreeSectorsResult{
 		Revision: revision,
 		Usage:    usage,
 	}, nil
