@@ -110,31 +110,31 @@ type (
 
 	// RPCWriteSectorResult contains the result of executing the write sector RPC.
 	RPCWriteSectorResult struct {
-		Root types.Hash256  `json:"root"`
-		Cost types.Currency `json:"cost"`
+		Root  types.Hash256 `json:"root"`
+		Usage rhp4.Usage    `json:"usage"`
 	}
 
 	// RPCReadSectorResult contains the result of executing the read sector RPC.
 	RPCReadSectorResult struct {
-		Cost types.Currency `json:"cost"`
+		Usage rhp4.Usage `json:"usage"`
 	}
 
 	// RPCVerifySectorResult contains the result of executing the verify sector RPC.
 	RPCVerifySectorResult struct {
-		Cost types.Currency `json:"cost"`
+		Usage rhp4.Usage `json:"usage"`
 	}
 
-	// RPCModifySectorsResult contains the result of executing the modify sectors RPC.
-	RPCModifySectorsResult struct {
+	// RPCFreeSectorsResult contains the result of executing the remove sectors RPC.
+	RPCFreeSectorsResult struct {
 		Revision types.V2FileContract `json:"revision"`
-		Cost     types.Currency       `json:"cost"`
+		Usage    rhp4.Usage           `json:"usage"`
 	}
 
 	// RPCAppendSectorsResult contains the result of executing the append sectors
 	// RPC.
 	RPCAppendSectorsResult struct {
 		Revision types.V2FileContract `json:"revision"`
-		Cost     types.Currency       `json:"cost"`
+		Usage    rhp4.Usage           `json:"usage"`
 		Sectors  []types.Hash256      `json:"sectors"`
 	}
 
@@ -142,14 +142,14 @@ type (
 	RPCFundAccountResult struct {
 		Revision types.V2FileContract `json:"revision"`
 		Balances []AccountBalance     `json:"balances"`
-		Cost     types.Currency       `json:"cost"`
+		Usage    rhp4.Usage           `json:"usage"`
 	}
 
 	// RPCSectorRootsResult contains the result of executing the sector roots RPC.
 	RPCSectorRootsResult struct {
 		Revision types.V2FileContract `json:"revision"`
 		Roots    []types.Hash256      `json:"roots"`
-		Cost     types.Currency       `json:"cost"`
+		Usage    rhp4.Usage           `json:"usage"`
 	}
 
 	// RPCFormContractResult contains the result of executing the form contract RPC.
@@ -157,6 +157,7 @@ type (
 		Contract     ContractRevision `json:"contract"`
 		FormationSet TransactionSet   `json:"formationSet"`
 		Cost         types.Currency   `json:"cost"`
+		Usage        rhp4.Usage       `json:"usage"`
 	}
 
 	// RPCRenewContractResult contains the result of executing the renew contract RPC.
@@ -164,6 +165,7 @@ type (
 		Contract   ContractRevision `json:"contract"`
 		RenewalSet TransactionSet   `json:"renewalSet"`
 		Cost       types.Currency   `json:"cost"`
+		Usage      rhp4.Usage       `json:"usage"`
 	}
 
 	// RPCRefreshContractResult contains the result of executing the refresh contract RPC.
@@ -171,6 +173,7 @@ type (
 		Contract   ContractRevision `json:"contract"`
 		RenewalSet TransactionSet   `json:"renewalSet"`
 		Cost       types.Currency   `json:"cost"`
+		Usage      rhp4.Usage       `json:"usage"`
 	}
 )
 
@@ -221,13 +224,13 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 	rpv := rhp4.NewRangeProofVerifier(offset, length)
 	if n, err := rpv.ReadFrom(io.TeeReader(io.LimitReader(s, int64(resp.DataLength)), w)); err != nil {
 		return RPCReadSectorResult{}, fmt.Errorf("failed to read data: %w", err)
-	} else if n != int64(resp.DataLength) {
-		return RPCReadSectorResult{}, io.ErrUnexpectedEOF
 	} else if !rpv.Verify(resp.Proof, root) {
 		return RPCReadSectorResult{}, ErrInvalidProof
+	} else if n != int64(resp.DataLength) {
+		return RPCReadSectorResult{}, io.ErrUnexpectedEOF
 	}
 	return RPCReadSectorResult{
-		Cost: prices.RPCReadSectorCost(length),
+		Usage: prices.RPCReadSectorCost(length),
 	}, nil
 }
 
@@ -283,8 +286,8 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 	}
 
 	return RPCWriteSectorResult{
-		Root: resp.Root,
-		Cost: prices.RPCWriteSectorCost(uint64(length), duration),
+		Root:  resp.Root,
+		Usage: prices.RPCWriteSectorCost(uint64(length), duration),
 	}, nil
 }
 
@@ -305,61 +308,59 @@ func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPri
 	}
 
 	return RPCVerifySectorResult{
-		Cost: prices.RPCVerifySectorCost(),
+		Usage: prices.RPCVerifySectorCost(),
 	}, nil
 }
 
-// RPCModifySectors modifies sectors on the host.
-func RPCModifySectors(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, actions []rhp4.ModifyAction) (RPCModifySectorsResult, error) {
-	req := rhp4.RPCModifySectorsRequest{
+// RPCFreeSectors removes sectors from a contract.
+func RPCFreeSectors(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, indices []uint64) (RPCFreeSectorsResult, error) {
+	req := rhp4.RPCFreeSectorsRequest{
 		ContractID: contract.ID,
 		Prices:     prices,
-		Actions:    actions,
+		Indices:    indices,
 	}
 	req.ChallengeSignature = sk.SignHash(req.ChallengeSigHash(contract.Revision.RevisionNumber + 1))
 
 	s := t.DialStream(ctx)
 	defer s.Close()
 
-	if err := rhp4.WriteRequest(s, rhp4.RPCModifySectorsID, &req); err != nil {
-		return RPCModifySectorsResult{}, fmt.Errorf("failed to write request: %w", err)
+	if err := rhp4.WriteRequest(s, rhp4.RPCFreeSectorsID, &req); err != nil {
+		return RPCFreeSectorsResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
-	numSectors := (contract.Revision.Filesize + rhp4.SectorSize - 1) / rhp4.SectorSize
-	var resp rhp4.RPCModifySectorsResponse
+	var resp rhp4.RPCFreeSectorsResponse
 	if err := rhp4.ReadResponse(s, &resp); err != nil {
-		return RPCModifySectorsResult{}, fmt.Errorf("failed to read response: %w", err)
-	} else if !rhp4.VerifyModifySectorsProof(actions, numSectors, resp.OldSubtreeHashes, resp.OldLeafHashes, contract.Revision.FileMerkleRoot, resp.NewMerkleRoot) {
-		return RPCModifySectorsResult{}, ErrInvalidProof
+		return RPCFreeSectorsResult{}, fmt.Errorf("failed to read response: %w", err)
 	}
+	// TODO: verify proof
 
-	revision, err := rhp4.ReviseForModifySectors(contract.Revision, prices, resp.NewMerkleRoot, actions)
+	revision, usage, err := rhp4.ReviseForFreeSectors(contract.Revision, prices, resp.NewMerkleRoot, len(indices))
 	if err != nil {
-		return RPCModifySectorsResult{}, fmt.Errorf("failed to revise contract: %w", err)
+		return RPCFreeSectorsResult{}, fmt.Errorf("failed to revise contract: %w", err)
 	}
 
 	sigHash := cs.ContractSigHash(revision)
 	revision.RenterSignature = sk.SignHash(sigHash)
 
-	signatureResp := rhp4.RPCModifySectorsSecondResponse{
+	signatureResp := rhp4.RPCFreeSectorsSecondResponse{
 		RenterSignature: revision.RenterSignature,
 	}
 	if err := rhp4.WriteResponse(s, &signatureResp); err != nil {
-		return RPCModifySectorsResult{}, fmt.Errorf("failed to write signature response: %w", err)
+		return RPCFreeSectorsResult{}, fmt.Errorf("failed to write signature response: %w", err)
 	}
 
-	var hostSignature rhp4.RPCModifySectorsThirdResponse
+	var hostSignature rhp4.RPCFreeSectorsThirdResponse
 	if err := rhp4.ReadResponse(s, &hostSignature); err != nil {
-		return RPCModifySectorsResult{}, fmt.Errorf("failed to read host signatures: %w", err)
+		return RPCFreeSectorsResult{}, fmt.Errorf("failed to read host signatures: %w", err)
 	}
 	// validate the host signature
 	if !contract.Revision.HostPublicKey.VerifyHash(sigHash, hostSignature.HostSignature) {
-		return RPCModifySectorsResult{}, rhp4.ErrInvalidSignature
+		return RPCFreeSectorsResult{}, rhp4.ErrInvalidSignature
 	}
 	// return the signed revision
-	return RPCModifySectorsResult{
+	return RPCFreeSectorsResult{
 		Revision: revision,
-		Cost:     contract.Revision.RenterOutput.Value.Sub(revision.RenterOutput.Value),
+		Usage:    usage,
 	}, nil
 }
 
@@ -396,7 +397,7 @@ func RPCAppendSectors(ctx context.Context, t TransportClient, cs consensus.State
 		return RPCAppendSectorsResult{}, ErrInvalidProof
 	}
 
-	revision, err := rhp4.ReviseForAppendSectors(contract.Revision, prices, resp.NewMerkleRoot, uint64(len(appended)))
+	revision, usage, err := rhp4.ReviseForAppendSectors(contract.Revision, prices, resp.NewMerkleRoot, uint64(len(appended)))
 	if err != nil {
 		return RPCAppendSectorsResult{}, fmt.Errorf("failed to revise contract: %w", err)
 	}
@@ -418,7 +419,7 @@ func RPCAppendSectors(ctx context.Context, t TransportClient, cs consensus.State
 	}
 	return RPCAppendSectorsResult{
 		Revision: revision,
-		Cost:     contract.Revision.RenterOutput.Value.Sub(revision.RenterOutput.Value),
+		Usage:    usage,
 		Sectors:  appended,
 	}, nil
 }
@@ -429,7 +430,7 @@ func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State,
 	for _, deposit := range deposits {
 		total = total.Add(deposit.Amount)
 	}
-	revision, err := rhp4.ReviseForFundAccount(contract.Revision, total)
+	revision, usage, err := rhp4.ReviseForFundAccounts(contract.Revision, total)
 	if err != nil {
 		return RPCFundAccountResult{}, fmt.Errorf("failed to revise contract: %w", err)
 	}
@@ -466,7 +467,7 @@ func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State,
 	return RPCFundAccountResult{
 		Revision: revision,
 		Balances: balances,
-		Cost:     contract.Revision.RenterOutput.Value.Sub(revision.RenterOutput.Value),
+		Usage:    usage,
 	}, nil
 }
 
@@ -480,7 +481,7 @@ func RPCLatestRevision(ctx context.Context, t TransportClient, contractID types.
 
 // RPCSectorRoots returns the sector roots for a contract.
 func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, signer ContractSigner, contract ContractRevision, offset, length uint64) (RPCSectorRootsResult, error) {
-	revision, err := rhp4.ReviseForSectorRoots(contract.Revision, prices, length)
+	revision, usage, err := rhp4.ReviseForSectorRoots(contract.Revision, prices, length)
 	if err != nil {
 		return RPCSectorRootsResult{}, fmt.Errorf("failed to revise contract: %w", err)
 	}
@@ -495,7 +496,7 @@ func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, 
 		RenterSignature: revision.RenterSignature,
 	}
 
-	if err := req.Validate(contract.Revision.HostPublicKey, revision); err != nil {
+	if err := req.Validate(contract.Revision.HostPublicKey, revision, length); err != nil {
 		return RPCSectorRootsResult{}, fmt.Errorf("invalid request: %w", err)
 	}
 
@@ -516,7 +517,7 @@ func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, 
 	return RPCSectorRootsResult{
 		Revision: revision,
 		Roots:    resp.Roots,
-		Cost:     contract.Revision.RenterOutput.Value.Sub(revision.RenterOutput.Value),
+		Usage:    usage,
 	}, nil
 }
 
@@ -530,7 +531,7 @@ func RPCAccountBalance(ctx context.Context, t TransportClient, account rhp4.Acco
 
 // RPCFormContract forms a contract with a host
 func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, hostKey types.PublicKey, hostAddress types.Address, params rhp4.RPCFormContractParams) (RPCFormContractResult, error) {
-	fc := rhp4.NewContract(p, params, hostKey, hostAddress)
+	fc, usage := rhp4.NewContract(p, params, hostKey, hostAddress)
 	formationTxn := types.V2Transaction{
 		MinerFee:      tp.RecommendedFee().Mul64(1000),
 		FileContracts: []types.V2FileContract{fc},
@@ -643,13 +644,14 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 			Basis:        hostTransactionSetResp.Basis,
 			Transactions: hostTransactionSetResp.TransactionSet,
 		},
-		Cost: renterCost,
+		Cost:  renterCost,
+		Usage: usage,
 	}, nil
 }
 
 // RPCRenewContract renews a contract with a host.
 func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRenewContractParams) (RPCRenewContractResult, error) {
-	renewal := rhp4.RenewContract(existing, p, params)
+	renewal, usage := rhp4.RenewContract(existing, p, params)
 	renewalTxn := types.V2Transaction{
 		MinerFee: tp.RecommendedFee().Mul64(1000),
 		FileContractResolutions: []types.V2FileContractResolution{
@@ -770,13 +772,14 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 			Basis:        hostTransactionSetResp.Basis,
 			Transactions: hostTransactionSetResp.TransactionSet,
 		},
-		Cost: renterCost,
+		Cost:  renterCost,
+		Usage: usage,
 	}, nil
 }
 
 // RPCRefreshContract refreshes a contract with a host.
 func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRefreshContractParams) (RPCRefreshContractResult, error) {
-	renewal := rhp4.RefreshContract(existing, p, params)
+	renewal, usage := rhp4.RefreshContract(existing, p, params)
 	renewalTxn := types.V2Transaction{
 		MinerFee: tp.RecommendedFee().Mul64(1000),
 		FileContractResolutions: []types.V2FileContractResolution{
@@ -898,6 +901,7 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 			Basis:        hostTransactionSetResp.Basis,
 			Transactions: hostTransactionSetResp.TransactionSet,
 		},
-		Cost: renterCost,
+		Cost:  renterCost,
+		Usage: usage,
 	}, nil
 }

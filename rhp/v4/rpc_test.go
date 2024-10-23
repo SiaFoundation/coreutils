@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"maps"
 	"net"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -177,7 +179,7 @@ func TestSettings(t *testing.T) {
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
 		MaxSectorDuration:   3 * 144,
-		MaxModifyActions:    100,
+		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -238,7 +240,7 @@ func TestFormContract(t *testing.T) {
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
 		MaxSectorDuration:   3 * 144,
-		MaxModifyActions:    100,
+		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -298,7 +300,7 @@ func TestFormContractBasis(t *testing.T) {
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
 		MaxSectorDuration:   3 * 144,
-		MaxModifyActions:    100,
+		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -356,7 +358,7 @@ func TestRPCRefresh(t *testing.T) {
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
 		MaxSectorDuration:   3 * 144,
-		MaxModifyActions:    100,
+		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -469,7 +471,7 @@ func TestRPCRenew(t *testing.T) {
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
 		MaxSectorDuration:   3 * 144,
-		MaxModifyActions:    100,
+		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -631,7 +633,7 @@ func TestAccounts(t *testing.T) {
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
 		MaxSectorDuration:   3 * 144,
-		MaxModifyActions:    100,
+		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -687,8 +689,8 @@ func TestAccounts(t *testing.T) {
 		t.Fatalf("expected %v, got %v", account, fundResult.Balances[0].Account)
 	case fundResult.Balances[0].Balance != accountFundAmount:
 		t.Fatalf("expected %v, got %v", accountFundAmount, fundResult.Balances[0].Balance)
-	case !fundResult.Cost.Equals(accountFundAmount):
-		t.Fatalf("expected %v, got %v", accountFundAmount, fundResult.Cost)
+	case !fundResult.Usage.RenterCost().Equals(accountFundAmount):
+		t.Fatalf("expected %v, got %v", accountFundAmount, fundResult.Usage.RenterCost())
 	case !revised.HostOutput.Value.Equals(hostOutputValue):
 		t.Fatalf("expected %v, got %v", hostOutputValue, revised.HostOutput.Value)
 	case !revised.RenterOutput.Value.Equals(renterOutputValue):
@@ -733,7 +735,7 @@ func TestReadWriteSector(t *testing.T) {
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
 		MaxSectorDuration:   3 * 144,
-		MaxModifyActions:    100,
+		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -830,7 +832,7 @@ func TestAppendSectors(t *testing.T) {
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
 		MaxSectorDuration:   3 * 144,
-		MaxModifyActions:    100,
+		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -948,7 +950,7 @@ func TestVerifySector(t *testing.T) {
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
 		MaxSectorDuration:   3 * 144,
-		MaxModifyActions:    100,
+		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -1024,7 +1026,7 @@ func TestVerifySector(t *testing.T) {
 	}
 }
 
-func TestRPCModifySectors(t *testing.T) {
+func TestRPCFreeSectors(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
@@ -1042,7 +1044,7 @@ func TestRPCModifySectors(t *testing.T) {
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
 		MaxSectorDuration:   3 * 144,
-		MaxModifyActions:    100,
+		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -1130,44 +1132,23 @@ func TestRPCModifySectors(t *testing.T) {
 	assertRevision(t, appendResult.Revision, roots)
 	revision.Revision = appendResult.Revision
 
-	// swap two random sectors
-	swapA, swapB := frand.Uint64n(uint64(len(roots)/2)), frand.Uint64n(uint64(len(roots)/2))+uint64(len(roots)/2)
-	actions := []proto4.ModifyAction{
-		{Type: proto4.ActionSwap, A: swapA, B: swapB},
+	// randomly remove half the sectors
+	indices := make(map[uint64]bool)
+	var newRoots []types.Hash256
+	for len(indices) < len(roots)/2 {
+		i := frand.Uint64n(uint64(len(roots)))
+		indices[i] = true
 	}
-	modifyResult, err := rhp4.RPCModifySectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, actions)
+	for i, root := range roots {
+		if !indices[uint64(i)] {
+			newRoots = append(newRoots, root)
+		}
+	}
+	removeResult, err := rhp4.RPCFreeSectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, slices.Collect(maps.Keys(indices)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	roots[swapA], roots[swapB] = roots[swapB], roots[swapA]
-	assertRevision(t, modifyResult.Revision, roots)
-	revision.Revision = modifyResult.Revision
-
-	// delete the last 10 sectors
-	actions = []proto4.ModifyAction{
-		{Type: proto4.ActionTrim, N: uint64(len(roots) / 2)},
-	}
-	modifyResult, err = rhp4.RPCModifySectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, actions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	trimmed, roots := roots[len(roots)/2:], roots[:len(roots)/2]
-	assertRevision(t, modifyResult.Revision, roots)
-	revision.Revision = modifyResult.Revision
-
-	// update a random sector with one of the trimmed sectors
-	updateIdx := frand.Intn(len(roots))
-	trimmedIdx := frand.Intn(len(trimmed))
-	actions = []proto4.ModifyAction{
-		{Type: proto4.ActionUpdate, Root: trimmed[trimmedIdx], A: uint64(updateIdx)},
-	}
-
-	modifyResult, err = rhp4.RPCModifySectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, actions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	roots[updateIdx] = trimmed[trimmedIdx]
-	assertRevision(t, modifyResult.Revision, roots)
+	assertRevision(t, removeResult.Revision, newRoots)
 }
 
 func TestRPCSectorRoots(t *testing.T) {
@@ -1188,7 +1169,7 @@ func TestRPCSectorRoots(t *testing.T) {
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
 		MaxSectorDuration:   3 * 144,
-		MaxModifyActions:    100,
+		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -1298,7 +1279,7 @@ func BenchmarkWrite(b *testing.B) {
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
 		MaxSectorDuration:   3 * 144,
-		MaxModifyActions:    100,
+		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -1388,7 +1369,7 @@ func BenchmarkRead(b *testing.B) {
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
 		MaxSectorDuration:   3 * 144,
-		MaxModifyActions:    100,
+		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -1490,7 +1471,7 @@ func BenchmarkContractUpload(b *testing.B) {
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
 		MaxSectorDuration:   3 * 144,
-		MaxModifyActions:    100,
+		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{

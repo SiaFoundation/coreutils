@@ -20,18 +20,6 @@ import (
 var protocolVersion = [3]byte{4, 0, 0}
 
 type (
-	// Usage contains the revenue and risked collateral for a contract.
-	Usage struct {
-		RPCRevenue       types.Currency `json:"rpc"`
-		StorageRevenue   types.Currency `json:"storage"`
-		EgressRevenue    types.Currency `json:"egress"`
-		IngressRevenue   types.Currency `json:"ingress"`
-		AccountFunding   types.Currency `json:"accountFunding"`
-		RiskedCollateral types.Currency `json:"riskedCollateral"`
-	}
-)
-
-type (
 	// A TransportMux is a generic multiplexer for incoming streams.
 	TransportMux interface {
 		AcceptStream() (net.Conn, error)
@@ -110,12 +98,12 @@ type (
 		// The returned function must be called to release the lock.
 		LockV2Contract(types.FileContractID) (RevisionState, func(), error)
 		// AddV2Contract adds a new contract to the host.
-		AddV2Contract(TransactionSet, Usage) error
+		AddV2Contract(TransactionSet, rhp4.Usage) error
 		// RenewV2Contract finalizes an existing contract and adds its renewal.
-		RenewV2Contract(TransactionSet, Usage) error
+		RenewV2Contract(TransactionSet, rhp4.Usage) error
 		// ReviseV2Contract atomically revises a contract and updates its sector
 		// roots and usage.
-		ReviseV2Contract(contractID types.FileContractID, revision types.V2FileContract, roots []types.Hash256, usage Usage) error
+		ReviseV2Contract(contractID types.FileContractID, revision types.V2FileContract, roots []types.Hash256, usage rhp4.Usage) error
 		// V2FileContractElement returns the contract state element for the given
 		// contract ID.
 		V2FileContractElement(types.FileContractID) (types.ChainIndex, types.V2FileContractElement, error)
@@ -123,9 +111,9 @@ type (
 		// AccountBalance returns the balance of an account.
 		AccountBalance(rhp4.Account) (types.Currency, error)
 		// CreditAccountsWithContract atomically revises a contract and credits the account.
-		CreditAccountsWithContract([]rhp4.AccountDeposit, types.FileContractID, types.V2FileContract) ([]types.Currency, error)
+		CreditAccountsWithContract([]rhp4.AccountDeposit, types.FileContractID, types.V2FileContract, rhp4.Usage) ([]types.Currency, error)
 		// DebitAccount debits an account.
-		DebitAccount(rhp4.Account, types.Currency) error
+		DebitAccount(rhp4.Account, rhp4.Usage) error
 	}
 
 	// Settings reports the host's current settings.
@@ -192,7 +180,8 @@ func (s *Server) handleRPCReadSector(stream net.Conn) error {
 		return rhp4.ErrSectorNotFound
 	}
 
-	if err := s.contractor.DebitAccount(token.Account, prices.RPCReadSectorCost(req.Length)); err != nil {
+	err := s.contractor.DebitAccount(token.Account, prices.RPCReadSectorCost(req.Length))
+	if err != nil {
 		return fmt.Errorf("failed to debit account: %w", err)
 	}
 
@@ -237,8 +226,8 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 		return errorDecodingError("failed to read sector data: %v", err)
 	}
 
-	cost := prices.RPCWriteSectorCost(req.DataLength, req.Duration)
-	if err := s.contractor.DebitAccount(req.Token.Account, cost); err != nil {
+	usage := prices.RPCWriteSectorCost(req.DataLength, req.Duration)
+	if err = s.contractor.DebitAccount(req.Token.Account, usage); err != nil {
 		return fmt.Errorf("failed to debit account: %w", err)
 	}
 
@@ -250,19 +239,11 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 	})
 }
 
-func (s *Server) handleRPCModifySectors(stream net.Conn) error {
-	var req rhp4.RPCModifySectorsRequest
+func (s *Server) handleRPCFreeSectors(stream net.Conn) error {
+	var req rhp4.RPCFreeSectorsRequest
 	if err := rhp4.ReadRequest(stream, &req); err != nil {
 		return errorDecodingError("failed to read request: %v", err)
 	}
-
-	settings := s.settings.RHP4Settings()
-	if err := req.Validate(s.hostKey.PublicKey(), settings.MaxModifyActions); err != nil {
-		return errorBadRequest("request invalid: %v", err)
-	}
-	prices := req.Prices
-
-	cs := s.chain.TipState()
 
 	state, unlock, err := s.lockContractForRevision(req.ContractID)
 	if err != nil {
@@ -275,53 +256,47 @@ func (s *Server) handleRPCModifySectors(stream net.Conn) error {
 	}
 
 	fc := state.Revision
-	cost := prices.RPCModifySectorsCost(req.Actions)
-	// validate the payment without modifying the contract
-	if fc.RenterOutput.Value.Cmp(cost) < 0 {
-		return rhp4.NewRPCError(rhp4.ErrorCodePayment, fmt.Sprintf("renter output value %v is less than cost %v", fc.RenterOutput.Value, cost))
-	}
 
-	roots := state.Roots
-	for _, action := range req.Actions {
-		switch action.Type {
-		case rhp4.ActionTrim:
-			if action.N > uint64(len(roots)) {
-				return errorBadRequest("trim count %v exceeds sector count %v", action.N, len(roots))
-			}
-			roots = roots[:len(roots)-int(action.N)]
-		case rhp4.ActionUpdate:
-			if action.N >= uint64(len(roots)) {
-				return errorBadRequest("update index %v exceeds sector count %v", action.A, len(roots))
-			}
-			roots[action.N] = action.Root
-		case rhp4.ActionSwap:
-			if action.A >= uint64(len(roots)) || action.B >= uint64(len(roots)) {
-				return errorBadRequest("swap indices %v and %v exceed sector count %v", action.A, action.B, len(roots))
-			}
-			roots[action.A], roots[action.B] = roots[action.B], roots[action.A]
-		default:
-			return errorBadRequest("unknown action type %v", action.Type)
+	settings := s.settings.RHP4Settings()
+	if err := req.Validate(s.hostKey.PublicKey(), fc, settings.MaxSectorBatchSize); err != nil {
+		return errorBadRequest("request invalid: %v", err)
+	}
+	prices := req.Prices
+
+	// validate that all indices are within the expected range
+	indices := make(map[uint64]bool)
+	for _, i := range req.Indices {
+		if i >= uint64(len(state.Roots)) {
+			return errorBadRequest("index %v exceeds sector count %v", i, len(state.Roots))
 		}
+		indices[i] = true
 	}
 
-	treeHashes, leafHashes := rhp4.BuildModifySectorsProof(req.Actions, state.Roots)
-	resp := rhp4.RPCModifySectorsResponse{
-		OldSubtreeHashes: treeHashes,
-		OldLeafHashes:    leafHashes,
-		NewMerkleRoot:    rhp4.MetaRoot(roots),
+	roots := state.Roots[:0]
+	for i, root := range state.Roots {
+		if indices[uint64(i)] {
+			continue
+		}
+		roots = append(roots, root)
+	}
+
+	// TODO: build proof
+	resp := rhp4.RPCFreeSectorsResponse{
+		NewMerkleRoot: rhp4.MetaRoot(roots),
 	}
 	if err := rhp4.WriteResponse(stream, &resp); err != nil {
 		return fmt.Errorf("failed to write response: %w", err)
 	}
-	var renterSigResponse rhp4.RPCModifySectorsSecondResponse
+	var renterSigResponse rhp4.RPCFreeSectorsSecondResponse
 	if err := rhp4.ReadResponse(stream, &renterSigResponse); err != nil {
 		return errorDecodingError("failed to read renter signature response: %v", err)
 	}
 
-	revision, err := rhp4.ReviseForModifySectors(fc, prices, resp.NewMerkleRoot, req.Actions)
+	revision, usage, err := rhp4.ReviseForFreeSectors(fc, prices, resp.NewMerkleRoot, len(req.Indices))
 	if err != nil {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}
+	cs := s.chain.TipState()
 	sigHash := cs.ContractSigHash(revision)
 
 	if !fc.RenterPublicKey.VerifyHash(sigHash, renterSigResponse.RenterSignature) {
@@ -330,13 +305,11 @@ func (s *Server) handleRPCModifySectors(stream net.Conn) error {
 	revision.RenterSignature = renterSigResponse.RenterSignature
 	revision.HostSignature = s.hostKey.SignHash(sigHash)
 
-	err = s.contractor.ReviseV2Contract(req.ContractID, revision, roots, Usage{
-		StorageRevenue: cost,
-	})
+	err = s.contractor.ReviseV2Contract(req.ContractID, revision, roots, usage)
 	if err != nil {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}
-	return rhp4.WriteResponse(stream, &rhp4.RPCModifySectorsThirdResponse{
+	return rhp4.WriteResponse(stream, &rhp4.RPCFreeSectorsThirdResponse{
 		HostSignature: revision.HostSignature,
 	})
 }
@@ -348,10 +321,9 @@ func (s *Server) handleRPCAppendSectors(stream net.Conn) error {
 	}
 
 	settings := s.settings.RHP4Settings()
-	if err := req.Validate(s.hostKey.PublicKey(), settings.MaxModifyActions); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), settings.MaxSectorBatchSize); err != nil {
 		return errorBadRequest("request invalid: %v", err)
 	}
-	prices := req.Prices
 
 	cs := s.chain.TipState()
 
@@ -390,7 +362,7 @@ func (s *Server) handleRPCAppendSectors(stream net.Conn) error {
 		return fmt.Errorf("failed to write response: %w", err)
 	}
 
-	revision, err := rhp4.ReviseForAppendSectors(fc, req.Prices, newRoot, appended)
+	revision, usage, err := rhp4.ReviseForAppendSectors(fc, req.Prices, newRoot, appended)
 	if err != nil {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}
@@ -406,11 +378,7 @@ func (s *Server) handleRPCAppendSectors(stream net.Conn) error {
 	revision.RenterSignature = renterSigResponse.RenterSignature
 	revision.HostSignature = s.hostKey.SignHash(sigHash)
 
-	cost, collateral := req.Prices.RPCAppendSectorsCost(appended, fc.ExpirationHeight-prices.TipHeight)
-	err = s.contractor.ReviseV2Contract(req.ContractID, revision, roots, Usage{
-		StorageRevenue:   cost,
-		RiskedCollateral: collateral,
-	})
+	err = s.contractor.ReviseV2Contract(req.ContractID, revision, roots, usage)
 	if err != nil {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}
@@ -436,26 +404,25 @@ func (s *Server) handleRPCFundAccounts(stream net.Conn) error {
 		totalDeposits = totalDeposits.Add(deposit.Amount)
 	}
 
-	fc := state.Revision
-	if err := rhp4.PayWithContract(&fc, totalDeposits, types.ZeroCurrency); err != nil {
-		return fmt.Errorf("failed to pay with contract: %w", err)
+	revision, usage, err := rhp4.ReviseForFundAccounts(state.Revision, totalDeposits)
+	if err != nil {
+		return fmt.Errorf("failed to revise contract: %w", err)
 	}
 
-	sigHash := s.chain.TipState().ContractSigHash(fc)
-	if !fc.RenterPublicKey.VerifyHash(sigHash, req.RenterSignature) {
+	sigHash := s.chain.TipState().ContractSigHash(revision)
+	if !revision.RenterPublicKey.VerifyHash(sigHash, req.RenterSignature) {
 		return rhp4.ErrInvalidSignature
 	}
+	revision.HostSignature = s.hostKey.SignHash(sigHash)
 
-	fc.HostSignature = s.hostKey.SignHash(sigHash)
-
-	balances, err := s.contractor.CreditAccountsWithContract(req.Deposits, req.ContractID, fc)
+	balances, err := s.contractor.CreditAccountsWithContract(req.Deposits, req.ContractID, revision, usage)
 	if err != nil {
 		return fmt.Errorf("failed to credit account: %w", err)
 	}
 
 	return rhp4.WriteResponse(stream, &rhp4.RPCFundAccountsResponse{
 		Balances:      balances,
-		HostSignature: fc.HostSignature,
+		HostSignature: revision.HostSignature,
 	})
 }
 
@@ -489,13 +456,14 @@ func (s *Server) handleRPCSectorRoots(stream net.Conn) error {
 	defer unlock()
 
 	// validate the request fields
-	if err := req.Validate(s.hostKey.PublicKey(), state.Revision); err != nil {
+	settings := s.settings.RHP4Settings()
+	if err := req.Validate(s.hostKey.PublicKey(), state.Revision, settings.MaxSectorBatchSize); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 	prices := req.Prices
 
 	// update the revision
-	revision, err := rhp4.ReviseForSectorRoots(state.Revision, prices, req.Length)
+	revision, usage, err := rhp4.ReviseForSectorRoots(state.Revision, prices, req.Length)
 	if err != nil {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}
@@ -511,9 +479,7 @@ func (s *Server) handleRPCSectorRoots(stream net.Conn) error {
 	revision.HostSignature = s.hostKey.SignHash(sigHash)
 
 	// update the contract
-	err = s.contractor.ReviseV2Contract(req.ContractID, revision, state.Roots, Usage{
-		EgressRevenue: prices.RPCSectorRootsCost(req.Length),
-	})
+	err = s.contractor.ReviseV2Contract(req.ContractID, revision, state.Roots, usage)
 	if err != nil {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}
@@ -559,9 +525,10 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	}
 	prices := req.Prices
 
+	fc, usage := rhp4.NewContract(prices, req.Contract, ourKey, settings.WalletAddress)
 	formationTxn := types.V2Transaction{
 		MinerFee:      req.MinerFee,
-		FileContracts: []types.V2FileContract{rhp4.NewContract(prices, req.Contract, ourKey, settings.WalletAddress)},
+		FileContracts: []types.V2FileContract{fc},
 	}
 
 	// calculate the renter inputs
@@ -661,9 +628,7 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	err = s.contractor.AddV2Contract(TransactionSet{
 		Transactions: formationSet,
 		Basis:        basis,
-	}, Usage{
-		RPCRevenue: settings.Prices.ContractPrice,
-	})
+	}, usage)
 	if err != nil {
 		return fmt.Errorf("failed to add contract: %w", err)
 	}
@@ -707,7 +672,7 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 	}
 
 	cs := s.chain.TipState()
-	renewal := rhp4.RefreshContract(existing, prices, req.Refresh)
+	renewal, usage := rhp4.RefreshContract(existing, prices, req.Refresh)
 	renterCost, hostCost := rhp4.RefreshCost(cs, prices, renewal, req.MinerFee)
 	renewalTxn := types.V2Transaction{
 		MinerFee: req.MinerFee,
@@ -823,11 +788,7 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 	err = s.contractor.RenewV2Contract(TransactionSet{
 		Transactions: renewalSet,
 		Basis:        basis,
-	}, Usage{
-		RPCRevenue:       prices.ContractPrice,
-		StorageRevenue:   renewal.NewContract.HostOutput.Value.Sub(renewal.NewContract.TotalCollateral).Sub(prices.ContractPrice),
-		RiskedCollateral: renewal.NewContract.TotalCollateral.Sub(renewal.NewContract.MissedHostValue),
-	})
+	}, usage)
 	if err != nil {
 		return fmt.Errorf("failed to add contract: %w", err)
 	}
@@ -873,7 +834,7 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	}
 
 	cs := s.chain.TipState()
-	renewal := rhp4.RenewContract(existing, prices, req.Renewal)
+	renewal, usage := rhp4.RenewContract(existing, prices, req.Renewal)
 	renterCost, hostCost := rhp4.RenewalCost(cs, prices, renewal, req.MinerFee)
 	renewalTxn := types.V2Transaction{
 		MinerFee: req.MinerFee,
@@ -989,11 +950,7 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	err = s.contractor.RenewV2Contract(TransactionSet{
 		Transactions: renewalSet,
 		Basis:        basis,
-	}, Usage{
-		RPCRevenue:       prices.ContractPrice,
-		StorageRevenue:   renewal.NewContract.HostOutput.Value.Sub(renewal.NewContract.TotalCollateral).Sub(prices.ContractPrice),
-		RiskedCollateral: renewal.NewContract.TotalCollateral.Sub(renewal.NewContract.MissedHostValue),
-	})
+	}, usage)
 	if err != nil {
 		return fmt.Errorf("failed to add contract: %w", err)
 	}
@@ -1055,8 +1012,8 @@ func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 		err = s.handleRPCRenewContract(stream)
 	case rhp4.RPCLatestRevisionID:
 		err = s.handleRPCLatestRevision(stream)
-	case rhp4.RPCModifySectorsID:
-		err = s.handleRPCModifySectors(stream)
+	case rhp4.RPCFreeSectorsID:
+		err = s.handleRPCFreeSectors(stream)
 	case rhp4.RPCSectorRootsID:
 		err = s.handleRPCSectorRoots(stream)
 	// account
