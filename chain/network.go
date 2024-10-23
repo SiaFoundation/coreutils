@@ -24,6 +24,8 @@ func Mainnet() (*consensus.Network, types.Block) {
 		InitialCoinbase: types.Siacoins(300000),
 		MinimumCoinbase: types.Siacoins(30000),
 		InitialTarget:   types.BlockID{4: 32},
+		BlockInterval:   10 * time.Minute,
+		MaturityDelay:   144,
 	}
 	n.HardforkDevAddr.Height = 10000
 	n.HardforkDevAddr.OldAddress = parseAddr("addr:7d0c44f7664e2d34e53efde0661a6f628ec9264785ae8e3cd7c973e8d190c3c97b5e3ecbc567")
@@ -115,6 +117,8 @@ func TestnetZen() (*consensus.Network, types.Block) {
 		InitialCoinbase: types.Siacoins(300000),
 		MinimumCoinbase: types.Siacoins(300000),
 		InitialTarget:   types.BlockID{3: 1},
+		BlockInterval:   10 * time.Minute,
+		MaturityDelay:   144,
 	}
 
 	n.HardforkDevAddr.Height = 1
