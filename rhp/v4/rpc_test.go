@@ -82,12 +82,12 @@ func testRenterHostPair(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ChainMa
 	return transport
 }
 
-func startTestNode(tb testing.TB, n *consensus.Network, genesis types.Block, log *zap.Logger) (*chain.Manager, *syncer.Syncer, *wallet.SingleAddressWallet) {
+func startTestNode(tb testing.TB, n *consensus.Network, genesis types.Block) (*chain.Manager, *syncer.Syncer, *wallet.SingleAddressWallet) {
 	db, tipstate, err := chain.NewDBStore(chain.NewMemDB(), n, genesis)
 	if err != nil {
 		tb.Fatal(err)
 	}
-	cm := chain.NewManager(db, tipstate, chain.WithLog(log.Named("chain")))
+	cm := chain.NewManager(db, tipstate)
 
 	syncerListener, err := net.Listen("tcp", ":0")
 	if err != nil {
@@ -99,7 +99,7 @@ func startTestNode(tb testing.TB, n *consensus.Network, genesis types.Block, log
 		GenesisID:  genesis.ID(),
 		UniqueID:   gateway.GenerateUniqueID(),
 		NetAddress: "localhost:1234",
-	}, syncer.WithLogger(log.Named("syncer")))
+	})
 	go s.Run(context.Background())
 	tb.Cleanup(func() { s.Close() })
 
@@ -166,7 +166,7 @@ func TestSettings(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey := types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(t, n, genesis, log)
+	cm, s, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), 150)
@@ -227,7 +227,7 @@ func TestFormContract(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(t, n, genesis, log)
+	cm, s, w := startTestNode(t, n, genesis)
 
 	// fund the wallet with two UTXOs
 	mineAndSync(t, cm, w.Address(), 146, w)
@@ -287,7 +287,7 @@ func TestFormContractBasis(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(t, n, genesis, log)
+	cm, s, w := startTestNode(t, n, genesis)
 
 	// fund the wallet with two UTXOs
 	mineAndSync(t, cm, w.Address(), 146, w)
@@ -346,7 +346,7 @@ func TestRPCRefresh(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
-	cm, s, w := startTestNode(t, n, genesis, log)
+	cm, s, w := startTestNode(t, n, genesis)
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), 150, w)
 
@@ -459,7 +459,7 @@ func TestRPCRenew(t *testing.T) {
 	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
-	cm, s, w := startTestNode(t, n, genesis, log)
+	cm, s, w := startTestNode(t, n, genesis)
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), 150, w)
 
@@ -620,7 +620,7 @@ func TestAccounts(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(t, n, genesis, log)
+	cm, s, w := startTestNode(t, n, genesis)
 
 	// fund the wallet with two UTXOs
 	mineAndSync(t, cm, w.Address(), 146, w)
@@ -722,7 +722,7 @@ func TestReadWriteSector(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(t, n, genesis, log)
+	cm, s, w := startTestNode(t, n, genesis)
 
 	// fund the wallet with two UTXOs
 	mineAndSync(t, cm, w.Address(), 146, w)
@@ -819,7 +819,7 @@ func TestAppendSectors(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(t, n, genesis, log)
+	cm, s, w := startTestNode(t, n, genesis)
 
 	// fund the wallet with two UTXOs
 	mineAndSync(t, cm, w.Address(), 146, w)
@@ -937,7 +937,7 @@ func TestVerifySector(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(t, n, genesis, log)
+	cm, s, w := startTestNode(t, n, genesis)
 
 	// fund the wallet with two UTXOs
 	mineAndSync(t, cm, w.Address(), 146, w)
@@ -1031,7 +1031,7 @@ func TestRPCFreeSectors(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(t, n, genesis, log)
+	cm, s, w := startTestNode(t, n, genesis)
 
 	// fund the wallet with two UTXOs
 	mineAndSync(t, cm, w.Address(), 146, w)
@@ -1156,7 +1156,7 @@ func TestRPCSectorRoots(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(t, n, genesis, log)
+	cm, s, w := startTestNode(t, n, genesis)
 
 	// fund the wallet with two UTXOs
 	mineAndSync(t, cm, w.Address(), 146, w)
@@ -1266,7 +1266,7 @@ func BenchmarkWrite(b *testing.B) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(b, n, genesis, zap.NewNop())
+	cm, s, w := startTestNode(b, n, genesis)
 
 	// fund the wallet with two UTXOs
 	mineAndSync(b, cm, w.Address(), 146, w)
@@ -1356,7 +1356,7 @@ func BenchmarkRead(b *testing.B) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(b, n, genesis, zap.NewNop())
+	cm, s, w := startTestNode(b, n, genesis)
 
 	// fund the wallet with two UTXOs
 	mineAndSync(b, cm, w.Address(), 146, w)
@@ -1458,7 +1458,7 @@ func BenchmarkContractUpload(b *testing.B) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(b, n, genesis, zap.NewNop())
+	cm, s, w := startTestNode(b, n, genesis)
 
 	// fund the wallet with two UTXOs
 	mineAndSync(b, cm, w.Address(), 146, w)
