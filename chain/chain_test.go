@@ -7,6 +7,7 @@ import (
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils"
 	"go.sia.tech/coreutils/chain"
+	"go.sia.tech/coreutils/testutil"
 	"lukechampine.com/frand"
 )
 
@@ -113,11 +114,7 @@ func newMemState() *memState {
 }
 
 func TestV2Attestations(t *testing.T) {
-	n, genesisBlock := chain.TestnetZen()
-
-	n.InitialTarget = types.BlockID{0xFF}
-	n.HardforkV2.AllowHeight = 2
-	n.HardforkV2.RequireHeight = 3
+	n, genesisBlock := testutil.V2Network()
 
 	policy := types.AnyoneCanSpend()
 	addr := policy.Address()
@@ -144,7 +141,7 @@ func TestV2Attestations(t *testing.T) {
 		ms := newMemState()
 
 		// mine until a utxo is spendable
-		mineBlocks(t, cm, 150)
+		mineBlocks(t, cm, int(n.MaturityDelay)+1)
 		ms.Sync(t, cm)
 
 		txn := types.V2Transaction{
@@ -179,7 +176,7 @@ func TestV2Attestations(t *testing.T) {
 		ms := newMemState()
 
 		// mine until a utxo is spendable
-		mineBlocks(t, cm, 150)
+		mineBlocks(t, cm, int(n.MaturityDelay)+1)
 		ms.Sync(t, cm)
 
 		sk := types.GeneratePrivateKey()
@@ -228,7 +225,7 @@ func TestV2Attestations(t *testing.T) {
 		ms := newMemState()
 
 		// mine until a utxo is spendable
-		mineBlocks(t, cm, 150)
+		mineBlocks(t, cm, int(n.MaturityDelay)+1)
 		ms.Sync(t, cm)
 
 		sk := types.GeneratePrivateKey()
@@ -272,7 +269,7 @@ func TestV2Attestations(t *testing.T) {
 		ms := newMemState()
 
 		// mine until a utxo is spendable
-		mineBlocks(t, cm, 150)
+		mineBlocks(t, cm, int(n.MaturityDelay)+1)
 		ms.Sync(t, cm)
 
 		sk := types.GeneratePrivateKey()

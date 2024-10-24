@@ -167,7 +167,7 @@ func TestSettings(t *testing.T) {
 	cm, s, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
-	mineAndSync(t, cm, w.Address(), 150)
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	sr.Update(proto4.HostSettings{
@@ -227,8 +227,8 @@ func TestFormContract(t *testing.T) {
 
 	cm, s, w := startTestNode(t, n, genesis)
 
-	// fund the wallet with two UTXOs
-	mineAndSync(t, cm, w.Address(), 146, w)
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	sr.Update(proto4.HostSettings{
@@ -287,8 +287,8 @@ func TestFormContractBasis(t *testing.T) {
 
 	cm, s, w := startTestNode(t, n, genesis)
 
-	// fund the wallet with two UTXOs
-	mineAndSync(t, cm, w.Address(), 146, w)
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	sr.Update(proto4.HostSettings{
@@ -345,8 +345,9 @@ func TestRPCRefresh(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 	cm, s, w := startTestNode(t, n, genesis)
+
 	// fund the wallet
-	mineAndSync(t, cm, w.Address(), 150, w)
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	sr.Update(proto4.HostSettings{
@@ -458,8 +459,9 @@ func TestRPCRenew(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 	cm, s, w := startTestNode(t, n, genesis)
+
 	// fund the wallet
-	mineAndSync(t, cm, w.Address(), 150, w)
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	sr.Update(proto4.HostSettings{
@@ -620,8 +622,8 @@ func TestAccounts(t *testing.T) {
 
 	cm, s, w := startTestNode(t, n, genesis)
 
-	// fund the wallet with two UTXOs
-	mineAndSync(t, cm, w.Address(), 146, w)
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	sr.Update(proto4.HostSettings{
@@ -722,8 +724,8 @@ func TestReadWriteSector(t *testing.T) {
 
 	cm, s, w := startTestNode(t, n, genesis)
 
-	// fund the wallet with two UTXOs
-	mineAndSync(t, cm, w.Address(), 146, w)
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	sr.Update(proto4.HostSettings{
@@ -819,8 +821,8 @@ func TestAppendSectors(t *testing.T) {
 
 	cm, s, w := startTestNode(t, n, genesis)
 
-	// fund the wallet with two UTXOs
-	mineAndSync(t, cm, w.Address(), 146, w)
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	sr.Update(proto4.HostSettings{
@@ -937,8 +939,8 @@ func TestVerifySector(t *testing.T) {
 
 	cm, s, w := startTestNode(t, n, genesis)
 
-	// fund the wallet with two UTXOs
-	mineAndSync(t, cm, w.Address(), 146, w)
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	sr.Update(proto4.HostSettings{
@@ -1031,8 +1033,8 @@ func TestRPCFreeSectors(t *testing.T) {
 
 	cm, s, w := startTestNode(t, n, genesis)
 
-	// fund the wallet with two UTXOs
-	mineAndSync(t, cm, w.Address(), 146, w)
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	sr.Update(proto4.HostSettings{
@@ -1155,8 +1157,8 @@ func TestRPCSectorRoots(t *testing.T) {
 
 	cm, s, w := startTestNode(t, n, genesis)
 
-	// fund the wallet with two UTXOs
-	mineAndSync(t, cm, w.Address(), 146, w)
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	sr.Update(proto4.HostSettings{
@@ -1265,8 +1267,8 @@ func BenchmarkWrite(b *testing.B) {
 
 	cm, s, w := startTestNode(b, n, genesis)
 
-	// fund the wallet with two UTXOs
-	mineAndSync(b, cm, w.Address(), 146, w)
+	// fund the wallet
+	mineAndSync(b, cm, w.Address(), int(n.MaturityDelay+20), w)
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	sr.Update(proto4.HostSettings{
@@ -1355,8 +1357,8 @@ func BenchmarkRead(b *testing.B) {
 
 	cm, s, w := startTestNode(b, n, genesis)
 
-	// fund the wallet with two UTXOs
-	mineAndSync(b, cm, w.Address(), 146, w)
+	// fund the wallet
+	mineAndSync(b, cm, w.Address(), int(n.MaturityDelay+20), w)
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	sr.Update(proto4.HostSettings{
@@ -1457,8 +1459,8 @@ func BenchmarkContractUpload(b *testing.B) {
 
 	cm, s, w := startTestNode(b, n, genesis)
 
-	// fund the wallet with two UTXOs
-	mineAndSync(b, cm, w.Address(), 146, w)
+	// fund the wallet
+	mineAndSync(b, cm, w.Address(), int(n.MaturityDelay+20), w)
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	sr.Update(proto4.HostSettings{
