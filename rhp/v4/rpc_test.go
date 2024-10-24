@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"maps"
 	"net"
 	"reflect"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1133,18 +1131,17 @@ func TestRPCFreeSectors(t *testing.T) {
 	revision.Revision = appendResult.Revision
 
 	// randomly remove half the sectors
-	indices := make(map[uint64]bool)
-	var newRoots []types.Hash256
-	for len(indices) < len(roots)/2 {
-		i := frand.Uint64n(uint64(len(roots)))
-		indices[i] = true
+	indices := make([]uint64, len(roots)/2)
+	for i, n := range frand.Perm(len(roots))[:len(roots)/2] {
+		indices[i] = uint64(n)
 	}
-	for i, root := range roots {
-		if !indices[uint64(i)] {
-			newRoots = append(newRoots, root)
-		}
+	newRoots := append([]types.Hash256(nil), roots...)
+	for i, n := range indices {
+		newRoots[n] = newRoots[len(newRoots)-i-1]
 	}
-	removeResult, err := rhp4.RPCFreeSectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, slices.Collect(maps.Keys(indices)))
+	newRoots = newRoots[:len(newRoots)-len(indices)]
+
+	removeResult, err := rhp4.RPCFreeSectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, indices)
 	if err != nil {
 		t.Fatal(err)
 	}

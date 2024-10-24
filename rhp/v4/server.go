@@ -191,7 +191,7 @@ func (s *Server) handleRPCReadSector(stream net.Conn) error {
 	}
 
 	segment := sector[req.Offset : req.Offset+req.Length]
-	start := (req.Offset / rhp4.LeafSize)
+	start := req.Offset / rhp4.LeafSize
 	end := (req.Offset + req.Length + rhp4.LeafSize - 1) / rhp4.LeafSize
 	proof := rhp4.BuildSectorProof(&sector, start, end)
 
@@ -264,25 +264,25 @@ func (s *Server) handleRPCFreeSectors(stream net.Conn) error {
 	prices := req.Prices
 
 	// validate that all indices are within the expected range
-	indices := make(map[uint64]bool)
 	for _, i := range req.Indices {
 		if i >= uint64(len(state.Roots)) {
 			return errorBadRequest("index %v exceeds sector count %v", i, len(state.Roots))
 		}
-		indices[i] = true
 	}
 
-	roots := state.Roots[:0]
-	for i, root := range state.Roots {
-		if indices[uint64(i)] {
-			continue
-		}
-		roots = append(roots, root)
-	}
+	oldSubtreeHashes, oldLeafHashes := rhp4.BuildFreeSectorsProof(state.Roots, req.Indices)
 
-	// TODO: build proof
+	// modify the sector roots
+	//
+	// NOTE: must match the behavior of BuildFreeSectorsProof
+	for i, n := range req.Indices {
+		state.Roots[n] = state.Roots[len(state.Roots)-i-1]
+	}
+	state.Roots = state.Roots[:len(state.Roots)-len(req.Indices)]
 	resp := rhp4.RPCFreeSectorsResponse{
-		NewMerkleRoot: rhp4.MetaRoot(roots),
+		OldSubtreeHashes: oldSubtreeHashes,
+		OldLeafHashes:    oldLeafHashes,
+		NewMerkleRoot:    rhp4.MetaRoot(state.Roots),
 	}
 	if err := rhp4.WriteResponse(stream, &resp); err != nil {
 		return fmt.Errorf("failed to write response: %w", err)
@@ -305,7 +305,7 @@ func (s *Server) handleRPCFreeSectors(stream net.Conn) error {
 	revision.RenterSignature = renterSigResponse.RenterSignature
 	revision.HostSignature = s.hostKey.SignHash(sigHash)
 
-	err = s.contractor.ReviseV2Contract(req.ContractID, revision, roots, usage)
+	err = s.contractor.ReviseV2Contract(req.ContractID, revision, state.Roots, usage)
 	if err != nil {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}

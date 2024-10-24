@@ -221,7 +221,9 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 		return RPCReadSectorResult{}, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	rpv := rhp4.NewRangeProofVerifier(offset, length)
+	start := req.Offset / rhp4.LeafSize
+	end := (req.Offset + req.Length + rhp4.LeafSize - 1) / rhp4.LeafSize
+	rpv := rhp4.NewRangeProofVerifier(start, end)
 	if n, err := rpv.ReadFrom(io.TeeReader(io.LimitReader(s, int64(resp.DataLength)), w)); err != nil {
 		return RPCReadSectorResult{}, fmt.Errorf("failed to read data: %w", err)
 	} else if !rpv.Verify(resp.Proof, root) {
@@ -328,11 +330,13 @@ func RPCFreeSectors(ctx context.Context, t TransportClient, cs consensus.State, 
 		return RPCFreeSectorsResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
+	numSectors := contract.Revision.Filesize / rhp4.SectorSize
 	var resp rhp4.RPCFreeSectorsResponse
 	if err := rhp4.ReadResponse(s, &resp); err != nil {
 		return RPCFreeSectorsResult{}, fmt.Errorf("failed to read response: %w", err)
+	} else if !rhp4.VerifyFreeSectorsProof(resp.OldSubtreeHashes, resp.OldLeafHashes, indices, numSectors, contract.Revision.FileMerkleRoot, resp.NewMerkleRoot) {
+		return RPCFreeSectorsResult{}, ErrInvalidProof
 	}
-	// TODO: verify proof
 
 	revision, usage, err := rhp4.ReviseForFreeSectors(contract.Revision, prices, resp.NewMerkleRoot, len(indices))
 	if err != nil {
