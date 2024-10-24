@@ -596,7 +596,7 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 		})
 	}
 
-	// sign the renter inputs
+	// sign the renter inputs after the host inputs have been added
 	signer.SignV2Inputs(&formationTxn, toSign)
 	formationSigHash := cs.ContractSigHash(fc)
 	formationTxn.FileContracts[0].RenterSignature = signer.SignHash(formationSigHash)
@@ -727,7 +727,7 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 		})
 	}
 
-	// sign the renter inputs
+	// sign the renter inputs after the host inputs have been added
 	signer.SignV2Inputs(&renewalTxn, toSign)
 	// sign the renewal
 	renewalSigHash := cs.RenewalSigHash(renewal)
@@ -812,7 +812,6 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 	if err != nil {
 		return RPCRefreshContractResult{}, fmt.Errorf("failed to fund transaction: %w", err)
 	}
-	signer.SignV2Inputs(&renewalTxn, toSign)
 
 	req.Basis, req.RenterParents, err = tp.V2TransactionSet(basis, renewalTxn)
 	if err != nil {
@@ -856,8 +855,8 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 		})
 	}
 
-	// sign the renter inputs
-	signer.SignV2Inputs(&renewalTxn, []int{0})
+	// sign the renter inputs after adding the host inputs
+	signer.SignV2Inputs(&renewalTxn, toSign)
 	// sign the renewal
 	renewalSigHash := cs.RenewalSigHash(renewal)
 	renewal.RenterSignature = signer.SignHash(renewalSigHash)

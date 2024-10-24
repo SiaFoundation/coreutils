@@ -563,6 +563,13 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	}
 	// sign the transaction inputs
 	s.wallet.SignV2Inputs(&formationTxn, toSign)
+	// send the host inputs to the renter
+	hostInputsResp := rhp4.RPCFormContractResponse{
+		HostInputs: formationTxn.SiacoinInputs[len(req.RenterInputs):],
+	}
+	if err := rhp4.WriteResponse(stream, &hostInputsResp); err != nil {
+		return fmt.Errorf("failed to send host inputs: %w", err)
+	}
 
 	// update renter input basis to reflect our funding basis
 	if basis != req.Basis {
@@ -574,14 +581,6 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 		}
 		formationTxn = txnset[0]
 		formationTxn.SiacoinInputs = append(formationTxn.SiacoinInputs, hostInputs)
-	}
-
-	// send the host inputs to the renter
-	hostInputsResp := rhp4.RPCFormContractResponse{
-		HostInputs: formationTxn.SiacoinInputs[len(req.RenterInputs):],
-	}
-	if err := rhp4.WriteResponse(stream, &hostInputsResp); err != nil {
-		return fmt.Errorf("failed to send host inputs: %w", err)
 	}
 
 	// read the renter's signatures
@@ -770,7 +769,7 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 	// and update the proofs.
 	if len(req.RenterParents) > 0 {
 		if _, err := s.chain.AddV2PoolTransactions(req.Basis, req.RenterParents); err != nil {
-			return errorBadRequest("failed to add formation parents to transaction pool: %v", err)
+			return errorBadRequest("failed to add renewal parents to transaction pool: %v", err)
 		}
 	}
 
