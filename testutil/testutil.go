@@ -49,13 +49,15 @@ func V2Network() (*consensus.Network, types.Block) {
 }
 
 // MineBlocks mines n blocks with the reward going to the given address.
-func MineBlocks(t *testing.T, cm *chain.Manager, addr types.Address, n int) {
+func MineBlocks(tb testing.TB, cm *chain.Manager, addr types.Address, n int) {
+	tb.Helper()
+
 	for ; n > 0; n-- {
 		b, ok := coreutils.MineBlock(cm, addr, time.Second)
 		if !ok {
-			t.Fatal("failed to mine block")
+			tb.Fatal("failed to mine block")
 		} else if err := cm.AddBlocks([]types.Block{b}); err != nil {
-			t.Fatal(err)
+			tb.Fatal(err)
 		}
 	}
 }
