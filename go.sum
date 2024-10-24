@@ -6,8 +6,8 @@ github.com/stretchr/testify v1.8.1 h1:w7B6lhMri9wdJUVmEZPGGhZzrYTPvgJArz7wNPgYKs
 github.com/stretchr/testify v1.8.1/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
 go.etcd.io/bbolt v1.3.11 h1:yGEzV1wPz2yVCLsD8ZAiGHhHVlczyC9d1rP43/VCRJ0=
 go.etcd.io/bbolt v1.3.11/go.mod h1:dksAq7YMXoljX0xu6VF5DMZGbhYYoLUalEiSySYAS4I=
-go.sia.tech/core v0.4.8-0.20241024163601-9018cb0d6c54 h1:seF2psD8k/GMX3fNOX+Izeh4Y3vRx7/ynQONpCu97OU=
-go.sia.tech/core v0.4.8-0.20241024163601-9018cb0d6c54/go.mod h1:P3C1BWa/7J4XgdzWuaYHBvLo2RzZ0UBaJM4TG1GWB2g=
+go.sia.tech/core v0.4.8-0.20241024165852-43d1f1df8bec h1:L//DmbCeuHe2gEHr0uZaE6gN/VvQUkFVJLqoYhxMD2I=
+go.sia.tech/core v0.4.8-0.20241024165852-43d1f1df8bec/go.mod h1:P3C1BWa/7J4XgdzWuaYHBvLo2RzZ0UBaJM4TG1GWB2g=
 go.sia.tech/mux v1.3.0 h1:hgR34IEkqvfBKUJkAzGi31OADeW2y7D6Bmy/Jcbop9c=
 go.sia.tech/mux v1.3.0/go.mod h1:I46++RD4beqA3cW9Xm9SwXbezwPqLvHhVs9HLpDtt58=
 go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=

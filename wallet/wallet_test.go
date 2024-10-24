@@ -1052,9 +1052,7 @@ func TestReorgV2(t *testing.T) {
 	ws := testutil.NewEphemeralWalletStore()
 
 	// create chain store
-	network, genesis := testutil.Network()
-	network.HardforkV2.AllowHeight = 10
-	network.HardforkV2.RequireHeight = 20
+	network, genesis := testutil.V2Network()
 	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis)
 	if err != nil {
 		t.Fatal(err)
@@ -1077,8 +1075,6 @@ func TestReorgV2(t *testing.T) {
 	// mine a block to fund the wallet
 	mineAndSync(t, cm, ws, w, w.Address(), 1)
 	maturityHeight := genesisState.MaturityHeight()
-	// mine until the require height
-	mineAndSync(t, cm, ws, w, types.VoidAddress, network.HardforkV2.RequireHeight-cm.Tip().Height)
 
 	// check that the wallet has a single event
 	if events, err := w.Events(0, 100); err != nil {
@@ -1407,7 +1403,7 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 
 	network, genesisBlock := testutil.V2Network()
 	// raise the require height to test v1 events
-	network.HardforkV2.RequireHeight = 250
+	network.HardforkV2.RequireHeight = 100
 	store, genesisState, err := chain.NewDBStore(bdb, network, genesisBlock)
 	if err != nil {
 		t.Fatal(err)
@@ -1423,7 +1419,7 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 
 	// miner payout event
 	mineAndSync(t, cm, ws, wm, addr, 1)
-	assertEvent(t, wm, types.Hash256(cm.Tip().ID.MinerOutputID(0)), wallet.EventTypeMinerPayout, genesisState.BlockReward(), types.ZeroCurrency, 145)
+	assertEvent(t, wm, types.Hash256(cm.Tip().ID.MinerOutputID(0)), wallet.EventTypeMinerPayout, genesisState.BlockReward(), types.ZeroCurrency, genesisState.MaturityHeight())
 
 	// mine until the payout matures
 	mineAndSync(t, cm, ws, wm, types.VoidAddress, genesisState.MaturityHeight()-cm.Tip().Height+1)
@@ -1489,7 +1485,7 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 
 		// mine until the contract expires to trigger the resolution event
 		mineAndSync(t, cm, ws, wm, types.VoidAddress, fc.WindowEnd-cm.Tip().Height)
-		assertEvent(t, wm, types.Hash256(txn.FileContractID(0).MissedOutputID(0)), wallet.EventTypeV1ContractResolution, missedPayout, types.ZeroCurrency, fc.WindowEnd+144)
+		assertEvent(t, wm, types.Hash256(txn.FileContractID(0).MissedOutputID(0)), wallet.EventTypeV1ContractResolution, missedPayout, types.ZeroCurrency, fc.WindowEnd+network.MaturityDelay)
 	})
 
 	t.Run("v2 transaction", func(t *testing.T) {
@@ -1587,7 +1583,7 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		}
 		// mine a block to confirm the resolution
 		mineAndSync(t, cm, ws, wm, types.VoidAddress, 1)
-		assertEvent(t, wm, types.Hash256(types.FileContractID(fce.ID).V2RenterOutputID()), wallet.EventTypeV2ContractResolution, renterPayout, types.ZeroCurrency, cm.Tip().Height+144)
+		assertEvent(t, wm, types.Hash256(types.FileContractID(fce.ID).V2RenterOutputID()), wallet.EventTypeV2ContractResolution, renterPayout, types.ZeroCurrency, cm.Tip().Height+network.MaturityDelay)
 	})
 
 	t.Run("v2 contract resolution - storage proof", func(t *testing.T) {
@@ -1670,7 +1666,7 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		}
 		// mine a block to confirm the resolution
 		mineAndSync(t, cm, ws, wm, types.VoidAddress, 1)
-		assertEvent(t, wm, types.Hash256(types.FileContractID(fce.ID).V2HostOutputID()), wallet.EventTypeV2ContractResolution, renterPayout, types.ZeroCurrency, cm.Tip().Height+144)
+		assertEvent(t, wm, types.Hash256(types.FileContractID(fce.ID).V2HostOutputID()), wallet.EventTypeV2ContractResolution, renterPayout, types.ZeroCurrency, cm.Tip().Height+network.MaturityDelay)
 	})
 
 	t.Run("v2 contract resolution - renewal", func(t *testing.T) {
@@ -1794,7 +1790,7 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		}
 		// mine a block to confirm the renewal
 		mineAndSync(t, cm, ws, wm, types.VoidAddress, 1)
-		assertEvent(t, wm, types.Hash256(types.FileContractID(fce.ID).V2RenterOutputID()), wallet.EventTypeV2ContractResolution, renterPayout, types.ZeroCurrency, cm.Tip().Height+144)
+		assertEvent(t, wm, types.Hash256(types.FileContractID(fce.ID).V2RenterOutputID()), wallet.EventTypeV2ContractResolution, renterPayout, types.ZeroCurrency, cm.Tip().Height+network.MaturityDelay)
 	})
 
 	t.Run("v2 contract resolution - finalization", func(t *testing.T) {
@@ -1879,7 +1875,7 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		}
 		// mine a block to confirm the renewal
 		mineAndSync(t, cm, ws, wm, types.VoidAddress, 1)
-		assertEvent(t, wm, types.Hash256(types.FileContractID(fce.ID).V2RenterOutputID()), wallet.EventTypeV2ContractResolution, renterPayout, types.ZeroCurrency, cm.Tip().Height+144)
+		assertEvent(t, wm, types.Hash256(types.FileContractID(fce.ID).V2RenterOutputID()), wallet.EventTypeV2ContractResolution, renterPayout, types.ZeroCurrency, cm.Tip().Height+network.MaturityDelay)
 	})
 }
 
@@ -1908,7 +1904,7 @@ func TestV2TPoolRace(t *testing.T) {
 	// fund the wallet
 	mineAndSync(t, cm, ws, w, w.Address(), 1)
 	// mine until one utxo is mature
-	mineAndSync(t, cm, ws, w, types.VoidAddress, 144)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, network.MaturityDelay)
 
 	// create a transaction that creates an ephemeral output with 1000 SC
 	setupTxn := types.V2Transaction{

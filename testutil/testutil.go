@@ -15,6 +15,9 @@ func Network() (*consensus.Network, types.Block) {
 	// use a modified version of Zen
 	n, genesisBlock := chain.TestnetZen()
 	n.InitialTarget = types.BlockID{0xFF}
+	n.BlockInterval = time.Second
+	n.MaturityDelay = 5
+
 	n.HardforkDevAddr.Height = 1
 	n.HardforkTax.Height = 1
 	n.HardforkStorageProof.Height = 1
@@ -31,14 +34,17 @@ func V2Network() (*consensus.Network, types.Block) {
 	// use a modified version of Zen
 	n, genesisBlock := chain.TestnetZen()
 	n.InitialTarget = types.BlockID{0xFF}
+	n.BlockInterval = time.Second
+	n.MaturityDelay = 5
+
 	n.HardforkDevAddr.Height = 1
 	n.HardforkTax.Height = 1
 	n.HardforkStorageProof.Height = 1
 	n.HardforkOak.Height = 1
 	n.HardforkASIC.Height = 1
 	n.HardforkFoundation.Height = 1
-	n.HardforkV2.AllowHeight = 100
-	n.HardforkV2.RequireHeight = 110
+	n.HardforkV2.AllowHeight = 1
+	n.HardforkV2.RequireHeight = 1
 	return n, genesisBlock
 }
 
