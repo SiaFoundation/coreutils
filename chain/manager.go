@@ -1174,7 +1174,7 @@ func (m *Manager) AddPoolTransactions(txns []types.Transaction) (known bool, err
 	// invalidate caches
 	m.txpool.medianFee = nil
 	m.txpool.parentMap = nil
-	return
+	return false, nil
 }
 
 // UpdateV2TransactionSet updates the basis of a transaction set from "from" to "to".
