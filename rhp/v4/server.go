@@ -17,6 +17,17 @@ import (
 	"lukechampine.com/frand"
 )
 
+const (
+	sectorsPerTiB = (1 << 40) / (1 << 22)
+	memoryPer1TiB = sectorsPerTiB * 32
+
+	sectorsPer10TiB = 10 * sectorsPerTiB
+	memoryPer10TiB  = sectorsPer10TiB * 32
+
+	sectorsPer100TiB = 100 * sectorsPerTiB
+	memoryPer100TiB  = sectorsPer100TiB * 32
+)
+
 var protocolVersion = [3]byte{4, 0, 0}
 
 type (
@@ -81,7 +92,7 @@ type (
 		// HasSector returns true if the sector is stored.
 		HasSector(root types.Hash256) (bool, error)
 		// ReadSector retrieves a sector by its root
-		ReadSector(root types.Hash256) ([rhp4.SectorSize]byte, error)
+		ReadSector(root types.Hash256) (*[rhp4.SectorSize]byte, error)
 		// StoreSector writes a sector to disk
 		StoreSector(root types.Hash256, data *[rhp4.SectorSize]byte, expiration uint64) error
 	}
@@ -163,37 +174,48 @@ func (s *Server) handleRPCSettings(stream net.Conn) error {
 	})
 }
 
-func (s *Server) handleRPCReadSector(stream net.Conn) error {
+func (s *Server) handleRPCReadSector(stream net.Conn, log *zap.Logger) error {
+	st := time.Now()
+	lap := func(context string) {
+		log.Debug(context, zap.Duration("elapsed", time.Since(st)))
+		st = time.Now()
+	}
 	var req rhp4.RPCReadSectorRequest
 	if err := rhp4.ReadRequest(stream, &req); err != nil {
 		return errorDecodingError("failed to read request: %v", err)
 	}
+	lap("read request")
 
 	if err := req.Validate(s.hostKey.PublicKey()); err != nil {
 		return errorBadRequest("request invalid: %v", err)
 	}
 	prices, token := req.Prices, req.Token
+	lap("validate request")
 
 	if exists, err := s.sectors.HasSector(req.Root); err != nil {
 		return fmt.Errorf("failed to check sector: %w", err)
 	} else if !exists {
 		return rhp4.ErrSectorNotFound
 	}
+	lap("check sector")
 
 	err := s.contractor.DebitAccount(token.Account, prices.RPCReadSectorCost(req.Length))
 	if err != nil {
 		return fmt.Errorf("failed to debit account: %w", err)
 	}
+	lap("debit account")
 
 	sector, err := s.sectors.ReadSector(req.Root)
 	if err != nil {
 		return fmt.Errorf("failed to read sector: %w", err)
 	}
+	lap("read sector")
 
 	segment := sector[req.Offset : req.Offset+req.Length]
 	start := req.Offset / rhp4.LeafSize
 	end := (req.Offset + req.Length + rhp4.LeafSize - 1) / rhp4.LeafSize
-	proof := rhp4.BuildSectorProof(&sector, start, end)
+	proof := rhp4.BuildSectorProof(sector, start, end)
+	lap("build proof")
 
 	return rhp4.WriteResponse(stream, &rhp4.RPCReadSectorResponse{
 		Sector: segment,
@@ -979,7 +1001,7 @@ func (s *Server) handleRPCVerifySector(stream net.Conn) error {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
-	proof := rhp4.BuildSectorProof(&sector, req.LeafIndex, req.LeafIndex+1)
+	proof := rhp4.BuildSectorProof(sector, req.LeafIndex, req.LeafIndex+1)
 	resp := rhp4.RPCVerifySectorResponse{
 		Proof: proof,
 		Leaf:  ([64]byte)(sector[rhp4.LeafSize*req.LeafIndex:]),
@@ -1024,7 +1046,7 @@ func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 	case rhp4.RPCAppendSectorsID:
 		err = s.handleRPCAppendSectors(stream)
 	case rhp4.RPCReadSectorID:
-		err = s.handleRPCReadSector(stream)
+		err = s.handleRPCReadSector(stream, log.Named("RPCReadSector"))
 	case rhp4.RPCWriteSectorID:
 		err = s.handleRPCWriteSector(stream)
 	case rhp4.RPCVerifySectorID:

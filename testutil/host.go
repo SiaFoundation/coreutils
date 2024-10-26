@@ -18,7 +18,7 @@ import (
 // An EphemeralSectorStore is an in-memory minimal rhp4.SectorStore for testing.
 type EphemeralSectorStore struct {
 	mu      sync.Mutex
-	sectors map[types.Hash256][proto4.SectorSize]byte
+	sectors map[types.Hash256]*[proto4.SectorSize]byte
 }
 
 var _ rhp4.Sectors = (*EphemeralSectorStore)(nil)
@@ -32,12 +32,12 @@ func (es *EphemeralSectorStore) HasSector(root types.Hash256) (bool, error) {
 }
 
 // ReadSector reads a sector from the EphemeralSectorStore.
-func (es *EphemeralSectorStore) ReadSector(root types.Hash256) ([proto4.SectorSize]byte, error) {
+func (es *EphemeralSectorStore) ReadSector(root types.Hash256) (*[proto4.SectorSize]byte, error) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
 	sector, ok := es.sectors[root]
 	if !ok {
-		return [proto4.SectorSize]byte{}, errors.New("sector not found")
+		return nil, errors.New("sector not found")
 	}
 	return sector, nil
 }
@@ -46,7 +46,7 @@ func (es *EphemeralSectorStore) ReadSector(root types.Hash256) ([proto4.SectorSi
 func (es *EphemeralSectorStore) StoreSector(root types.Hash256, sector *[proto4.SectorSize]byte, expiration uint64) error {
 	es.mu.Lock()
 	defer es.mu.Unlock()
-	es.sectors[root] = *sector
+	es.sectors[root] = sector
 	return nil
 }
 
@@ -361,7 +361,7 @@ func NewEphemeralSettingsReporter() *EphemeralSettingsReporter {
 // NewEphemeralSectorStore creates an EphemeralSectorStore for testing.
 func NewEphemeralSectorStore() *EphemeralSectorStore {
 	return &EphemeralSectorStore{
-		sectors: make(map[types.Hash256][proto4.SectorSize]byte),
+		sectors: make(map[types.Hash256]*[proto4.SectorSize]byte),
 	}
 }
 
