@@ -216,7 +216,7 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 		return RPCReadSectorResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
-	var resp rhp4.RPCReadSectorStreamedResponse
+	var resp rhp4.RPCReadSectorResponse
 	if err := rhp4.ReadResponse(s, &resp); err != nil {
 		return RPCReadSectorResult{}, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -237,19 +237,17 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 }
 
 // RPCWriteSector writes a sector to the host.
-func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, rl ReaderLen, duration uint64) (RPCWriteSectorResult, error) {
-	length, err := rl.Len()
-	if err != nil {
-		return RPCWriteSectorResult{}, fmt.Errorf("failed to get length: %w", err)
-	} else if length == 0 {
+func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, data io.Reader, length uint64, duration uint64) (RPCWriteSectorResult, error) {
+	if length == 0 {
 		return RPCWriteSectorResult{}, errors.New("cannot write zero-length sector")
+	} else if length > rhp4.SectorSize {
+		return RPCWriteSectorResult{}, fmt.Errorf("sector length %d exceeds maximum %d", length, rhp4.SectorSize)
 	}
-
-	req := rhp4.RPCWriteSectorStreamingRequest{
+	req := rhp4.RPCWriteSectorRequest{
 		Prices:     prices,
 		Token:      token,
 		Duration:   duration,
-		DataLength: uint64(length),
+		DataLength: length,
 	}
 
 	if err := req.Validate(t.PeerKey(), req.Duration); err != nil {
@@ -265,7 +263,7 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 		return RPCWriteSectorResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
-	sr := io.LimitReader(rl, int64(req.DataLength))
+	sr := io.LimitReader(data, int64(req.DataLength))
 	tr := io.TeeReader(sr, bw)
 	if req.DataLength < rhp4.SectorSize {
 		// if the data is less than a full sector, the reader needs to be padded

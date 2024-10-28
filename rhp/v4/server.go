@@ -217,14 +217,19 @@ func (s *Server) handleRPCReadSector(stream net.Conn, log *zap.Logger) error {
 	proof := rhp4.BuildSectorProof(sector, start, end)
 	lap("build proof")
 
-	return rhp4.WriteResponse(stream, &rhp4.RPCReadSectorResponse{
-		Sector: segment,
-		Proof:  proof,
-	})
+	if err := rhp4.WriteResponse(stream, &rhp4.RPCReadSectorResponse{
+		Proof:      proof,
+		DataLength: uint64(len(segment)),
+	}); err != nil {
+		return fmt.Errorf("failed to write response: %w", err)
+	} else if _, err := stream.Write(segment); err != nil {
+		return fmt.Errorf("failed to write sector data: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) handleRPCWriteSector(stream net.Conn) error {
-	var req rhp4.RPCWriteSectorStreamingRequest
+	var req rhp4.RPCWriteSectorRequest
 	if err := rhp4.ReadRequest(stream, &req); err != nil {
 		return errorDecodingError("failed to read request: %v", err)
 	}
