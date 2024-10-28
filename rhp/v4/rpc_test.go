@@ -3,7 +3,6 @@ package rhp_test
 import (
 	"bytes"
 	"context"
-	"io"
 	"net"
 	"reflect"
 	"strings"
@@ -21,26 +20,8 @@ import (
 	"go.sia.tech/coreutils/testutil"
 	"go.sia.tech/coreutils/wallet"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zaptest"
 	"lukechampine.com/frand"
 )
-
-type readerLen struct {
-	r      io.Reader
-	length int
-}
-
-func NewReaderLen(buf []byte) rhp4.ReaderLen {
-	return &readerLen{r: bytes.NewReader(buf), length: len(buf)}
-}
-
-func (r *readerLen) Len() (int, error) {
-	return r.length, nil
-}
-
-func (r *readerLen) Read(p []byte) (int, error) {
-	return r.r.Read(p)
-}
 
 type fundAndSign struct {
 	w  *wallet.SingleAddressWallet
@@ -144,6 +125,7 @@ func mineAndSync(tb testing.TB, cm *chain.Manager, addr types.Address, n int, ti
 	testutil.MineBlocks(tb, cm, addr, n)
 
 	for {
+		time.Sleep(time.Millisecond)
 		equals := true
 		for _, tipper := range tippers {
 			if tipper.Tip() != cm.Tip() {
@@ -155,12 +137,10 @@ func mineAndSync(tb testing.TB, cm *chain.Manager, addr types.Address, n int, ti
 		if equals {
 			return
 		}
-		time.Sleep(time.Millisecond)
 	}
 }
 
 func TestSettings(t *testing.T) {
-	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
 	hostKey := types.GeneratePrivateKey()
 
@@ -191,7 +171,7 @@ func TestSettings(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
+	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -221,7 +201,6 @@ func TestSettings(t *testing.T) {
 }
 
 func TestFormContract(t *testing.T) {
-	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
@@ -252,7 +231,7 @@ func TestFormContract(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
+	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -281,7 +260,6 @@ func TestFormContract(t *testing.T) {
 }
 
 func TestFormContractBasis(t *testing.T) {
-	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
@@ -312,7 +290,7 @@ func TestFormContractBasis(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
+	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -341,7 +319,6 @@ func TestFormContractBasis(t *testing.T) {
 }
 
 func TestRPCRefresh(t *testing.T) {
-	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 	cm, s, w := startTestNode(t, n, genesis)
@@ -371,7 +348,7 @@ func TestRPCRefresh(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
+	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -455,7 +432,6 @@ func TestRPCRefresh(t *testing.T) {
 }
 
 func TestRPCRenew(t *testing.T) {
-	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 	cm, s, w := startTestNode(t, n, genesis)
@@ -485,7 +461,7 @@ func TestRPCRenew(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
+	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -616,7 +592,6 @@ func TestRPCRenew(t *testing.T) {
 }
 
 func TestAccounts(t *testing.T) {
-	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
@@ -647,7 +622,7 @@ func TestAccounts(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
+	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -718,7 +693,6 @@ func TestAccounts(t *testing.T) {
 }
 
 func TestReadWriteSector(t *testing.T) {
-	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
@@ -749,7 +723,7 @@ func TestReadWriteSector(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
+	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -792,7 +766,7 @@ func TestReadWriteSector(t *testing.T) {
 	data := frand.Bytes(1024)
 
 	// store the sector
-	writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, NewReaderLen(data), 5)
+	writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(data), uint64(len(data)), 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -815,7 +789,6 @@ func TestReadWriteSector(t *testing.T) {
 }
 
 func TestAppendSectors(t *testing.T) {
-	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
@@ -846,7 +819,7 @@ func TestAppendSectors(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
+	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -893,7 +866,7 @@ func TestAppendSectors(t *testing.T) {
 		frand.Read(sector[:])
 		root := proto4.SectorRoot(&sector)
 
-		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, NewReaderLen(sector[:]), 5)
+		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(sector[:]), proto4.SectorSize, 5)
 		if err != nil {
 			t.Fatal(err)
 		} else if writeResult.Root != root {
@@ -933,7 +906,6 @@ func TestAppendSectors(t *testing.T) {
 }
 
 func TestVerifySector(t *testing.T) {
-	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
@@ -964,7 +936,7 @@ func TestVerifySector(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
+	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -1007,7 +979,7 @@ func TestVerifySector(t *testing.T) {
 	data := frand.Bytes(1024)
 
 	// store the sector
-	writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, NewReaderLen(data), 5)
+	writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(data), uint64(len(data)), 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1027,7 +999,6 @@ func TestVerifySector(t *testing.T) {
 }
 
 func TestRPCFreeSectors(t *testing.T) {
-	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
@@ -1058,7 +1029,7 @@ func TestRPCFreeSectors(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
+	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -1104,7 +1075,7 @@ func TestRPCFreeSectors(t *testing.T) {
 		data := frand.Bytes(1024)
 
 		// store the sector
-		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, NewReaderLen(data), 5)
+		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(data), uint64(len(data)), 5)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1151,7 +1122,6 @@ func TestRPCFreeSectors(t *testing.T) {
 }
 
 func TestRPCSectorRoots(t *testing.T) {
-	log := zaptest.NewLogger(t)
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
@@ -1182,7 +1152,7 @@ func TestRPCSectorRoots(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, log)
+	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -1246,7 +1216,7 @@ func TestRPCSectorRoots(t *testing.T) {
 		data := frand.Bytes(1024)
 
 		// store the sector
-		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, NewReaderLen(data), 5)
+		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(data), uint64(len(data)), 5)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1344,7 +1314,7 @@ func BenchmarkWrite(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		// store the sector
-		_, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, NewReaderLen(sectors[i][:]), 5)
+		_, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(sectors[i][:]), proto4.SectorSize, 5)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1429,7 +1399,7 @@ func BenchmarkRead(b *testing.B) {
 		sectors = append(sectors, sector)
 
 		// store the sector
-		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, NewReaderLen(sectors[i][:]), 5)
+		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(sectors[i][:]), proto4.SectorSize, 5)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1541,7 +1511,7 @@ func BenchmarkContractUpload(b *testing.B) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, NewReaderLen(sectors[i][:]), 5)
+			writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(sectors[i][:]), proto4.SectorSize, 5)
 			if err != nil {
 				b.Error(err)
 			} else if writeResult.Root != roots[i] {
