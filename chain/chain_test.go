@@ -13,7 +13,7 @@ import (
 
 type memState struct {
 	index              types.ChainIndex
-	utxos              map[types.Hash256]types.SiacoinElement
+	utxos              map[types.SiacoinOutputID]types.SiacoinElement
 	chainIndexElements []types.ChainIndexElement
 }
 
@@ -109,7 +109,7 @@ func (ms *memState) SpendableElement(t *testing.T) (se types.SiacoinElement) {
 
 func newMemState() *memState {
 	return &memState{
-		utxos: make(map[types.Hash256]types.SiacoinElement),
+		utxos: make(map[types.SiacoinOutputID]types.SiacoinElement),
 	}
 }
 

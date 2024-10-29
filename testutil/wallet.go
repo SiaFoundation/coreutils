@@ -33,14 +33,13 @@ func (et *ephemeralWalletUpdateTxn) WalletStateElements() (elements []types.Stat
 	return
 }
 
-func (et *ephemeralWalletUpdateTxn) UpdateWalletStateElements(elements []types.StateElement) error {
-	for _, se := range elements {
-		utxo, ok := et.store.utxos[types.SiacoinOutputID(se.ID)]
-		if !ok {
-			panic(fmt.Sprintf("siacoin element %q does not exist", se.ID))
-		}
-		utxo.StateElement = se
-		et.store.utxos[types.SiacoinOutputID(se.ID)] = utxo
+// UpdateWalletSiacoinElementProofs updates the proofs of all state elements
+// affected by the update. ProofUpdater.UpdateElementProof must be called
+// for each state element in the database.
+func (et *ephemeralWalletUpdateTxn) UpdateWalletSiacoinElementProofs(pu wallet.ProofUpdater) error {
+	for _, se := range et.store.utxos {
+		pu.UpdateElementProof(&se.StateElement)
+		et.store.utxos[se.ID] = se
 	}
 	return nil
 }
@@ -131,7 +130,7 @@ func (es *EphemeralWalletStore) UnspentSiacoinElements() (utxos []types.SiacoinE
 	defer es.mu.Unlock()
 
 	for _, se := range es.utxos {
-		se.MerkleProof = append([]types.Hash256(nil), se.MerkleProof...)
+		se.StateElement.MerkleProof = append([]types.Hash256(nil), se.StateElement.MerkleProof...)
 		utxos = append(utxos, se)
 	}
 	return utxos, nil

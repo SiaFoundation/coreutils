@@ -667,48 +667,48 @@ func (m *Manager) revertPoolUpdate(cru consensus.RevertUpdate, cs consensus.Stat
 	// applying a block can make ephemeral elements in the txpool non-ephemeral;
 	// here, we undo that
 	var uncreated map[types.Hash256]bool
-	replaceEphemeral := func(e *types.StateElement) {
+	replaceEphemeral := func(id types.Hash256, e *types.StateElement) {
 		if e.LeafIndex == types.UnassignedLeafIndex {
 			return
 		} else if uncreated == nil {
 			uncreated = make(map[types.Hash256]bool)
 			cru.ForEachSiacoinElement(func(sce types.SiacoinElement, created, spent bool) {
 				if created {
-					uncreated[sce.ID] = true
+					uncreated[types.Hash256(sce.ID)] = true
 				}
 			})
 			cru.ForEachSiafundElement(func(sfe types.SiafundElement, created, spent bool) {
 				if created {
-					uncreated[sfe.ID] = true
+					uncreated[types.Hash256(sfe.ID)] = true
 				}
 			})
 			cru.ForEachFileContractElement(func(fce types.FileContractElement, created bool, rev *types.FileContractElement, resolved, valid bool) {
 				if created {
-					uncreated[fce.ID] = true
+					uncreated[types.Hash256(fce.ID)] = true
 				}
 			})
 			cru.ForEachV2FileContractElement(func(fce types.V2FileContractElement, created bool, rev *types.V2FileContractElement, res types.V2FileContractResolutionType) {
 				if created {
-					uncreated[fce.ID] = true
+					uncreated[types.Hash256(fce.ID)] = true
 				}
 			})
 		}
-		if uncreated[e.ID] {
-			*e = types.StateElement{ID: e.ID, LeafIndex: types.UnassignedLeafIndex}
+		if uncreated[id] {
+			*e = types.StateElement{LeafIndex: types.UnassignedLeafIndex}
 		}
 	}
 	for _, txn := range m.txpool.v2txns {
-		for i := range txn.SiacoinInputs {
-			replaceEphemeral(&txn.SiacoinInputs[i].Parent.StateElement)
+		for i, si := range txn.SiacoinInputs {
+			replaceEphemeral(types.Hash256(si.Parent.ID), &txn.SiacoinInputs[i].Parent.StateElement)
 		}
-		for i := range txn.SiafundInputs {
-			replaceEphemeral(&txn.SiafundInputs[i].Parent.StateElement)
+		for i, si := range txn.SiafundInputs {
+			replaceEphemeral(types.Hash256(si.Parent.ID), &txn.SiafundInputs[i].Parent.StateElement)
 		}
-		for i := range txn.FileContractRevisions {
-			replaceEphemeral(&txn.FileContractRevisions[i].Parent.StateElement)
+		for i, fcr := range txn.FileContractRevisions {
+			replaceEphemeral(types.Hash256(fcr.Parent.ID), &txn.FileContractRevisions[i].Parent.StateElement)
 		}
-		for i := range txn.FileContractResolutions {
-			replaceEphemeral(&txn.FileContractResolutions[i].Parent.StateElement)
+		for i, fcr := range txn.FileContractResolutions {
+			replaceEphemeral(types.Hash256(fcr.Parent.ID), &txn.FileContractResolutions[i].Parent.StateElement)
 		}
 	}
 
@@ -724,48 +724,48 @@ func (m *Manager) revertPoolUpdate(cru consensus.RevertUpdate, cs consensus.Stat
 func (m *Manager) applyPoolUpdate(cau consensus.ApplyUpdate, cs consensus.State) {
 	// applying a block can make ephemeral elements in the txpool non-ephemeral
 	var newElements map[types.Hash256]types.StateElement
-	replaceEphemeral := func(e *types.StateElement) {
+	replaceEphemeral := func(id types.Hash256, e *types.StateElement) {
 		if e.LeafIndex != types.UnassignedLeafIndex {
 			return
 		} else if newElements == nil {
 			newElements = make(map[types.Hash256]types.StateElement)
 			cau.ForEachSiacoinElement(func(sce types.SiacoinElement, created, spent bool) {
 				if created {
-					newElements[sce.ID] = sce.StateElement
+					newElements[types.Hash256(sce.ID)] = sce.StateElement
 				}
 			})
 			cau.ForEachSiafundElement(func(sfe types.SiafundElement, created, spent bool) {
 				if created {
-					newElements[sfe.ID] = sfe.StateElement
+					newElements[types.Hash256(sfe.ID)] = sfe.StateElement
 				}
 			})
 			cau.ForEachFileContractElement(func(fce types.FileContractElement, created bool, rev *types.FileContractElement, resolved, valid bool) {
 				if created {
-					newElements[fce.ID] = fce.StateElement
+					newElements[types.Hash256(fce.ID)] = fce.StateElement
 				}
 			})
 			cau.ForEachV2FileContractElement(func(fce types.V2FileContractElement, created bool, rev *types.V2FileContractElement, res types.V2FileContractResolutionType) {
 				if created {
-					newElements[fce.ID] = fce.StateElement
+					newElements[types.Hash256(fce.ID)] = fce.StateElement
 				}
 			})
 		}
-		if se, ok := newElements[e.ID]; ok {
+		if se, ok := newElements[id]; ok {
 			*e = se
 		}
 	}
 	for _, txn := range m.txpool.v2txns {
-		for i := range txn.SiacoinInputs {
-			replaceEphemeral(&txn.SiacoinInputs[i].Parent.StateElement)
+		for i, si := range txn.SiacoinInputs {
+			replaceEphemeral(types.Hash256(si.Parent.ID), &txn.SiacoinInputs[i].Parent.StateElement)
 		}
-		for i := range txn.SiafundInputs {
-			replaceEphemeral(&txn.SiafundInputs[i].Parent.StateElement)
+		for i, si := range txn.SiafundInputs {
+			replaceEphemeral(types.Hash256(si.Parent.ID), &txn.SiafundInputs[i].Parent.StateElement)
 		}
-		for i := range txn.FileContractRevisions {
-			replaceEphemeral(&txn.FileContractRevisions[i].Parent.StateElement)
+		for i, fcr := range txn.FileContractRevisions {
+			replaceEphemeral(types.Hash256(fcr.Parent.ID), &txn.FileContractRevisions[i].Parent.StateElement)
 		}
-		for i := range txn.FileContractResolutions {
-			replaceEphemeral(&txn.FileContractResolutions[i].Parent.StateElement)
+		for i, fcr := range txn.FileContractResolutions {
+			replaceEphemeral(types.Hash256(fcr.Parent.ID), &txn.FileContractResolutions[i].Parent.StateElement)
 		}
 	}
 
@@ -1082,12 +1082,12 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		confirmedStateElements := make(map[types.Hash256]types.StateElement)
 		cau.ForEachSiacoinElement(func(sce types.SiacoinElement, created, spent bool) {
 			if created {
-				confirmedStateElements[sce.ID] = sce.StateElement
+				confirmedStateElements[types.Hash256(sce.ID)] = sce.StateElement
 			}
 		})
 		cau.ForEachSiafundElement(func(sfe types.SiafundElement, created, spent bool) {
 			if created {
-				confirmedStateElements[sfe.ID] = sfe.StateElement
+				confirmedStateElements[types.Hash256(sfe.ID)] = sfe.StateElement
 			}
 		})
 
@@ -1100,7 +1100,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 
 			// update the state elements for any confirmed ephemeral elements
 			for j := range txns[i].SiacoinInputs {
-				if txns[i].SiacoinInputs[j].Parent.LeafIndex != types.UnassignedLeafIndex {
+				if txns[i].SiacoinInputs[j].Parent.StateElement.LeafIndex != types.UnassignedLeafIndex {
 					continue
 				}
 				se, ok := confirmedStateElements[types.Hash256(txns[i].SiacoinInputs[j].Parent.ID)]
@@ -1112,7 +1112,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 
 			// update the state elements for any confirmed ephemeral elements
 			for j := range txns[i].SiafundInputs {
-				if txns[i].SiafundInputs[j].Parent.LeafIndex != types.UnassignedLeafIndex {
+				if txns[i].SiafundInputs[j].Parent.StateElement.LeafIndex != types.UnassignedLeafIndex {
 					continue
 				}
 				se, ok := confirmedStateElements[types.Hash256(txns[i].SiafundInputs[j].Parent.ID)]

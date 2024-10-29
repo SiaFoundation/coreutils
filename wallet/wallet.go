@@ -81,7 +81,7 @@ type (
 		// locked is a set of siacoin output IDs locked by FundTransaction. They
 		// will be released either by calling Release for unused transactions or
 		// being confirmed in a block.
-		locked map[types.Hash256]time.Time
+		locked map[types.SiacoinOutputID]time.Time
 	}
 )
 
@@ -116,12 +116,12 @@ func (sw *SingleAddressWallet) Balance() (balance Balance, err error) {
 		return Balance{}, fmt.Errorf("failed to get unspent outputs: %w", err)
 	}
 
-	tpoolSpent := make(map[types.Hash256]bool)
-	tpoolUtxos := make(map[types.Hash256]types.SiacoinElement)
+	tpoolSpent := make(map[types.SiacoinOutputID]bool)
+	tpoolUtxos := make(map[types.SiacoinOutputID]types.SiacoinElement)
 	for _, txn := range sw.cm.PoolTransactions() {
 		for _, sci := range txn.SiacoinInputs {
-			tpoolSpent[types.Hash256(sci.ParentID)] = true
-			delete(tpoolUtxos, types.Hash256(sci.ParentID))
+			tpoolSpent[sci.ParentID] = true
+			delete(tpoolUtxos, sci.ParentID)
 		}
 		for i, sco := range txn.SiacoinOutputs {
 			if sco.Address != sw.addr {
@@ -129,10 +129,9 @@ func (sw *SingleAddressWallet) Balance() (balance Balance, err error) {
 			}
 
 			outputID := txn.SiacoinOutputID(i)
-			tpoolUtxos[types.Hash256(outputID)] = types.SiacoinElement{
-				StateElement: types.StateElement{
-					ID: types.Hash256(types.SiacoinOutputID(outputID)),
-				},
+			tpoolUtxos[outputID] = types.SiacoinElement{
+				ID:            types.SiacoinOutputID(outputID),
+				StateElement:  types.StateElement{LeafIndex: types.UnassignedLeafIndex},
 				SiacoinOutput: sco,
 			}
 		}
@@ -140,8 +139,8 @@ func (sw *SingleAddressWallet) Balance() (balance Balance, err error) {
 
 	for _, txn := range sw.cm.V2PoolTransactions() {
 		for _, si := range txn.SiacoinInputs {
-			tpoolSpent[types.Hash256(si.Parent.ID)] = true
-			delete(tpoolUtxos, types.Hash256(si.Parent.ID))
+			tpoolSpent[si.Parent.ID] = true
+			delete(tpoolUtxos, si.Parent.ID)
 		}
 		for i, sco := range txn.SiacoinOutputs {
 			if sco.Address != sw.addr {
@@ -194,10 +193,10 @@ func (sw *SingleAddressWallet) SpendableOutputs() ([]types.SiacoinElement, error
 	}
 
 	// fetch outputs currently in the pool
-	inPool := make(map[types.Hash256]bool)
+	inPool := make(map[types.SiacoinOutputID]bool)
 	for _, txn := range sw.cm.PoolTransactions() {
 		for _, sci := range txn.SiacoinInputs {
-			inPool[types.Hash256(sci.ParentID)] = true
+			inPool[sci.ParentID] = true
 		}
 	}
 
@@ -229,26 +228,25 @@ func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, us
 		return nil, types.ZeroCurrency, err
 	}
 
-	tpoolSpent := make(map[types.Hash256]bool)
-	tpoolUtxos := make(map[types.Hash256]types.SiacoinElement)
+	tpoolSpent := make(map[types.SiacoinOutputID]bool)
+	tpoolUtxos := make(map[types.SiacoinOutputID]types.SiacoinElement)
 	for _, txn := range sw.cm.PoolTransactions() {
 		for _, sci := range txn.SiacoinInputs {
-			tpoolSpent[types.Hash256(sci.ParentID)] = true
-			delete(tpoolUtxos, types.Hash256(sci.ParentID))
+			tpoolSpent[sci.ParentID] = true
+			delete(tpoolUtxos, sci.ParentID)
 		}
 		for i, sco := range txn.SiacoinOutputs {
-			tpoolUtxos[types.Hash256(txn.SiacoinOutputID(i))] = types.SiacoinElement{
-				StateElement: types.StateElement{
-					ID: types.Hash256(types.SiacoinOutputID(txn.SiacoinOutputID(i))),
-				},
+			tpoolUtxos[txn.SiacoinOutputID(i)] = types.SiacoinElement{
+				ID:            txn.SiacoinOutputID(i),
+				StateElement:  types.StateElement{LeafIndex: types.UnassignedLeafIndex},
 				SiacoinOutput: sco,
 			}
 		}
 	}
 	for _, txn := range sw.cm.V2PoolTransactions() {
 		for _, sci := range txn.SiacoinInputs {
-			tpoolSpent[types.Hash256(sci.Parent.ID)] = true
-			delete(tpoolUtxos, types.Hash256(sci.Parent.ID))
+			tpoolSpent[sci.Parent.ID] = true
+			delete(tpoolUtxos, sci.Parent.ID)
 		}
 		for i := range txn.SiacoinOutputs {
 			sce := txn.EphemeralSiacoinOutput(i)
@@ -491,9 +489,9 @@ func (sw *SingleAddressWallet) UnconfirmedEvents() (annotated []Event, err error
 		return nil, fmt.Errorf("failed to get unspent outputs: %w", err)
 	}
 
-	utxos := make(map[types.Hash256]types.SiacoinElement)
+	utxos := make(map[types.SiacoinOutputID]types.SiacoinElement)
 	for _, se := range confirmed {
-		utxos[types.Hash256(se.ID)] = se
+		utxos[se.ID] = se
 	}
 
 	index := types.ChainIndex{
@@ -526,7 +524,7 @@ func (sw *SingleAddressWallet) UnconfirmedEvents() (annotated []Event, err error
 
 		var outflow types.Currency
 		for _, sci := range txn.SiacoinInputs {
-			sce, ok := utxos[types.Hash256(sci.ParentID)]
+			sce, ok := utxos[sci.ParentID]
 			if !ok {
 				// ignore inputs that don't belong to the wallet
 				continue
@@ -540,8 +538,8 @@ func (sw *SingleAddressWallet) UnconfirmedEvents() (annotated []Event, err error
 			if so.Address == sw.addr {
 				inflow = inflow.Add(so.Value)
 				sce := types.SiacoinElement{
+					ID: txn.SiacoinOutputID(i),
 					StateElement: types.StateElement{
-						ID:        types.Hash256(txn.SiacoinOutputID(i)),
 						LeafIndex: types.UnassignedLeafIndex,
 					},
 					SiacoinOutput: so,
@@ -591,15 +589,15 @@ func (sw *SingleAddressWallet) selectRedistributeUTXOs(bh uint64, outputs int, a
 	}
 
 	// fetch outputs currently in the pool
-	inPool := make(map[types.Hash256]bool)
+	inPool := make(map[types.SiacoinOutputID]bool)
 	for _, txn := range sw.cm.PoolTransactions() {
 		for _, sci := range txn.SiacoinInputs {
-			inPool[types.Hash256(sci.ParentID)] = true
+			inPool[sci.ParentID] = true
 		}
 	}
 	for _, txn := range sw.cm.V2PoolTransactions() {
 		for _, sci := range txn.SiacoinInputs {
-			inPool[types.Hash256(sci.Parent.ID)] = true
+			inPool[sci.Parent.ID] = true
 		}
 	}
 
@@ -650,7 +648,7 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 	defer func() {
 		if err != nil {
 			for _, id := range toSign {
-				delete(sw.locked, id)
+				delete(sw.locked, types.SiacoinOutputID(id))
 			}
 		}
 	}()
@@ -712,7 +710,7 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 				ParentID:         types.SiacoinOutputID(sce.ID),
 				UnlockConditions: types.StandardUnlockConditions(sw.priv.PublicKey()),
 			})
-			toSign = append(toSign, sce.ID)
+			toSign = append(toSign, types.Hash256(sce.ID))
 			sw.locked[sce.ID] = time.Now().Add(sw.cfg.ReservationDuration)
 		}
 		txns = append(txns, txn)
@@ -819,7 +817,7 @@ func (sw *SingleAddressWallet) ReleaseInputs(txns []types.Transaction, v2txns []
 	defer sw.mu.Unlock()
 	for _, txn := range txns {
 		for _, in := range txn.SiacoinInputs {
-			delete(sw.locked, types.Hash256(in.ParentID))
+			delete(sw.locked, in.ParentID)
 		}
 	}
 	for _, txn := range v2txns {
@@ -831,7 +829,7 @@ func (sw *SingleAddressWallet) ReleaseInputs(txns []types.Transaction, v2txns []
 
 // isLocked returns true if the siacoin output with given id is locked, this
 // method must be called whilst holding the mutex lock.
-func (sw *SingleAddressWallet) isLocked(id types.Hash256) bool {
+func (sw *SingleAddressWallet) isLocked(id types.SiacoinOutputID) bool {
 	return time.Now().Before(sw.locked[id])
 }
 
@@ -939,7 +937,7 @@ func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store Single
 
 		addr:   types.StandardUnlockHash(priv.PublicKey()),
 		tip:    tip,
-		locked: make(map[types.Hash256]time.Time),
+		locked: make(map[types.SiacoinOutputID]time.Time),
 	}
 	return sw, nil
 }

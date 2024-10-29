@@ -352,13 +352,13 @@ func (db *DBStore) getElementProof(leafIndex, numLeaves uint64) (proof []types.H
 func (db *DBStore) getSiacoinElement(id types.SiacoinOutputID, numLeaves uint64) (sce types.SiacoinElement, ok bool) {
 	ok = db.bucket(bSiacoinElements).get(id[:], &sce)
 	if ok {
-		sce.MerkleProof = db.getElementProof(sce.LeafIndex, numLeaves)
+		sce.StateElement.MerkleProof = db.getElementProof(sce.StateElement.LeafIndex, numLeaves)
 	}
 	return
 }
 
 func (db *DBStore) putSiacoinElement(sce types.SiacoinElement) {
-	sce.MerkleProof = nil
+	sce.StateElement.MerkleProof = nil
 	db.bucket(bSiacoinElements).put(sce.ID[:], sce)
 }
 
@@ -369,13 +369,13 @@ func (db *DBStore) deleteSiacoinElement(id types.SiacoinOutputID) {
 func (db *DBStore) getSiafundElement(id types.SiafundOutputID, numLeaves uint64) (sfe types.SiafundElement, ok bool) {
 	ok = db.bucket(bSiafundElements).get(id[:], &sfe)
 	if ok {
-		sfe.MerkleProof = db.getElementProof(sfe.LeafIndex, numLeaves)
+		sfe.StateElement.MerkleProof = db.getElementProof(sfe.StateElement.LeafIndex, numLeaves)
 	}
 	return
 }
 
 func (db *DBStore) putSiafundElement(sfe types.SiafundElement) {
-	sfe.MerkleProof = nil
+	sfe.StateElement.MerkleProof = nil
 	db.bucket(bSiafundElements).put(sfe.ID[:], sfe)
 }
 
@@ -386,13 +386,13 @@ func (db *DBStore) deleteSiafundElement(id types.SiafundOutputID) {
 func (db *DBStore) getFileContractElement(id types.FileContractID, numLeaves uint64) (fce types.FileContractElement, ok bool) {
 	ok = db.bucket(bFileContractElements).get(id[:], &fce)
 	if ok {
-		fce.MerkleProof = db.getElementProof(fce.LeafIndex, numLeaves)
+		fce.StateElement.MerkleProof = db.getElementProof(fce.StateElement.LeafIndex, numLeaves)
 	}
 	return
 }
 
 func (db *DBStore) putFileContractElement(fce types.FileContractElement) {
-	fce.MerkleProof = nil
+	fce.StateElement.MerkleProof = nil
 	db.bucket(bFileContractElements).put(fce.ID[:], fce)
 }
 

@@ -659,12 +659,9 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 		FileContractResolutions: []types.V2FileContractResolution{
 			{
 				Parent: types.V2FileContractElement{
-					StateElement: types.StateElement{
-						// the other parts of the state element are not required
-						// for signing the transaction. Let the host fill them
-						// in.
-						ID: types.Hash256(params.ContractID),
-					},
+					ID: params.ContractID,
+					// the state element field is not required for signing the
+					// transaction. The host will fill it in.
 				},
 				Resolution: &renewal,
 			},
@@ -787,12 +784,9 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 		FileContractResolutions: []types.V2FileContractResolution{
 			{
 				Parent: types.V2FileContractElement{
-					StateElement: types.StateElement{
-						// the other parts of the state element are not required
-						// for signing the transaction. Let the host fill them
-						// in.
-						ID: types.Hash256(params.ContractID),
-					},
+					ID: params.ContractID,
+					// the state element field is not required for signing the
+					// transaction. The host will fill it in.
 				},
 				Resolution: &renewal,
 			},
