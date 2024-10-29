@@ -276,3 +276,126 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 	}
 	return err
 }
+
+// EncodeTo implements types.EncoderTo
+func (ep EventPayout) EncodeTo(e *types.Encoder) {
+	ep.SiacoinElement.EncodeTo(e)
+}
+
+// DecodeFrom implements types.DecoderFrom
+func (ep *EventPayout) DecodeFrom(d *types.Decoder) {
+	ep.SiacoinElement.DecodeFrom(d)
+}
+
+// EncodeTo implements types.EncoderTo
+func (et EventV1Transaction) EncodeTo(e *types.Encoder) {
+	et.Transaction.EncodeTo(e)
+	types.EncodeSlice(e, et.SpentSiacoinElements)
+	types.EncodeSlice(e, et.SpentSiafundElements)
+}
+
+// DecodeFrom implements types.DecoderFrom
+func (et *EventV1Transaction) DecodeFrom(d *types.Decoder) {
+	et.Transaction.DecodeFrom(d)
+	types.DecodeSlice(d, &et.SpentSiacoinElements)
+	types.DecodeSlice(d, &et.SpentSiafundElements)
+}
+
+// EncodeTo implements types.EncoderTo
+func (et EventV2Transaction) EncodeTo(e *types.Encoder) {
+	types.V2Transaction(et).EncodeTo(e)
+}
+
+// DecodeFrom implements types.DecoderFrom
+func (et *EventV2Transaction) DecodeFrom(d *types.Decoder) {
+	(*types.V2Transaction)(et).DecodeFrom(d)
+}
+
+// EncodeTo implements types.EncoderTo
+func (er EventV1ContractResolution) EncodeTo(e *types.Encoder) {
+	er.Parent.EncodeTo(e)
+	er.SiacoinElement.EncodeTo(e)
+	e.WriteBool(er.Missed)
+}
+
+// DecodeFrom implements types.DecoderFrom
+func (er *EventV1ContractResolution) DecodeFrom(d *types.Decoder) {
+	er.Parent.DecodeFrom(d)
+	er.SiacoinElement.DecodeFrom(d)
+	er.Missed = d.ReadBool()
+}
+
+// EncodeTo implements types.EncoderTo
+func (er EventV2ContractResolution) EncodeTo(e *types.Encoder) {
+	er.Resolution.EncodeTo(e)
+	er.SiacoinElement.EncodeTo(e)
+	e.WriteBool(er.Missed)
+}
+
+// DecodeFrom implements types.DecoderFrom
+func (er *EventV2ContractResolution) DecodeFrom(d *types.Decoder) {
+	er.Resolution.DecodeFrom(d)
+	er.SiacoinElement.DecodeFrom(d)
+	er.Missed = d.ReadBool()
+}
+
+// EncodeTo implements types.EncoderTo
+func (ev *Event) EncodeTo(e *types.Encoder) {
+	ev.ID.EncodeTo(e)
+	ev.Index.EncodeTo(e)
+	e.WriteUint64(ev.Confirmations)
+	e.WriteString(ev.Type)
+	switch data := ev.Data.(type) {
+	case EventPayout:
+		data.EncodeTo(e)
+	case EventV1Transaction:
+		data.EncodeTo(e)
+	case EventV1ContractResolution:
+		data.EncodeTo(e)
+	case EventV2ContractResolution:
+		data.EncodeTo(e)
+	case EventV2Transaction:
+		types.V2Transaction(data).EncodeTo(e)
+	default:
+		panic("unknown event type") // should never happen
+	}
+	e.WriteUint64(ev.MaturityHeight)
+	e.WriteTime(ev.Timestamp)
+	types.EncodeSlice(e, ev.Relevant)
+}
+
+// DecodeFrom implements types.DecoderFrom
+func (ev *Event) DecodeFrom(d *types.Decoder) {
+	ev.ID.DecodeFrom(d)
+	ev.Index.DecodeFrom(d)
+	ev.Confirmations = d.ReadUint64()
+	ev.Type = d.ReadString()
+	switch ev.Type {
+	case EventTypeMinerPayout, EventTypeFoundationSubsidy, EventTypeSiafundClaim:
+		var data EventPayout
+		data.DecodeFrom(d)
+		ev.Data = data
+	case EventTypeV1Transaction:
+		var data EventV1Transaction
+		data.DecodeFrom(d)
+		ev.Data = data
+	case EventTypeV1ContractResolution:
+		var data EventV1ContractResolution
+		data.DecodeFrom(d)
+		ev.Data = data
+	case EventTypeV2ContractResolution:
+		var data EventV2ContractResolution
+		data.DecodeFrom(d)
+		ev.Data = data
+	case EventTypeV2Transaction:
+		var data types.V2Transaction
+		data.DecodeFrom(d)
+		ev.Data = EventV2Transaction(data)
+	default:
+		d.SetErr(fmt.Errorf("unknown event type: %q", ev.Type))
+		return
+	}
+	ev.MaturityHeight = d.ReadUint64()
+	ev.Timestamp = d.ReadTime()
+	types.DecodeSlice(d, &ev.Relevant)
+}

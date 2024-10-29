@@ -18,15 +18,18 @@ type (
 		ForEachV2FileContractElement(func(fce types.V2FileContractElement, rev *types.V2FileContractElement, res types.V2FileContractResolutionType))
 	}
 
+	// A ProofUpdater is an interface for updating the proof of a state element.
+	ProofUpdater interface {
+		UpdateElementProof(e *types.StateElement)
+	}
+
 	// UpdateTx is an interface for atomically applying chain updates to a
 	// single address wallet.
 	UpdateTx interface {
-		// WalletStateElements returns all state elements related to the wallet. It is used
-		// to update the proofs of all state elements affected by the update.
-		WalletStateElements() ([]types.StateElement, error)
-		// UpdateWalletStateElements updates the proofs of all state elements affected by the
-		// update.
-		UpdateWalletStateElements([]types.StateElement) error
+		// UpdateWalletSiacoinElementProofs updates the proofs of all state elements
+		// affected by the update. ProofUpdater.UpdateElementProof must be called
+		// for each state element in the database.
+		UpdateWalletSiacoinElementProofs(ProofUpdater) error
 
 		// WalletApplyIndex is called with the chain index that is being applied.
 		// Any transactions and siacoin elements that were created by the index
@@ -89,7 +92,7 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 
 	// cache the value of siacoin elements to use when calculating v1 outflow
 	cau.ForEachSiacoinElement(func(se types.SiacoinElement, created, spent bool) {
-		se.MerkleProof = nil // clear the proof to save space
+		se.StateElement.MerkleProof = nil // clear the proof to save space
 		siacoinElements[types.SiacoinOutputID(se.ID)] = se
 	})
 
@@ -172,7 +175,7 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 			return
 		}
 
-		fce.MerkleProof = nil // clear the proof to save space
+		fce.StateElement.MerkleProof = nil // clear the proof to save space
 
 		if valid {
 			for i, so := range fce.FileContract.ValidProofOutputs {
@@ -223,7 +226,7 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 			missed = true
 		}
 
-		fce.MerkleProof = nil // clear the proof to save space
+		fce.StateElement.MerkleProof = nil // clear the proof to save space
 
 		if fce.V2FileContract.HostOutput.Address == walletAddress {
 			outputID := types.FileContractID(fce.ID).V2HostOutputID()
@@ -291,15 +294,7 @@ func (sw *SingleAddressWallet) applyChainUpdate(tx UpdateTx, address types.Addre
 	defer sw.mu.Unlock()
 
 	// update current state elements
-	stateElements, err := tx.WalletStateElements()
-	if err != nil {
-		return fmt.Errorf("failed to get state elements: %w", err)
-	}
-
-	for i := range stateElements {
-		cau.UpdateElementProof(&stateElements[i])
-	}
-	if err := tx.UpdateWalletStateElements(stateElements); err != nil {
+	if err := tx.UpdateWalletSiacoinElementProofs(cau); err != nil {
 		return fmt.Errorf("failed to update state elements: %w", err)
 	}
 
@@ -357,14 +352,7 @@ func (sw *SingleAddressWallet) revertChainUpdate(tx UpdateTx, revertedIndex type
 	}
 
 	// update the remaining state elements
-	stateElements, err := tx.WalletStateElements()
-	if err != nil {
-		return fmt.Errorf("failed to get state elements: %w", err)
-	}
-	for i := range stateElements {
-		cru.UpdateElementProof(&stateElements[i])
-	}
-	if err := tx.UpdateWalletStateElements(stateElements); err != nil {
+	if err := tx.UpdateWalletSiacoinElementProofs(cru); err != nil {
 		return fmt.Errorf("failed to update state elements: %w", err)
 	}
 	sw.tip = revertedIndex

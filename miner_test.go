@@ -105,7 +105,7 @@ func TestV2MineBlocks(t *testing.T) {
 	// mine until just before the allow height
 	mineBlocks(t, 4)
 
-	elements := make(map[types.Hash256]types.SiacoinElement)
+	elements := make(map[types.SiacoinOutputID]types.SiacoinElement)
 	_, applied, err := cm.UpdatesSince(types.ChainIndex{}, 500)
 	if err != nil {
 		t.Fatal(err)
