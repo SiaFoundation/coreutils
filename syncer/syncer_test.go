@@ -42,7 +42,7 @@ func TestSyncer(t *testing.T) {
 	}
 	defer l2.Close()
 
-	s1 := syncer.New(l1, cm1, testutil.NewMemPeerStore(), gateway.Header{
+	s1 := syncer.New(l1, cm1, testutil.NewEphemeralPeerStore(), gateway.Header{
 		GenesisID:  genesis.ID(),
 		UniqueID:   gateway.GenerateUniqueID(),
 		NetAddress: l1.Addr().String(),
@@ -50,7 +50,7 @@ func TestSyncer(t *testing.T) {
 	defer s1.Close()
 	go s1.Run(context.Background())
 
-	s2 := syncer.New(l2, cm2, testutil.NewMemPeerStore(), gateway.Header{
+	s2 := syncer.New(l2, cm2, testutil.NewEphemeralPeerStore(), gateway.Header{
 		GenesisID:  genesis.ID(),
 		UniqueID:   gateway.GenerateUniqueID(),
 		NetAddress: l2.Addr().String(),
