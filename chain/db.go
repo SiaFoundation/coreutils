@@ -13,43 +13,32 @@ import (
 )
 
 type supplementedBlock struct {
-	Block      types.Block
+	Header     *types.BlockHeader
+	Block      *types.Block
 	Supplement *consensus.V1BlockSupplement
 }
 
 func (sb supplementedBlock) EncodeTo(e *types.Encoder) {
-	e.WriteUint8(2)
-	(types.V2Block)(sb.Block).EncodeTo(e)
-	e.WriteBool(sb.Supplement != nil)
-	if sb.Supplement != nil {
-		sb.Supplement.EncodeTo(e)
-	}
+	e.WriteUint8(3)
+	types.EncodePtr(e, sb.Header)
+	types.EncodePtr(e, (*types.V2Block)(sb.Block))
+	types.EncodePtr(e, sb.Supplement)
 }
 
 func (sb *supplementedBlock) DecodeFrom(d *types.Decoder) {
-	if v := d.ReadUint8(); v != 2 {
+	switch v := d.ReadUint8(); v {
+	case 2:
+		sb.Header = nil
+		sb.Block = new(types.Block)
+		(*types.V2Block)(sb.Block).DecodeFrom(d)
+		types.DecodePtr(d, &sb.Supplement)
+	case 3:
+		types.DecodePtr(d, &sb.Header)
+		types.DecodePtrCast[types.V2Block](d, &sb.Block)
+		types.DecodePtr(d, &sb.Supplement)
+	default:
 		d.SetErr(fmt.Errorf("incompatible version (%d)", v))
 	}
-	(*types.V2Block)(&sb.Block).DecodeFrom(d)
-	if d.ReadBool() {
-		sb.Supplement = new(consensus.V1BlockSupplement)
-		sb.Supplement.DecodeFrom(d)
-	}
-}
-
-// helper type for decoding just the header information from a block
-type supplementedHeader struct {
-	ParentID  types.BlockID
-	Timestamp time.Time
-}
-
-func (sh *supplementedHeader) DecodeFrom(d *types.Decoder) {
-	if v := d.ReadUint8(); v != 2 {
-		d.SetErr(fmt.Errorf("incompatible version (%d)", v))
-	}
-	sh.ParentID.DecodeFrom(d)
-	_ = d.ReadUint64() // nonce
-	sh.Timestamp = d.ReadTime()
 }
 
 type versionedState struct {
@@ -304,21 +293,62 @@ func (db *DBStore) putState(cs consensus.State) {
 	db.bucket(bStates).put(cs.Index.ID[:], versionedState{cs})
 }
 
-func (db *DBStore) getBlock(id types.BlockID) (b types.Block, bs *consensus.V1BlockSupplement, _ bool) {
+func (db *DBStore) getBlock(id types.BlockID) (bh types.BlockHeader, b *types.Block, bs *consensus.V1BlockSupplement, _ bool) {
 	var sb supplementedBlock
 	ok := db.bucket(bBlocks).get(id[:], &sb)
-	return sb.Block, sb.Supplement, ok
+	if sb.Header == nil {
+		sb.Header = new(types.BlockHeader)
+		*sb.Header = sb.Block.Header()
+	}
+	return *sb.Header, sb.Block, sb.Supplement, ok
 }
 
-func (db *DBStore) putBlock(b types.Block, bs *consensus.V1BlockSupplement) {
-	id := b.ID()
-	db.bucket(bBlocks).put(id[:], supplementedBlock{b, bs})
+func (db *DBStore) putBlock(bh types.BlockHeader, b *types.Block, bs *consensus.V1BlockSupplement) {
+	id := bh.ID()
+	db.bucket(bBlocks).put(id[:], supplementedBlock{&bh, b, bs})
 }
 
-func (db *DBStore) getBlockHeader(id types.BlockID) (parentID types.BlockID, timestamp time.Time, _ bool) {
-	var sh supplementedHeader
-	ok := db.bucket(bBlocks).get(id[:], &sh)
-	return sh.ParentID, sh.Timestamp, ok
+func (db *DBStore) getAncestorInfo(id types.BlockID) (parentID types.BlockID, timestamp time.Time, ok bool) {
+	ok = db.bucket(bBlocks).get(id[:], types.DecoderFunc(func(d *types.Decoder) {
+		v := d.ReadUint8()
+		if v != 2 && v != 3 {
+			d.SetErr(fmt.Errorf("incompatible version (%d)", v))
+		}
+		// kinda cursed; don't worry about it
+		if v == 3 {
+			if !d.ReadBool() {
+				d.ReadBool()
+			}
+		}
+		parentID.DecodeFrom(d)
+		_ = d.ReadUint64() // nonce
+		timestamp = d.ReadTime()
+	}))
+	return
+}
+
+func (db *DBStore) getBlockHeader(id types.BlockID) (bh types.BlockHeader, ok bool) {
+	ok = db.bucket(bBlocks).get(id[:], types.DecoderFunc(func(d *types.Decoder) {
+		v := d.ReadUint8()
+		if v != 2 && v != 3 {
+			d.SetErr(fmt.Errorf("incompatible version (%d)", v))
+			return
+		}
+		if v == 3 {
+			bhp := &bh
+			types.DecodePtr(d, &bhp)
+			if bhp != nil {
+				return
+			} else if !d.ReadBool() {
+				d.SetErr(errors.New("neither header nor block present"))
+				return
+			}
+		}
+		var b types.Block
+		(*types.V2Block)(&b).DecodeFrom(d)
+		bh = b.Header()
+	}))
+	return
 }
 
 func (db *DBStore) treeKey(row, col uint64) []byte {
@@ -628,9 +658,9 @@ func (db *DBStore) AncestorTimestamp(id types.BlockID) (t time.Time, ok bool) {
 			}
 			break
 		}
-		ancestorID, _, _ = db.getBlockHeader(ancestorID)
+		ancestorID, _, _ = db.getAncestorInfo(ancestorID)
 	}
-	_, t, ok = db.getBlockHeader(ancestorID)
+	_, t, ok = db.getAncestorInfo(ancestorID)
 	return
 }
 
@@ -646,12 +676,23 @@ func (db *DBStore) AddState(cs consensus.State) {
 
 // Block implements Store.
 func (db *DBStore) Block(id types.BlockID) (types.Block, *consensus.V1BlockSupplement, bool) {
-	return db.getBlock(id)
+	_, b, bs, ok := db.getBlock(id)
+	if !ok || b == nil {
+		return types.Block{}, nil, false
+	}
+	return *b, bs, ok
 }
 
 // AddBlock implements Store.
 func (db *DBStore) AddBlock(b types.Block, bs *consensus.V1BlockSupplement) {
-	db.putBlock(b, bs)
+	db.putBlock(b.Header(), &b, bs)
+}
+
+// PruneBlock implements Store.
+func (db *DBStore) PruneBlock(id types.BlockID) {
+	if bh, _, _, ok := db.getBlock(id); ok {
+		db.putBlock(bh, nil, nil)
+	}
 }
 
 func (db *DBStore) shouldFlush() bool {
@@ -743,7 +784,7 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block) (_ *DBSto
 		dbs.putState(genesisState)
 		bs := consensus.V1BlockSupplement{Transactions: make([]consensus.V1TransactionSupplement, len(genesisBlock.Transactions))}
 		cs, cau := consensus.ApplyBlock(genesisState, genesisBlock, bs, time.Time{})
-		dbs.putBlock(genesisBlock, &bs)
+		dbs.putBlock(genesisBlock.Header(), &genesisBlock, &bs)
 		dbs.putState(cs)
 		dbs.ApplyBlock(cs, cau)
 		if err := dbs.Flush(); err != nil {

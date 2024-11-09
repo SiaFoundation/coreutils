@@ -11,3 +11,10 @@ func WithLog(l *zap.Logger) ManagerOption {
 		m.log = l
 	}
 }
+
+// WithPruneTarget sets the target number of blocks to store.
+func WithPruneTarget(n uint64) ManagerOption {
+	return func(m *Manager) {
+		m.pruneTarget = n
+	}
+}
