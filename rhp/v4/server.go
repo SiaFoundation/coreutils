@@ -28,6 +28,16 @@ const (
 	memoryPer100TiB  = sectorsPer100TiB * 32
 )
 
+var (
+	// ErrBalanceInsufficient is returned by RPCs when the account balance isn't
+	// enough to pay for the corresponding RPC.
+	ErrBalanceInsufficient = errors.New("ephemeral account balance was insufficient")
+
+	// ErrMaxBalanceExceeded is returned when funding an account results in the
+	// maximum allowed balance being exceeded.
+	ErrMaxBalanceExceeded = errors.New("ephemeral account maximum balance exceeded")
+)
+
 var protocolVersion = [3]byte{4, 0, 0}
 
 type (
@@ -119,11 +129,16 @@ type (
 		// contract ID.
 		V2FileContractElement(types.FileContractID) (types.ChainIndex, types.V2FileContractElement, error)
 
-		// AccountBalance returns the balance of an account.
+		// AccountBalance returns the balance of an account. Returns 0 if the
+		// account doesn't exist.
 		AccountBalance(rhp4.Account) (types.Currency, error)
-		// CreditAccountsWithContract atomically revises a contract and credits the account.
+		// CreditAccountsWithContract atomically revises a contract and credits
+		// the account. If the account doesn't exist yet, it should be created.
+		// If the account's balance would exceed the maximum allowed balance
+		// after funding, ErrMaxBalanceExceeded should be returned.
 		CreditAccountsWithContract([]rhp4.AccountDeposit, types.FileContractID, types.V2FileContract, rhp4.Usage) ([]types.Currency, error)
-		// DebitAccount debits an account.
+		// DebitAccount debits an account. Fails with ErrBalanceInsufficient if
+		// the account doesn't have enough funds.
 		DebitAccount(rhp4.Account, rhp4.Usage) error
 	}
 
