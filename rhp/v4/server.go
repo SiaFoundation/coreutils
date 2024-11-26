@@ -463,10 +463,19 @@ func (s *Server) handleRPCLatestRevision(stream net.Conn) error {
 	if err != nil {
 		return fmt.Errorf("failed to lock contract: %w", err)
 	}
+	ci, fce, err := s.contractor.V2FileContractElement(req.ContractID)
+	if err != nil {
+		unlock()
+		return fmt.Errorf("failed to get contract's state element: %w", err)
+	}
 	unlock()
 
 	return rhp4.WriteResponse(stream, &rhp4.RPCLatestRevisionResponse{
-		Contract: state.Revision,
+		ChainIndex: ci,
+		Revision: types.V2FileContractRevision{
+			Parent:   fce,
+			Revision: state.Revision,
+		},
 	})
 }
 

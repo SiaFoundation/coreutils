@@ -474,11 +474,11 @@ func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State,
 }
 
 // RPCLatestRevision returns the latest revision of a contract.
-func RPCLatestRevision(ctx context.Context, t TransportClient, contractID types.FileContractID) (types.V2FileContract, error) {
+func RPCLatestRevision(ctx context.Context, t TransportClient, contractID types.FileContractID) (types.V2FileContractRevision, error) {
 	req := rhp4.RPCLatestRevisionRequest{ContractID: contractID}
 	var resp rhp4.RPCLatestRevisionResponse
 	err := callSingleRoundtripRPC(ctx, t, rhp4.RPCLatestRevisionID, &req, &resp)
-	return resp.Contract, err
+	return resp.Revision, err
 }
 
 // RPCSectorRoots returns the sector roots for a contract.
