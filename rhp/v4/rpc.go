@@ -636,6 +636,7 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 	if !fc.HostPublicKey.VerifyHash(formationSigHash, fc.HostSignature) {
 		return RPCFormContractResult{}, errors.New("invalid host signature")
 	}
+	fc.RenterSignature = hostFormationTxn.FileContracts[0].RenterSignature
 
 	return RPCFormContractResult{
 		Contract: ContractRevision{

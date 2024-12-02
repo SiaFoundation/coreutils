@@ -247,6 +247,15 @@ func TestFormContract(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// validate contract signatures
+	contract := result.Contract.Revision
+	contractSigHash := cm.TipState().ContractSigHash(contract)
+	if !hostKey.PublicKey().VerifyHash(contractSigHash, contract.HostSignature) {
+		t.Fatal("host signature verification failed")
+	} else if !renterKey.PublicKey().VerifyHash(contractSigHash, contract.RenterSignature) {
+		t.Fatal("renter signature verification failed")
+	}
+
 	// verify the transaction set is valid
 	if known, err := cm.AddV2PoolTransactions(result.FormationSet.Basis, result.FormationSet.Transactions); err != nil {
 		t.Fatal(err)
