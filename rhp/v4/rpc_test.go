@@ -321,6 +321,84 @@ func TestFormContractBasis(t *testing.T) {
 	}
 }
 
+func TestRPCLatestRevision(t *testing.T) {
+	n, genesis := testutil.V2Network()
+	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
+	cm, s, w := startTestNode(t, n, genesis)
+
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
+
+	sr := testutil.NewEphemeralSettingsReporter()
+	sr.Update(proto4.HostSettings{
+		Release:             "test",
+		AcceptingContracts:  true,
+		WalletAddress:       w.Address(),
+		MaxCollateral:       types.Siacoins(10000),
+		MaxContractDuration: 1000,
+		RemainingStorage:    100 * proto4.SectorSize,
+		TotalStorage:        100 * proto4.SectorSize,
+		Prices: proto4.HostPrices{
+			ContractPrice: types.Siacoins(1).Div64(5), // 0.2 SC
+			StoragePrice:  types.NewCurrency64(100),   // 100 H / byte / block
+			IngressPrice:  types.NewCurrency64(100),   // 100 H / byte
+			EgressPrice:   types.NewCurrency64(100),   // 100 H / byte
+			Collateral:    types.NewCurrency64(200),
+		},
+	})
+	ss := testutil.NewEphemeralSectorStore()
+	c := testutil.NewEphemeralContractor(cm)
+
+	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fundAndSign := &fundAndSign{w, renterKey}
+
+	result, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+		RenterPublicKey: renterKey.PublicKey(),
+		RenterAddress:   w.Address(),
+		Allowance:       types.Siacoins(1),
+		Collateral:      types.Siacoins(1),
+		ProofHeight:     cm.Tip().Height + 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// validate contract signatures
+	contract := result.Contract.Revision
+	contractSigHash := cm.TipState().ContractSigHash(contract)
+	if !hostKey.PublicKey().VerifyHash(contractSigHash, contract.HostSignature) {
+		t.Fatal("host signature verification failed")
+	} else if !renterKey.PublicKey().VerifyHash(contractSigHash, contract.RenterSignature) {
+		t.Fatal("renter signature verification failed")
+	}
+
+	// verify the transaction set is valid
+	if known, err := cm.AddV2PoolTransactions(result.FormationSet.Basis, result.FormationSet.Transactions); err != nil {
+		t.Fatal(err)
+	} else if !known {
+		t.Fatal("expected transaction set to be known")
+	}
+
+	// fetch revision
+	contract, err = rhp4.RPCLatestRevision(context.Background(), transport, result.Contract.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// validate contract signatures
+	contractSigHash = cm.TipState().ContractSigHash(contract)
+	if !hostKey.PublicKey().VerifyHash(contractSigHash, contract.HostSignature) {
+		t.Fatal("host signature verification failed")
+	} else if !renterKey.PublicKey().VerifyHash(contractSigHash, contract.RenterSignature) {
+		t.Fatal("renter signature verification failed")
+	}
+}
+
 func TestRPCRefresh(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
