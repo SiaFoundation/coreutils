@@ -233,8 +233,7 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 	if err := rhp4.ReadRequest(stream, &req); err != nil {
 		return errorDecodingError("failed to read request: %v", err)
 	}
-	settings := s.settings.RHP4Settings()
-	if err := req.Validate(s.hostKey.PublicKey(), settings.MaxSectorDuration); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), rhp4.TempSectorDuration); err != nil {
 		return errorBadRequest("request invalid: %v", err)
 	}
 	prices := req.Prices
@@ -253,7 +252,7 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 		return errorDecodingError("failed to read sector data: %v", err)
 	}
 
-	usage := prices.RPCWriteSectorCost(req.DataLength, req.Duration)
+	usage := prices.RPCWriteSectorCost(req.DataLength)
 	if err = s.contractor.DebitAccount(req.Token.Account, usage); err != nil {
 		return fmt.Errorf("failed to debit account: %w", err)
 	}
@@ -284,8 +283,7 @@ func (s *Server) handleRPCFreeSectors(stream net.Conn) error {
 
 	fc := state.Revision
 
-	settings := s.settings.RHP4Settings()
-	if err := req.Validate(s.hostKey.PublicKey(), fc, settings.MaxSectorBatchSize); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), fc, rhp4.MaxSectorBatchSize); err != nil {
 		return errorBadRequest("request invalid: %v", err)
 	}
 	prices := req.Prices
@@ -347,8 +345,7 @@ func (s *Server) handleRPCAppendSectors(stream net.Conn) error {
 		return errorDecodingError("failed to read request: %v", err)
 	}
 
-	settings := s.settings.RHP4Settings()
-	if err := req.Validate(s.hostKey.PublicKey(), settings.MaxSectorBatchSize); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), rhp4.MaxSectorBatchSize); err != nil {
 		return errorBadRequest("request invalid: %v", err)
 	}
 
@@ -483,8 +480,7 @@ func (s *Server) handleRPCSectorRoots(stream net.Conn) error {
 	defer unlock()
 
 	// validate the request fields
-	settings := s.settings.RHP4Settings()
-	if err := req.Validate(s.hostKey.PublicKey(), state.Revision, settings.MaxSectorBatchSize); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), state.Revision, rhp4.MaxSectorBatchSize); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 	prices := req.Prices

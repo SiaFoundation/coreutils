@@ -287,7 +287,7 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 
 	return RPCWriteSectorResult{
 		Root:  resp.Root,
-		Usage: prices.RPCWriteSectorCost(uint64(length), duration),
+		Usage: prices.RPCWriteSectorCost(uint64(length)),
 	}, nil
 }
 

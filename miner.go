@@ -19,7 +19,7 @@ func FindBlockNonce(cs consensus.State, b *types.Block, timeout time.Duration) b
 		copy(buf[:32], "sia/id/block|")
 		copy(buf[48:], b.V2.Commitment[:])
 	} else {
-		root := b.MerkleRoot()
+		root := b.Header().Commitment
 		copy(buf[:32], b.ParentID[:])
 		copy(buf[48:], root[:])
 	}

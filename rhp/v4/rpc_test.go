@@ -156,8 +156,6 @@ func TestSettings(t *testing.T) {
 		WalletAddress:       w.Address(),
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
-		MaxSectorDuration:   3 * 144,
-		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -216,8 +214,6 @@ func TestFormContract(t *testing.T) {
 		WalletAddress:       w.Address(),
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
-		MaxSectorDuration:   3 * 144,
-		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -275,8 +271,6 @@ func TestFormContractBasis(t *testing.T) {
 		WalletAddress:       w.Address(),
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
-		MaxSectorDuration:   3 * 144,
-		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -333,8 +327,6 @@ func TestRPCRefresh(t *testing.T) {
 		WalletAddress:       w.Address(),
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
-		MaxSectorDuration:   3 * 144,
-		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -446,8 +438,6 @@ func TestRPCRenew(t *testing.T) {
 		WalletAddress:       w.Address(),
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
-		MaxSectorDuration:   3 * 144,
-		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -607,8 +597,6 @@ func TestAccounts(t *testing.T) {
 		WalletAddress:       w.Address(),
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
-		MaxSectorDuration:   3 * 144,
-		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -708,8 +696,6 @@ func TestReadWriteSector(t *testing.T) {
 		WalletAddress:       w.Address(),
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
-		MaxSectorDuration:   3 * 144,
-		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -804,8 +790,6 @@ func TestAppendSectors(t *testing.T) {
 		WalletAddress:       w.Address(),
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
-		MaxSectorDuration:   3 * 144,
-		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -921,8 +905,6 @@ func TestVerifySector(t *testing.T) {
 		WalletAddress:       w.Address(),
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
-		MaxSectorDuration:   3 * 144,
-		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -1014,8 +996,6 @@ func TestRPCFreeSectors(t *testing.T) {
 		WalletAddress:       w.Address(),
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
-		MaxSectorDuration:   3 * 144,
-		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -1137,8 +1117,6 @@ func TestRPCSectorRoots(t *testing.T) {
 		WalletAddress:       w.Address(),
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
-		MaxSectorDuration:   3 * 144,
-		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -1247,8 +1225,6 @@ func BenchmarkWrite(b *testing.B) {
 		WalletAddress:       w.Address(),
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
-		MaxSectorDuration:   3 * 144,
-		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -1337,8 +1313,6 @@ func BenchmarkRead(b *testing.B) {
 		WalletAddress:       w.Address(),
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
-		MaxSectorDuration:   3 * 144,
-		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{
@@ -1439,8 +1413,6 @@ func BenchmarkContractUpload(b *testing.B) {
 		WalletAddress:       w.Address(),
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
-		MaxSectorDuration:   3 * 144,
-		MaxSectorBatchSize:  100,
 		RemainingStorage:    100 * proto4.SectorSize,
 		TotalStorage:        100 * proto4.SectorSize,
 		Prices: proto4.HostPrices{

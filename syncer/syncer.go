@@ -301,7 +301,7 @@ func (s *Syncer) runPeer(p *Peer) error {
 	}
 }
 
-func (s *Syncer) relayHeader(h gateway.BlockHeader, origin *Peer) {
+func (s *Syncer) relayHeader(h types.BlockHeader, origin *Peer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, p := range s.peers {
@@ -323,7 +323,7 @@ func (s *Syncer) relayTransactionSet(txns []types.Transaction, origin *Peer) {
 	}
 }
 
-func (s *Syncer) relayV2Header(bh gateway.V2BlockHeader, origin *Peer) {
+func (s *Syncer) relayV2Header(bh types.BlockHeader, origin *Peer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, p := range s.peers {
@@ -723,10 +723,10 @@ func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
 }
 
 // BroadcastHeader broadcasts a header to all peers.
-func (s *Syncer) BroadcastHeader(h gateway.BlockHeader) { s.relayHeader(h, nil) }
+func (s *Syncer) BroadcastHeader(h types.BlockHeader) { s.relayHeader(h, nil) }
 
 // BroadcastV2Header broadcasts a v2 header to all peers.
-func (s *Syncer) BroadcastV2Header(h gateway.V2BlockHeader) { s.relayV2Header(h, nil) }
+func (s *Syncer) BroadcastV2Header(h types.BlockHeader) { s.relayV2Header(h, nil) }
 
 // BroadcastV2BlockOutline broadcasts a v2 block outline to all peers.
 func (s *Syncer) BroadcastV2BlockOutline(b gateway.V2BlockOutline) { s.relayV2BlockOutline(b, nil) }

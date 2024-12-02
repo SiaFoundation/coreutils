@@ -80,11 +80,11 @@ func TestSyncer(t *testing.T) {
 	}
 
 	// broadcast the tip from s1 to s2
-	s1.BroadcastHeader(gateway.BlockHeader{
+	s1.BroadcastHeader(types.BlockHeader{
 		ParentID:   b.ParentID,
 		Nonce:      b.Nonce,
 		Timestamp:  b.Timestamp,
-		MerkleRoot: b.MerkleRoot(),
+		Commitment: b.Header().Commitment,
 	})
 
 	for i := 0; i < 100; i++ {
