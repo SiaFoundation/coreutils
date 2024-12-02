@@ -20,10 +20,7 @@ type supplementedBlock struct {
 func (sb supplementedBlock) EncodeTo(e *types.Encoder) {
 	e.WriteUint8(2)
 	(types.V2Block)(sb.Block).EncodeTo(e)
-	e.WriteBool(sb.Supplement != nil)
-	if sb.Supplement != nil {
-		sb.Supplement.EncodeTo(e)
-	}
+	types.EncodePtr(e, sb.Supplement)
 }
 
 func (sb *supplementedBlock) DecodeFrom(d *types.Decoder) {
@@ -31,10 +28,72 @@ func (sb *supplementedBlock) DecodeFrom(d *types.Decoder) {
 		d.SetErr(fmt.Errorf("incompatible version (%d)", v))
 	}
 	(*types.V2Block)(&sb.Block).DecodeFrom(d)
-	if d.ReadBool() {
-		sb.Supplement = new(consensus.V1BlockSupplement)
-		sb.Supplement.DecodeFrom(d)
+	types.DecodePtr(d, &sb.Supplement)
+}
+
+type oldSiacoinElement types.SiacoinElement
+
+func (oldSiacoinElement) Cast() (sce types.SiacoinElement) { return }
+
+func (sce *oldSiacoinElement) DecodeFrom(d *types.Decoder) {
+	sce.ID.DecodeFrom(d)
+	sce.StateElement.DecodeFrom(d)
+	(*types.V2SiacoinOutput)(&sce.SiacoinOutput).DecodeFrom(d)
+	sce.MaturityHeight = d.ReadUint64()
+}
+
+type oldSiafundElement types.SiafundElement
+
+func (oldSiafundElement) Cast() (sfe types.SiafundElement) { return }
+
+func (sfe *oldSiafundElement) DecodeFrom(d *types.Decoder) {
+	sfe.ID.DecodeFrom(d)
+	sfe.StateElement.DecodeFrom(d)
+	(*types.V2SiafundOutput)(&sfe.SiafundOutput).DecodeFrom(d)
+	(*types.V2Currency)(&sfe.ClaimStart).DecodeFrom(d)
+}
+
+type oldFileContractElement types.FileContractElement
+
+func (oldFileContractElement) Cast() (fce types.FileContractElement) { return }
+
+func (fce *oldFileContractElement) DecodeFrom(d *types.Decoder) {
+	fce.ID.DecodeFrom(d)
+	fce.StateElement.DecodeFrom(d)
+	fce.FileContract.DecodeFrom(d)
+}
+
+type oldTransactionSupplement consensus.V1TransactionSupplement
+
+func (oldTransactionSupplement) Cast() (ts consensus.V1TransactionSupplement) { return }
+
+func (ts *oldTransactionSupplement) DecodeFrom(d *types.Decoder) {
+	types.DecodeSliceCast[oldSiacoinElement](d, &ts.SiacoinInputs)
+	types.DecodeSliceCast[oldSiafundElement](d, &ts.SiafundInputs)
+	types.DecodeSliceCast[oldFileContractElement](d, &ts.RevisedFileContracts)
+	types.DecodeSliceFn(d, &ts.StorageProofs, func(d *types.Decoder) (sp consensus.V1StorageProofSupplement) {
+		(*oldFileContractElement)(&sp.FileContract).DecodeFrom(d)
+		return
+	})
+}
+
+type oldBlockSupplement consensus.V1BlockSupplement
+
+func (oldBlockSupplement) Cast() (bs consensus.V1BlockSupplement) { return }
+
+func (bs *oldBlockSupplement) DecodeFrom(d *types.Decoder) {
+	types.DecodeSliceCast[oldTransactionSupplement](d, &bs.Transactions)
+	types.DecodeSliceCast[oldFileContractElement](d, &bs.ExpiringFileContracts)
+}
+
+type oldSupplementedBlock supplementedBlock
+
+func (sb *oldSupplementedBlock) DecodeFrom(d *types.Decoder) {
+	if v := d.ReadUint8(); v != 2 {
+		d.SetErr(fmt.Errorf("incompatible version (%d)", v))
 	}
+	(*types.V2Block)(&sb.Block).DecodeFrom(d)
+	types.DecodePtrCast[oldBlockSupplement](d, &sb.Supplement)
 }
 
 // helper type for decoding just the header information from a block
@@ -225,6 +284,24 @@ func (b *dbBucket) get(key []byte, v types.DecoderFrom) bool {
 	return true
 }
 
+func (b *dbBucket) getFallback(key []byte, v, fb types.DecoderFrom) bool {
+	val := b.getRaw(key)
+	if val == nil {
+		return false
+	}
+	d := types.NewBufDecoder(val)
+	v.DecodeFrom(d)
+	if d.Err() != nil {
+		d = types.NewBufDecoder(val)
+		fb.DecodeFrom(d)
+	}
+	if d.Err() != nil {
+		check(fmt.Errorf("error decoding %T: %w", v, d.Err()))
+		return false
+	}
+	return true
+}
+
 func (b *dbBucket) putRaw(key, value []byte) {
 	check(b.b.Put(key, value))
 	b.db.unflushed += len(value)
@@ -306,7 +383,7 @@ func (db *DBStore) putState(cs consensus.State) {
 
 func (db *DBStore) getBlock(id types.BlockID) (b types.Block, bs *consensus.V1BlockSupplement, _ bool) {
 	var sb supplementedBlock
-	ok := db.bucket(bBlocks).get(id[:], &sb)
+	ok := db.bucket(bBlocks).getFallback(id[:], &sb, (*oldSupplementedBlock)(&sb))
 	return sb.Block, sb.Supplement, ok
 }
 
@@ -350,7 +427,7 @@ func (db *DBStore) getElementProof(leafIndex, numLeaves uint64) (proof []types.H
 }
 
 func (db *DBStore) getSiacoinElement(id types.SiacoinOutputID, numLeaves uint64) (sce types.SiacoinElement, ok bool) {
-	ok = db.bucket(bSiacoinElements).get(id[:], &sce)
+	ok = db.bucket(bSiacoinElements).getFallback(id[:], &sce, (*oldSiacoinElement)(&sce))
 	if ok {
 		sce.StateElement.MerkleProof = db.getElementProof(sce.StateElement.LeafIndex, numLeaves)
 	}
@@ -367,7 +444,7 @@ func (db *DBStore) deleteSiacoinElement(id types.SiacoinOutputID) {
 }
 
 func (db *DBStore) getSiafundElement(id types.SiafundOutputID, numLeaves uint64) (sfe types.SiafundElement, ok bool) {
-	ok = db.bucket(bSiafundElements).get(id[:], &sfe)
+	ok = db.bucket(bSiafundElements).getFallback(id[:], &sfe, (*oldSiafundElement)(&sfe))
 	if ok {
 		sfe.StateElement.MerkleProof = db.getElementProof(sfe.StateElement.LeafIndex, numLeaves)
 	}
@@ -384,7 +461,7 @@ func (db *DBStore) deleteSiafundElement(id types.SiafundOutputID) {
 }
 
 func (db *DBStore) getFileContractElement(id types.FileContractID, numLeaves uint64) (fce types.FileContractElement, ok bool) {
-	ok = db.bucket(bFileContractElements).get(id[:], &fce)
+	ok = db.bucket(bFileContractElements).getFallback(id[:], &fce, (*oldFileContractElement)(&fce))
 	if ok {
 		fce.StateElement.MerkleProof = db.getElementProof(fce.StateElement.LeafIndex, numLeaves)
 	}
