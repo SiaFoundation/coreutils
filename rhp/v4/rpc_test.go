@@ -253,6 +253,13 @@ func TestFormContract(t *testing.T) {
 	} else if !known {
 		t.Fatal("expected transaction set to be known")
 	}
+
+	sigHash := cm.TipState().ContractSigHash(result.Contract.Revision)
+	if !renterKey.PublicKey().VerifyHash(sigHash, result.Contract.Revision.RenterSignature) {
+		t.Fatal("renter signature verification failed")
+	} else if !hostKey.PublicKey().VerifyHash(sigHash, result.Contract.Revision.HostSignature) {
+		t.Fatal("host signature verification failed")
+	}
 }
 
 func TestFormContractBasis(t *testing.T) {
@@ -420,6 +427,13 @@ func TestRPCRefresh(t *testing.T) {
 		} else if !known {
 			t.Fatal("expected transaction set to be known")
 		}
+
+		sigHash := cm.TipState().ContractSigHash(refreshResult.Contract.Revision)
+		if !renterKey.PublicKey().VerifyHash(sigHash, refreshResult.Contract.Revision.RenterSignature) {
+			t.Fatal("renter signature verification failed")
+		} else if !hostKey.PublicKey().VerifyHash(sigHash, refreshResult.Contract.Revision.HostSignature) {
+			t.Fatal("host signature verification failed")
+		}
 	})
 }
 
@@ -473,6 +487,12 @@ func TestRPCRenew(t *testing.T) {
 			t.Fatal(err)
 		}
 		revision := result.Contract
+		sigHash := cm.TipState().ContractSigHash(revision.Revision)
+		if !renterKey.PublicKey().VerifyHash(sigHash, revision.Revision.RenterSignature) {
+			t.Fatal("renter signature verification failed")
+		} else if !hostKey.PublicKey().VerifyHash(sigHash, revision.Revision.HostSignature) {
+			t.Fatal("host signature verification failed")
+		}
 
 		// verify the transaction set is valid
 		if known, err := cm.AddV2PoolTransactions(result.FormationSet.Basis, result.FormationSet.Transactions); err != nil {
@@ -534,6 +554,13 @@ func TestRPCRenew(t *testing.T) {
 		} else if !known {
 			t.Fatal("expected transaction set to be known")
 		}
+
+		sigHash := cm.TipState().ContractSigHash(renewResult.Contract.Revision)
+		if !renterKey.PublicKey().VerifyHash(sigHash, renewResult.Contract.Revision.RenterSignature) {
+			t.Fatal("renter signature verification failed")
+		} else if !hostKey.PublicKey().VerifyHash(sigHash, renewResult.Contract.Revision.HostSignature) {
+			t.Fatal("host signature verification failed")
+		}
 	})
 
 	t.Run("full rollover", func(t *testing.T) {
@@ -556,6 +583,13 @@ func TestRPCRenew(t *testing.T) {
 		} else if !known {
 			t.Fatal("expected transaction set to be known")
 		}
+
+		sigHash := cm.TipState().ContractSigHash(renewResult.Contract.Revision)
+		if !renterKey.PublicKey().VerifyHash(sigHash, renewResult.Contract.Revision.RenterSignature) {
+			t.Fatal("renter signature verification failed")
+		} else if !hostKey.PublicKey().VerifyHash(sigHash, renewResult.Contract.Revision.HostSignature) {
+			t.Fatal("host signature verification failed")
+		}
 	})
 
 	t.Run("no rollover", func(t *testing.T) {
@@ -577,6 +611,13 @@ func TestRPCRenew(t *testing.T) {
 			t.Fatal(err)
 		} else if !known {
 			t.Fatal("expected transaction set to be known")
+		}
+
+		sigHash := cm.TipState().ContractSigHash(renewResult.Contract.Revision)
+		if !renterKey.PublicKey().VerifyHash(sigHash, renewResult.Contract.Revision.RenterSignature) {
+			t.Fatal("renter signature verification failed")
+		} else if !hostKey.PublicKey().VerifyHash(sigHash, renewResult.Contract.Revision.HostSignature) {
+			t.Fatal("host signature verification failed")
 		}
 	})
 }

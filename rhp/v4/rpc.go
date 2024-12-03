@@ -596,10 +596,10 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 	// sign the renter inputs after the host inputs have been added
 	signer.SignV2Inputs(&formationTxn, toSign)
 	formationSigHash := cs.ContractSigHash(fc)
-	formationTxn.FileContracts[0].RenterSignature = signer.SignHash(formationSigHash)
+	fc.RenterSignature = signer.SignHash(formationSigHash)
 
 	renterPolicyResp := rhp4.RPCFormContractSecondResponse{
-		RenterContractSignature: formationTxn.FileContracts[0].RenterSignature,
+		RenterContractSignature: fc.RenterSignature,
 	}
 	for _, si := range formationTxn.SiacoinInputs[:len(renterSiacoinElements)] {
 		renterPolicyResp.RenterSatisfiedPolicies = append(renterPolicyResp.RenterSatisfiedPolicies, si.SatisfiedPolicy)
@@ -770,7 +770,7 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 	return RPCRenewContractResult{
 		Contract: ContractRevision{
 			ID:       params.ContractID.V2RenewalID(),
-			Revision: renewal.NewContract,
+			Revision: hostRenewal.NewContract,
 		},
 		RenewalSet: TransactionSet{
 			Basis:        hostTransactionSetResp.Basis,
@@ -901,7 +901,7 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 	return RPCRefreshContractResult{
 		Contract: ContractRevision{
 			ID:       params.ContractID.V2RenewalID(),
-			Revision: renewal.NewContract,
+			Revision: hostRenewal.NewContract,
 		},
 		RenewalSet: TransactionSet{
 			Basis:        hostTransactionSetResp.Basis,
