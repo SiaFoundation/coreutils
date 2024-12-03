@@ -17,17 +17,6 @@ import (
 	"lukechampine.com/frand"
 )
 
-const (
-	sectorsPerTiB = (1 << 40) / (1 << 22)
-	memoryPer1TiB = sectorsPerTiB * 32
-
-	sectorsPer10TiB = 10 * sectorsPerTiB
-	memoryPer10TiB  = sectorsPer10TiB * 32
-
-	sectorsPer100TiB = 100 * sectorsPerTiB
-	memoryPer100TiB  = sectorsPer100TiB * 32
-)
-
 var protocolVersion = [3]byte{4, 0, 0}
 
 type (
@@ -232,9 +221,7 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 	var req rhp4.RPCWriteSectorRequest
 	if err := rhp4.ReadRequest(stream, &req); err != nil {
 		return errorDecodingError("failed to read request: %v", err)
-	}
-	settings := s.settings.RHP4Settings()
-	if err := req.Validate(s.hostKey.PublicKey(), settings.MaxSectorDuration); err != nil {
+	} else if err := req.Validate(s.hostKey.PublicKey()); err != nil {
 		return errorBadRequest("request invalid: %v", err)
 	}
 	prices := req.Prices
@@ -253,12 +240,12 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 		return errorDecodingError("failed to read sector data: %v", err)
 	}
 
-	usage := prices.RPCWriteSectorCost(req.DataLength, req.Duration)
+	usage := prices.RPCWriteSectorCost(req.DataLength)
 	if err = s.contractor.DebitAccount(req.Token.Account, usage); err != nil {
 		return fmt.Errorf("failed to debit account: %w", err)
 	}
 
-	if err := s.sectors.StoreSector(root, &sector, req.Duration); err != nil {
+	if err := s.sectors.StoreSector(root, &sector, prices.TipHeight+rhp4.TempSectorDuration); err != nil {
 		return fmt.Errorf("failed to store sector: %w", err)
 	}
 	return rhp4.WriteResponse(stream, &rhp4.RPCWriteSectorResponse{
@@ -283,9 +270,7 @@ func (s *Server) handleRPCFreeSectors(stream net.Conn) error {
 	}
 
 	fc := state.Revision
-
-	settings := s.settings.RHP4Settings()
-	if err := req.Validate(s.hostKey.PublicKey(), fc, settings.MaxSectorBatchSize); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), fc); err != nil {
 		return errorBadRequest("request invalid: %v", err)
 	}
 	prices := req.Prices
@@ -347,8 +332,7 @@ func (s *Server) handleRPCAppendSectors(stream net.Conn) error {
 		return errorDecodingError("failed to read request: %v", err)
 	}
 
-	settings := s.settings.RHP4Settings()
-	if err := req.Validate(s.hostKey.PublicKey(), settings.MaxSectorBatchSize); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey()); err != nil {
 		return errorBadRequest("request invalid: %v", err)
 	}
 
@@ -440,6 +424,7 @@ func (s *Server) handleRPCFundAccounts(stream net.Conn) error {
 	if !revision.RenterPublicKey.VerifyHash(sigHash, req.RenterSignature) {
 		return rhp4.ErrInvalidSignature
 	}
+	revision.RenterSignature = req.RenterSignature
 	revision.HostSignature = s.hostKey.SignHash(sigHash)
 
 	balances, err := s.contractor.CreditAccountsWithContract(req.Deposits, req.ContractID, revision, usage)
@@ -483,8 +468,7 @@ func (s *Server) handleRPCSectorRoots(stream net.Conn) error {
 	defer unlock()
 
 	// validate the request fields
-	settings := s.settings.RHP4Settings()
-	if err := req.Validate(s.hostKey.PublicKey(), state.Revision, settings.MaxSectorBatchSize); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), state.Revision); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 	prices := req.Prices
@@ -504,6 +488,7 @@ func (s *Server) handleRPCSectorRoots(stream net.Conn) error {
 
 	// sign the revision
 	revision.HostSignature = s.hostKey.SignHash(sigHash)
+	revision.RenterSignature = req.RenterSignature
 
 	// update the contract
 	err = s.contractor.ReviseV2Contract(req.ContractID, revision, state.Roots, usage)
@@ -693,7 +678,7 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 
 	// validate the request
 	settings := s.settings.RHP4Settings()
-	if err := req.Validate(s.hostKey.PublicKey(), state.Revision.ExpirationHeight, settings.MaxCollateral); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), state.Revision.TotalCollateral, state.Revision.ExpirationHeight, settings.MaxCollateral); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
@@ -782,15 +767,22 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 	// validate the renter's signature
 	renewalSigHash := cs.RenewalSigHash(renewal)
 	if !existing.RenterPublicKey.VerifyHash(renewalSigHash, renterSigResp.RenterRenewalSignature) {
-		return rhp4.ErrInvalidSignature
+		return fmt.Errorf("failed to validate renter renewal signature: %w", rhp4.ErrInvalidSignature)
 	}
 	renewal.RenterSignature = renterSigResp.RenterRenewalSignature
+	renewal.HostSignature = s.hostKey.SignHash(renewalSigHash)
+
+	contractSigHash := cs.ContractSigHash(renewal.NewContract)
+	if !existing.RenterPublicKey.VerifyHash(contractSigHash, renterSigResp.RenterContractSignature) {
+		return fmt.Errorf("failed to validate renter contract signature: %w", rhp4.ErrInvalidSignature)
+	}
+	renewal.NewContract.RenterSignature = renterSigResp.RenterContractSignature
+	renewal.NewContract.HostSignature = s.hostKey.SignHash(contractSigHash)
 
 	// apply the renter's signatures
 	for i, policy := range renterSigResp.RenterSatisfiedPolicies {
 		renewalTxn.SiacoinInputs[i].SatisfiedPolicy = policy
 	}
-	renewal.HostSignature = s.hostKey.SignHash(renewalSigHash)
 
 	// add the renter's parents to our transaction pool to ensure they are valid
 	// and update the proofs.
@@ -849,7 +841,7 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	tip := s.chain.Tip()
 
 	// validate the request
-	if err := req.Validate(s.hostKey.PublicKey(), tip, state.Revision.ProofHeight, settings.MaxCollateral, settings.MaxContractDuration); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), tip, state.Revision.Filesize, state.Revision.ProofHeight, settings.MaxCollateral, settings.MaxContractDuration); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
@@ -944,15 +936,22 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	// validate the renter's signature
 	renewalSigHash := cs.RenewalSigHash(renewal)
 	if !existing.RenterPublicKey.VerifyHash(renewalSigHash, renterSigResp.RenterRenewalSignature) {
-		return rhp4.ErrInvalidSignature
+		return fmt.Errorf("failed to validate renewal signature: %w", rhp4.ErrInvalidSignature)
 	}
 	renewal.RenterSignature = renterSigResp.RenterRenewalSignature
+	renewal.HostSignature = s.hostKey.SignHash(renewalSigHash)
+
+	contractSighash := cs.ContractSigHash(renewal.NewContract)
+	if !existing.RenterPublicKey.VerifyHash(contractSighash, renterSigResp.RenterContractSignature) {
+		return fmt.Errorf("failed to validate contract signature: %w", rhp4.ErrInvalidSignature)
+	}
+	renewal.NewContract.RenterSignature = renterSigResp.RenterContractSignature
+	renewal.NewContract.HostSignature = s.hostKey.SignHash(contractSighash)
 
 	// apply the renter's signatures
 	for i, policy := range renterSigResp.RenterSatisfiedPolicies {
 		renewalTxn.SiacoinInputs[i].SatisfiedPolicy = policy
 	}
-	renewal.HostSignature = s.hostKey.SignHash(renewalSigHash)
 
 	// add the renter's parents to our transaction pool to ensure they are valid
 	// and update the proofs.

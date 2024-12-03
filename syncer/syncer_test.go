@@ -80,12 +80,7 @@ func TestSyncer(t *testing.T) {
 	}
 
 	// broadcast the tip from s1 to s2
-	s1.BroadcastHeader(gateway.BlockHeader{
-		ParentID:   b.ParentID,
-		Nonce:      b.Nonce,
-		Timestamp:  b.Timestamp,
-		MerkleRoot: b.MerkleRoot(),
-	})
+	s1.BroadcastHeader(b.Header())
 
 	for i := 0; i < 100; i++ {
 		if cm1.Tip() == cm2.Tip() {
