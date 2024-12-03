@@ -793,7 +793,7 @@ func TestReadWriteSector(t *testing.T) {
 	data := frand.Bytes(1024)
 
 	// store the sector
-	writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(data), uint64(len(data)), 5)
+	writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(data), uint64(len(data)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -913,7 +913,7 @@ func TestAppendSectors(t *testing.T) {
 		frand.Read(sector[:])
 		root := proto4.SectorRoot(&sector)
 
-		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(sector[:]), proto4.SectorSize, 5)
+		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(sector[:]), proto4.SectorSize)
 		if err != nil {
 			t.Fatal(err)
 		} else if writeResult.Root != root {
@@ -1026,7 +1026,7 @@ func TestVerifySector(t *testing.T) {
 	data := frand.Bytes(1024)
 
 	// store the sector
-	writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(data), uint64(len(data)), 5)
+	writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(data), uint64(len(data)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1120,7 +1120,7 @@ func TestRPCFreeSectors(t *testing.T) {
 		data := frand.Bytes(1024)
 
 		// store the sector
-		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(data), uint64(len(data)), 5)
+		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(data), uint64(len(data)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1259,7 +1259,7 @@ func TestRPCSectorRoots(t *testing.T) {
 		data := frand.Bytes(1024)
 
 		// store the sector
-		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(data), uint64(len(data)), 5)
+		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(data), uint64(len(data)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1355,7 +1355,7 @@ func BenchmarkWrite(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		// store the sector
-		_, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(sectors[i][:]), proto4.SectorSize, 5)
+		_, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(sectors[i][:]), proto4.SectorSize)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1438,7 +1438,7 @@ func BenchmarkRead(b *testing.B) {
 		sectors = append(sectors, sector)
 
 		// store the sector
-		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(sectors[i][:]), proto4.SectorSize, 5)
+		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(sectors[i][:]), proto4.SectorSize)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1548,7 +1548,7 @@ func BenchmarkContractUpload(b *testing.B) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(sectors[i][:]), proto4.SectorSize, 5)
+			writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(sectors[i][:]), proto4.SectorSize)
 			if err != nil {
 				b.Error(err)
 			} else if writeResult.Root != roots[i] {

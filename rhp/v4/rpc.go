@@ -237,7 +237,7 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 }
 
 // RPCWriteSector writes a sector to the host.
-func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, data io.Reader, length uint64, duration uint64) (RPCWriteSectorResult, error) {
+func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, data io.Reader, length uint64) (RPCWriteSectorResult, error) {
 	if length == 0 {
 		return RPCWriteSectorResult{}, errors.New("cannot write zero-length sector")
 	} else if length > rhp4.SectorSize {
