@@ -246,11 +246,10 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 	req := rhp4.RPCWriteSectorRequest{
 		Prices:     prices,
 		Token:      token,
-		Duration:   duration,
 		DataLength: length,
 	}
 
-	if err := req.Validate(t.PeerKey(), req.Duration); err != nil {
+	if err := req.Validate(t.PeerKey()); err != nil {
 		return RPCWriteSectorResult{}, fmt.Errorf("invalid request: %w", err)
 	}
 
@@ -287,7 +286,7 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 
 	return RPCWriteSectorResult{
 		Root:  resp.Root,
-		Usage: prices.RPCWriteSectorCost(uint64(length), duration),
+		Usage: prices.RPCWriteSectorCost(uint64(length)),
 	}, nil
 }
 
@@ -419,6 +418,7 @@ func RPCAppendSectors(ctx context.Context, t TransportClient, cs consensus.State
 	} else if !contract.Revision.HostPublicKey.VerifyHash(sigHash, hostSignature.HostSignature) {
 		return RPCAppendSectorsResult{}, rhp4.ErrInvalidSignature
 	}
+	revision.HostSignature = hostSignature.HostSignature
 	return RPCAppendSectorsResult{
 		Revision: revision,
 		Usage:    usage,
@@ -498,7 +498,7 @@ func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, 
 		RenterSignature: revision.RenterSignature,
 	}
 
-	if err := req.Validate(contract.Revision.HostPublicKey, revision, length); err != nil {
+	if err := req.Validate(contract.Revision.HostPublicKey, revision); err != nil {
 		return RPCSectorRootsResult{}, fmt.Errorf("invalid request: %w", err)
 	}
 
@@ -597,10 +597,10 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 	// sign the renter inputs after the host inputs have been added
 	signer.SignV2Inputs(&formationTxn, toSign)
 	formationSigHash := cs.ContractSigHash(fc)
-	formationTxn.FileContracts[0].RenterSignature = signer.SignHash(formationSigHash)
+	fc.RenterSignature = signer.SignHash(formationSigHash)
 
 	renterPolicyResp := rhp4.RPCFormContractSecondResponse{
-		RenterContractSignature: formationTxn.FileContracts[0].RenterSignature,
+		RenterContractSignature: fc.RenterSignature,
 	}
 	for _, si := range formationTxn.SiacoinInputs[:len(renterSiacoinElements)] {
 		renterPolicyResp.RenterSatisfiedPolicies = append(renterPolicyResp.RenterSatisfiedPolicies, si.SatisfiedPolicy)
@@ -727,10 +727,14 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 	// sign the renewal
 	renewalSigHash := cs.RenewalSigHash(renewal)
 	renewal.RenterSignature = signer.SignHash(renewalSigHash)
+	// sign the contract
+	contractSigHash := cs.ContractSigHash(renewal.NewContract)
+	renewal.NewContract.RenterSignature = signer.SignHash(contractSigHash)
 
 	// send the renter signatures
 	renterPolicyResp := rhp4.RPCRenewContractSecondResponse{
-		RenterRenewalSignature: renewal.RenterSignature,
+		RenterRenewalSignature:  renewal.RenterSignature,
+		RenterContractSignature: renewal.NewContract.RenterSignature,
 	}
 	for _, si := range renewalTxn.SiacoinInputs[:len(req.RenterInputs)] {
 		renterPolicyResp.RenterSatisfiedPolicies = append(renterPolicyResp.RenterSatisfiedPolicies, si.SatisfiedPolicy)
@@ -760,12 +764,14 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 
 	// validate the host signature
 	if !existing.HostPublicKey.VerifyHash(renewalSigHash, hostRenewal.HostSignature) {
-		return RPCRenewContractResult{}, errors.New("invalid host signature")
+		return RPCRenewContractResult{}, errors.New("invalid host renewal signature")
+	} else if !existing.HostPublicKey.VerifyHash(contractSigHash, hostRenewal.NewContract.HostSignature) {
+		return RPCRenewContractResult{}, errors.New("invalid host contract signature")
 	}
 	return RPCRenewContractResult{
 		Contract: ContractRevision{
 			ID:       params.ContractID.V2RenewalID(),
-			Revision: renewal.NewContract,
+			Revision: hostRenewal.NewContract,
 		},
 		RenewalSet: TransactionSet{
 			Basis:        hostTransactionSetResp.Basis,
@@ -852,10 +858,14 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 	// sign the renewal
 	renewalSigHash := cs.RenewalSigHash(renewal)
 	renewal.RenterSignature = signer.SignHash(renewalSigHash)
+	// sign the new contract
+	contractSigHash := cs.ContractSigHash(renewal.NewContract)
+	renewal.NewContract.RenterSignature = signer.SignHash(contractSigHash)
 
 	// send the renter signatures
 	renterPolicyResp := rhp4.RPCRefreshContractSecondResponse{
-		RenterRenewalSignature: renewal.RenterSignature,
+		RenterRenewalSignature:  renewal.RenterSignature,
+		RenterContractSignature: renewal.NewContract.RenterSignature,
 	}
 	for _, si := range renewalTxn.SiacoinInputs[:len(req.RenterInputs)] {
 		renterPolicyResp.RenterSatisfiedPolicies = append(renterPolicyResp.RenterSatisfiedPolicies, si.SatisfiedPolicy)
@@ -885,12 +895,14 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 
 	// validate the host signature
 	if !existing.HostPublicKey.VerifyHash(renewalSigHash, hostRenewal.HostSignature) {
-		return RPCRefreshContractResult{}, errors.New("invalid host signature")
+		return RPCRefreshContractResult{}, errors.New("invalid host renewal signature")
+	} else if !existing.HostPublicKey.VerifyHash(contractSigHash, hostRenewal.NewContract.HostSignature) {
+		return RPCRefreshContractResult{}, errors.New("invalid host contract signature")
 	}
 	return RPCRefreshContractResult{
 		Contract: ContractRevision{
 			ID:       params.ContractID.V2RenewalID(),
-			Revision: renewal.NewContract,
+			Revision: hostRenewal.NewContract,
 		},
 		RenewalSet: TransactionSet{
 			Basis:        hostTransactionSetResp.Basis,
