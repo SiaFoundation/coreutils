@@ -17,17 +17,6 @@ import (
 	"lukechampine.com/frand"
 )
 
-const (
-	sectorsPerTiB = (1 << 40) / (1 << 22)
-	memoryPer1TiB = sectorsPerTiB * 32
-
-	sectorsPer10TiB = 10 * sectorsPerTiB
-	memoryPer10TiB  = sectorsPer10TiB * 32
-
-	sectorsPer100TiB = 100 * sectorsPerTiB
-	memoryPer100TiB  = sectorsPer100TiB * 32
-)
-
 var protocolVersion = [3]byte{4, 0, 0}
 
 type (
@@ -435,6 +424,7 @@ func (s *Server) handleRPCFundAccounts(stream net.Conn) error {
 	if !revision.RenterPublicKey.VerifyHash(sigHash, req.RenterSignature) {
 		return rhp4.ErrInvalidSignature
 	}
+	revision.RenterSignature = req.RenterSignature
 	revision.HostSignature = s.hostKey.SignHash(sigHash)
 
 	balances, err := s.contractor.CreditAccountsWithContract(req.Deposits, req.ContractID, revision, usage)
@@ -498,6 +488,7 @@ func (s *Server) handleRPCSectorRoots(stream net.Conn) error {
 
 	// sign the revision
 	revision.HostSignature = s.hostKey.SignHash(sigHash)
+	revision.RenterSignature = req.RenterSignature
 
 	// update the contract
 	err = s.contractor.ReviseV2Contract(req.ContractID, revision, state.Roots, usage)

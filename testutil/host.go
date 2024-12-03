@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"go.sia.tech/core/consensus"
 	proto4 "go.sia.tech/core/rhp/v4"
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/chain"
@@ -119,6 +120,13 @@ func (ec *EphemeralContractor) AddV2Contract(formationSet rhp4.TransactionSet, _
 	}
 	fc := formationTxn.FileContracts[0]
 
+	sigHash := consensus.State{}.ContractSigHash(fc)
+	if !fc.RenterPublicKey.VerifyHash(sigHash, fc.RenterSignature) {
+		return errors.New("invalid renter signature")
+	} else if !fc.HostPublicKey.VerifyHash(sigHash, fc.HostSignature) {
+		return errors.New("invalid host signature")
+	}
+
 	contractID := formationTxn.V2FileContractID(formationTxn.ID(), 0)
 	if _, ok := ec.contracts[contractID]; ok {
 		return errors.New("contract already exists")
@@ -160,6 +168,13 @@ func (ec *EphemeralContractor) RenewV2Contract(renewalSet rhp4.TransactionSet, _
 		return errors.New("contract already exists")
 	}
 
+	sigHash := consensus.State{}.ContractSigHash(renewal.NewContract)
+	if !existing.RenterPublicKey.VerifyHash(sigHash, renewal.NewContract.RenterSignature) {
+		return errors.New("invalid renter signature")
+	} else if !existing.HostPublicKey.VerifyHash(sigHash, renewal.NewContract.HostSignature) {
+		return errors.New("invalid host signature")
+	}
+
 	delete(ec.contracts, existingID) // remove the existing contract
 	ec.contracts[contractID] = renewal.NewContract
 	ec.roots[contractID] = append([]types.Hash256(nil), ec.roots[existingID]...)
@@ -177,6 +192,13 @@ func (ec *EphemeralContractor) ReviseV2Contract(contractID types.FileContractID,
 		return errors.New("contract not found")
 	} else if revision.RevisionNumber <= existing.RevisionNumber {
 		return errors.New("revision number must be greater than existing")
+	}
+
+	sigHash := consensus.State{}.ContractSigHash(revision)
+	if !existing.RenterPublicKey.VerifyHash(sigHash, revision.RenterSignature) {
+		return errors.New("invalid renter signature")
+	} else if !existing.HostPublicKey.VerifyHash(sigHash, revision.HostSignature) {
+		return errors.New("invalid host signature")
 	}
 
 	ec.contracts[contractID] = revision
@@ -202,11 +224,26 @@ func (ec *EphemeralContractor) CreditAccountsWithContract(deposits []proto4.Acco
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 
+	existing, ok := ec.contracts[contractID]
+	if !ok {
+		return nil, errors.New("contract not found")
+	} else if revision.RevisionNumber <= existing.RevisionNumber {
+		return nil, errors.New("revision number must be greater than existing")
+	}
+
+	sigHash := consensus.State{}.ContractSigHash(revision)
+	if !existing.RenterPublicKey.VerifyHash(sigHash, revision.RenterSignature) {
+		return nil, errors.New("invalid renter signature")
+	} else if !existing.HostPublicKey.VerifyHash(sigHash, revision.HostSignature) {
+		return nil, errors.New("invalid host signature")
+	}
+
 	var balance = make([]types.Currency, 0, len(deposits))
 	for _, deposit := range deposits {
 		ec.accounts[deposit.Account] = ec.accounts[deposit.Account].Add(deposit.Amount)
 		balance = append(balance, ec.accounts[deposit.Account])
 	}
+
 	ec.contracts[contractID] = revision
 	return balance, nil
 }

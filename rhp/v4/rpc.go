@@ -418,6 +418,7 @@ func RPCAppendSectors(ctx context.Context, t TransportClient, cs consensus.State
 	} else if !contract.Revision.HostPublicKey.VerifyHash(sigHash, hostSignature.HostSignature) {
 		return RPCAppendSectorsResult{}, rhp4.ErrInvalidSignature
 	}
+	revision.HostSignature = hostSignature.HostSignature
 	return RPCAppendSectorsResult{
 		Revision: revision,
 		Usage:    usage,

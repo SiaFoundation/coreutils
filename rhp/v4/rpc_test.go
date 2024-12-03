@@ -865,6 +865,27 @@ func TestAppendSectors(t *testing.T) {
 	}
 	revision := formResult.Contract
 
+	assertLastRevision := func(t *testing.T) {
+		t.Helper()
+
+		lastRev, err := rhp4.RPCLatestRevision(context.Background(), transport, revision.ID)
+		if err != nil {
+			t.Fatal(err)
+		} else if !reflect.DeepEqual(lastRev, revision.Revision) {
+			t.Log(lastRev)
+			t.Log(revision.Revision)
+			t.Fatalf("expected last revision to match")
+		}
+
+		sigHash := cm.TipState().ContractSigHash(revision.Revision)
+		if !renterKey.PublicKey().VerifyHash(sigHash, lastRev.RenterSignature) {
+			t.Fatal("renter signature invalid")
+		} else if !hostKey.PublicKey().VerifyHash(sigHash, lastRev.HostSignature) {
+			t.Fatal("host signature invalid")
+		}
+	}
+	assertLastRevision(t)
+
 	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 
@@ -876,6 +897,7 @@ func TestAppendSectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	revision.Revision = fundResult.Revision
+	assertLastRevision(t)
 
 	token := proto4.AccountToken{
 		Account:    account,
@@ -915,6 +937,8 @@ func TestAppendSectors(t *testing.T) {
 	if appendResult.Revision.FileMerkleRoot != proto4.MetaRoot(roots) {
 		t.Fatal("root mismatch")
 	}
+	revision.Revision = appendResult.Revision
+	assertLastRevision(t)
 
 	// read the sectors back
 	buf := bytes.NewBuffer(make([]byte, 0, proto4.SectorSize))
