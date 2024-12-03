@@ -3,7 +3,6 @@ package wallet_test
 import (
 	"errors"
 	"fmt"
-	"math"
 	"math/bits"
 	"path/filepath"
 	"testing"
@@ -1728,14 +1727,10 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 			cau.UpdateElementProof(&fce.StateElement)
 		}
 
-		// finalize the contract
-		finalRevision := fce.V2FileContract
-		finalRevision.RevisionNumber = math.MaxUint64
-		finalRevision.RenterSignature = types.Signature{}
-		finalRevision.HostSignature = types.Signature{}
 		// create a renewal
 		renewal := types.V2FileContractRenewal{
-			FinalRevision: finalRevision,
+			FinalRenterOutput: fce.V2FileContract.RenterOutput,
+			FinalHostOutput:   fce.V2FileContract.HostOutput,
 			NewContract: types.V2FileContract{
 				RenterOutput:     fc.RenterOutput,
 				ProofHeight:      fc.ProofHeight + 10,
@@ -1750,6 +1745,10 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		renewalSig := pk.SignHash(renewalSigHash)
 		renewal.RenterSignature = renewalSig
 		renewal.HostSignature = renewalSig
+		contractSigHash := cm.TipState().ContractSigHash(renewal.NewContract)
+		contractSig := pk.SignHash(contractSigHash)
+		renewal.NewContract.RenterSignature = contractSig
+		renewal.NewContract.HostSignature = contractSig
 
 		newContractValue := renterPayout.Add(cm.TipState().V2FileContractTax(renewal.NewContract))
 
@@ -1786,91 +1785,6 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 
 		// broadcast the renewal
 		if _, err := cm.AddV2PoolTransactions(setupBasis, []types.V2Transaction{setupTxn, resolutionTxn}); err != nil {
-			t.Fatal(err)
-		}
-		// mine a block to confirm the renewal
-		mineAndSync(t, cm, ws, wm, types.VoidAddress, 1)
-		assertEvent(t, wm, types.Hash256(types.FileContractID(fce.ID).V2RenterOutputID()), wallet.EventTypeV2ContractResolution, renterPayout, types.ZeroCurrency, cm.Tip().Height+network.MaturityDelay)
-	})
-
-	t.Run("v2 contract resolution - finalization", func(t *testing.T) {
-		// create a storage contract
-		renterPayout := types.Siacoins(10000)
-		fc := types.V2FileContract{
-			RenterOutput: types.SiacoinOutput{
-				Address: addr,
-				Value:   renterPayout,
-			},
-			HostOutput: types.SiacoinOutput{
-				Address: types.VoidAddress,
-				Value:   types.ZeroCurrency,
-			},
-			ProofHeight:      cm.TipState().Index.Height + 10,
-			ExpirationHeight: cm.TipState().Index.Height + 20,
-
-			RenterPublicKey: pk.PublicKey(),
-			HostPublicKey:   pk.PublicKey(),
-		}
-		contractValue := renterPayout.Add(cm.TipState().V2FileContractTax(fc))
-		sigHash := cm.TipState().ContractSigHash(fc)
-		sig := pk.SignHash(sigHash)
-		fc.RenterSignature = sig
-		fc.HostSignature = sig
-
-		// create a transaction with the contract
-		txn := types.V2Transaction{
-			FileContracts: []types.V2FileContract{fc},
-		}
-		basis, toSign, err := wm.FundV2Transaction(&txn, contractValue, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		wm.SignV2Inputs(&txn, toSign)
-
-		// broadcast the transaction
-		if _, err := cm.AddV2PoolTransactions(basis, []types.V2Transaction{txn}); err != nil {
-			t.Fatal(err)
-		}
-		// current tip
-		tip := cm.Tip()
-		// mine a block to confirm the contract formation
-		mineAndSync(t, cm, ws, wm, types.VoidAddress, 1)
-
-		// this is annoying because we have to keep the file contract
-		// proof
-		_, applied, err := cm.UpdatesSince(tip, 1000)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// get the confirmed file contract element
-		var fce types.V2FileContractElement
-		applied[0].ForEachV2FileContractElement(func(ele types.V2FileContractElement, _ bool, _ *types.V2FileContractElement, _ types.V2FileContractResolutionType) {
-			fce = ele
-		})
-		for _, cau := range applied {
-			cau.UpdateElementProof(&fce.StateElement)
-		}
-
-		// finalize the contract
-		finalRevision := fce.V2FileContract
-		finalRevision.RevisionNumber = math.MaxUint64
-		finalRevisionSigHash := cm.TipState().ContractSigHash(finalRevision)
-		// create a renewal
-		finalization := types.V2FileContractFinalization(pk.SignHash(finalRevisionSigHash))
-
-		// create the renewal transaction
-		resolutionTxn := types.V2Transaction{
-			FileContractResolutions: []types.V2FileContractResolution{
-				{
-					Parent:     fce,
-					Resolution: &finalization,
-				},
-			},
-		}
-
-		// broadcast the renewal
-		if _, err := cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{resolutionTxn}); err != nil {
 			t.Fatal(err)
 		}
 		// mine a block to confirm the renewal

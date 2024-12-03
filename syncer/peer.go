@@ -117,7 +117,7 @@ func (p *Peer) SendBlock(id types.BlockID, timeout time.Duration) (types.Block, 
 }
 
 // RelayHeader relays a header to the peer.
-func (p *Peer) RelayHeader(h gateway.BlockHeader, timeout time.Duration) error {
+func (p *Peer) RelayHeader(h types.BlockHeader, timeout time.Duration) error {
 	return p.callRPC(&gateway.RPCRelayHeader{Header: h}, timeout)
 }
 
@@ -182,7 +182,7 @@ func (p *Peer) SendCheckpoint(index types.ChainIndex, timeout time.Duration) (ty
 }
 
 // RelayV2Header relays a v2 block header to the peer.
-func (p *Peer) RelayV2Header(h gateway.V2BlockHeader, timeout time.Duration) error {
+func (p *Peer) RelayV2Header(h types.BlockHeader, timeout time.Duration) error {
 	return p.callRPC(&gateway.RPCRelayV2Header{Header: h}, timeout)
 }
 
@@ -381,17 +381,17 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		if err := stream.ReadRequest(r); err != nil {
 			return err
 		}
-		cs, ok := s.cm.State(r.Header.Parent.ID)
+		cs, ok := s.cm.State(r.Header.ParentID)
 		if !ok {
-			s.resync(origin, fmt.Sprintf("peer relayed a v2 header with unknown parent (%v)", r.Header.Parent.ID))
+			s.resync(origin, fmt.Sprintf("peer relayed a v2 header with unknown parent (%v)", r.Header.ParentID))
 			return nil
 		}
-		bid := r.Header.ID(cs)
+		bid := r.Header.ID()
 		if _, ok := s.cm.State(bid); ok {
 			return nil // already seen
 		} else if bid.CmpWork(cs.ChildTarget) < 0 {
 			return s.ban(origin, errors.New("peer sent v2 header with insufficient work"))
-		} else if r.Header.Parent != s.cm.Tip() {
+		} else if r.Header.ParentID != s.cm.Tip().ID {
 			// block extends a sidechain, which peer (if honest) believes to be the
 			// heaviest chain
 			s.resync(origin, "peer relayed a v2 header that does not attach to our tip")

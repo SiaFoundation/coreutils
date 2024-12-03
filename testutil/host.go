@@ -160,7 +160,7 @@ func (ec *EphemeralContractor) RenewV2Contract(renewalSet rhp4.TransactionSet, _
 		return errors.New("contract already exists")
 	}
 
-	ec.contracts[existingID] = renewal.FinalRevision
+	delete(ec.contracts, existingID) // remove the existing contract
 	ec.contracts[contractID] = renewal.NewContract
 	ec.roots[contractID] = append([]types.Hash256(nil), ec.roots[existingID]...)
 	return nil
