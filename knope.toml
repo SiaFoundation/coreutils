@@ -51,4 +51,4 @@ type = "Release"
 
 [github]
 owner = "SiaFoundation"
-repo = "hostd"
+repo = "coreutils"
