@@ -1,14 +1,14 @@
+name: Release
 on:
   pull_request:
-    types: 
+    types:
       - closed
-    branches: 
+    branches:
       - master
 
 permissions:
   contents: write
 
-name: Create Release PR
 jobs:
   prepare-release:
     runs-on: ubuntu-latest
