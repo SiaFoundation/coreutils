@@ -625,6 +625,7 @@ func TestRPCRenew(t *testing.T) {
 func TestAccounts(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
+	account := proto4.Account(renterKey.PublicKey())
 
 	cm, s, w := startTestNode(t, n, genesis)
 
@@ -673,7 +674,13 @@ func TestAccounts(t *testing.T) {
 	revision := formResult.Contract
 
 	cs := cm.TipState()
-	account := proto4.Account(renterKey.PublicKey())
+
+	balance, err := rhp4.RPCAccountBalance(context.Background(), transport, account)
+	if err != nil {
+		t.Fatal(err)
+	} else if !balance.IsZero() {
+		t.Fatal("expected zero balance")
+	}
 
 	accountFundAmount := types.Siacoins(25)
 	fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
@@ -713,7 +720,7 @@ func TestAccounts(t *testing.T) {
 	}
 
 	// verify the account balance
-	balance, err := rhp4.RPCAccountBalance(context.Background(), transport, account)
+	balance, err = rhp4.RPCAccountBalance(context.Background(), transport, account)
 	if err != nil {
 		t.Fatal(err)
 	} else if !balance.Equals(accountFundAmount) {

@@ -210,10 +210,7 @@ func (ec *EphemeralContractor) ReviseV2Contract(contractID types.FileContractID,
 func (ec *EphemeralContractor) AccountBalance(account proto4.Account) (types.Currency, error) {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
-	balance, ok := ec.accounts[account]
-	if !ok {
-		return types.Currency{}, errors.New("account not found")
-	}
+	balance, _ := ec.accounts[account]
 	return balance, nil
 }
 
