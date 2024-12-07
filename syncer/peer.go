@@ -182,8 +182,8 @@ func (p *Peer) SendCheckpoint(index types.ChainIndex, timeout time.Duration) (ty
 }
 
 // RelayV2Header relays a v2 block header to the peer.
-func (p *Peer) RelayV2Header(h types.BlockHeader, timeout time.Duration) error {
-	return p.callRPC(&gateway.RPCRelayV2Header{Header: h}, timeout)
+func (p *Peer) RelayV2Header(bh types.BlockHeader, timeout time.Duration) error {
+	return p.callRPC(&gateway.RPCRelayV2Header{Header: bh}, timeout)
 }
 
 // RelayV2BlockOutline relays a v2 block outline to the peer.

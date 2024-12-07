@@ -10,15 +10,17 @@ import (
 
 // FindBlockNonce attempts to find a nonce for b that meets the PoW target.
 func FindBlockNonce(cs consensus.State, b *types.Block, timeout time.Duration) bool {
-	b.Nonce = 0
+	bh := b.Header()
+	bh.Nonce = 0
 	factor := cs.NonceFactor()
 	startBlock := time.Now()
-	for b.ID().CmpWork(cs.ChildTarget) < 0 {
-		b.Nonce += factor
+	for bh.ID().CmpWork(cs.ChildTarget) < 0 {
+		bh.Nonce += factor
 		if time.Since(startBlock) > timeout {
 			return false
 		}
 	}
+	b.Nonce = bh.Nonce
 	return true
 }
 

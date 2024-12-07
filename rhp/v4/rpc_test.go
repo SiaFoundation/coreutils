@@ -74,7 +74,7 @@ func startTestNode(tb testing.TB, n *consensus.Network, genesis types.Block) (*c
 	}
 	tb.Cleanup(func() { syncerListener.Close() })
 
-	s := syncer.New(syncerListener, cm, testutil.NewMemPeerStore(), gateway.Header{
+	s := syncer.New(syncerListener, cm, testutil.NewEphemeralPeerStore(), gateway.Header{
 		GenesisID:  genesis.ID(),
 		UniqueID:   gateway.GenerateUniqueID(),
 		NetAddress: "localhost:1234",
