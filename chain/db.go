@@ -13,54 +13,28 @@ import (
 )
 
 type supplementedBlock struct {
-	Header     *types.BlockHeader
+	Header     types.BlockHeader
 	Block      *types.Block
 	Supplement *consensus.V1BlockSupplement
 }
 
 func (sb supplementedBlock) EncodeTo(e *types.Encoder) {
-	e.WriteUint8(3)
-	types.EncodePtr(e, sb.Header)
+	sb.Header.EncodeTo(e)
 	types.EncodePtr(e, (*types.V2Block)(sb.Block))
 	types.EncodePtr(e, sb.Supplement)
 }
 
 func (sb *supplementedBlock) DecodeFrom(d *types.Decoder) {
-	switch v := d.ReadUint8(); v {
-	case 2:
-		sb.Header = nil
-		sb.Block = new(types.Block)
-		(*types.V2Block)(sb.Block).DecodeFrom(d)
-		types.DecodePtr(d, &sb.Supplement)
-	case 3:
-		types.DecodePtr(d, &sb.Header)
-		types.DecodePtrCast[types.V2Block](d, &sb.Block)
-		types.DecodePtr(d, &sb.Supplement)
-	default:
-		d.SetErr(fmt.Errorf("incompatible version (%d)", v))
-	}
-}
-
-type versionedState struct {
-	State consensus.State
-}
-
-func (vs versionedState) EncodeTo(e *types.Encoder) {
-	e.WriteUint8(2)
-	vs.State.EncodeTo(e)
-}
-
-func (vs *versionedState) DecodeFrom(d *types.Decoder) {
-	if v := d.ReadUint8(); v != 2 {
-		d.SetErr(fmt.Errorf("incompatible version (%d)", v))
-	}
-	vs.State.DecodeFrom(d)
+	sb.Header.DecodeFrom(d)
+	types.DecodePtrCast[types.V2Block](d, &sb.Block)
+	types.DecodePtr(d, &sb.Supplement)
 }
 
 // A DB is a generic key-value database.
 type DB interface {
 	Bucket(name []byte) DBBucket
 	CreateBucket(name []byte) (DBBucket, error)
+	BucketKeys(name []byte) [][]byte
 	Flush() error
 	Cancel()
 }
@@ -161,6 +135,18 @@ func (db *MemDB) CreateBucket(name []byte) (DBBucket, error) {
 	db.puts[string(name)] = make(map[string][]byte)
 	db.dels[string(name)] = make(map[string]struct{})
 	return db.Bucket(name), nil
+}
+
+// BucketKeys implements DB.
+func (db *MemDB) BucketKeys(name []byte) [][]byte {
+	keys := make([][]byte, 0, len(db.buckets[string(name)])+len(db.puts[string(name)]))
+	for key := range db.buckets[string(name)] {
+		keys = append(keys, []byte(key))
+	}
+	for key := range db.puts[string(name)] {
+		keys = append(keys, []byte(key))
+	}
+	return keys
 }
 
 type memBucket struct {
@@ -282,72 +268,31 @@ func (db *DBStore) putHeight(height uint64) {
 	db.bucket(bMainChain).putRaw(keyHeight, db.encHeight(height))
 }
 
-func (db *DBStore) getState(id types.BlockID) (consensus.State, bool) {
-	var vs versionedState
-	ok := db.bucket(bStates).get(id[:], &vs)
-	vs.State.Network = db.n
-	return vs.State, ok
+func (db *DBStore) getState(id types.BlockID) (cs consensus.State, ok bool) {
+	ok = db.bucket(bStates).get(id[:], &cs)
+	cs.Network = db.n
+	return
 }
 
 func (db *DBStore) putState(cs consensus.State) {
-	db.bucket(bStates).put(cs.Index.ID[:], versionedState{cs})
+	db.bucket(bStates).put(cs.Index.ID[:], cs)
 }
 
-func (db *DBStore) getBlock(id types.BlockID) (bh types.BlockHeader, b *types.Block, bs *consensus.V1BlockSupplement, _ bool) {
-	var sb supplementedBlock
-	if ok := db.bucket(bBlocks).get(id[:], &sb); !ok {
-		return types.BlockHeader{}, nil, nil, false
-	} else if sb.Header == nil {
-		sb.Header = new(types.BlockHeader)
-		*sb.Header = sb.Block.Header()
-	}
-	return *sb.Header, sb.Block, sb.Supplement, true
+func (db *DBStore) getBlock(id types.BlockID) (sb supplementedBlock, ok bool) {
+	ok = db.bucket(bBlocks).get(id[:], &sb)
+	return
 }
 
-func (db *DBStore) putBlock(bh types.BlockHeader, b *types.Block, bs *consensus.V1BlockSupplement) {
-	id := bh.ID()
-	db.bucket(bBlocks).put(id[:], supplementedBlock{&bh, b, bs})
+func (db *DBStore) putBlock(sb supplementedBlock) {
+	id := sb.Header.ID()
+	db.bucket(bBlocks).put(id[:], sb)
 }
 
 func (db *DBStore) getAncestorInfo(id types.BlockID) (parentID types.BlockID, timestamp time.Time, ok bool) {
 	ok = db.bucket(bBlocks).get(id[:], types.DecoderFunc(func(d *types.Decoder) {
-		v := d.ReadUint8()
-		if v != 2 && v != 3 {
-			d.SetErr(fmt.Errorf("incompatible version (%d)", v))
-		}
-		// kinda cursed; don't worry about it
-		if v == 3 {
-			if !d.ReadBool() {
-				d.ReadBool()
-			}
-		}
 		parentID.DecodeFrom(d)
 		_ = d.ReadUint64() // nonce
 		timestamp = d.ReadTime()
-	}))
-	return
-}
-
-func (db *DBStore) getBlockHeader(id types.BlockID) (bh types.BlockHeader, ok bool) {
-	ok = db.bucket(bBlocks).get(id[:], types.DecoderFunc(func(d *types.Decoder) {
-		v := d.ReadUint8()
-		if v != 2 && v != 3 {
-			d.SetErr(fmt.Errorf("incompatible version (%d)", v))
-			return
-		}
-		if v == 3 {
-			bhp := &bh
-			types.DecodePtr(d, &bhp)
-			if bhp != nil {
-				return
-			} else if !d.ReadBool() {
-				d.SetErr(errors.New("neither header nor block present"))
-				return
-			}
-		}
-		var b types.Block
-		(*types.V2Block)(&b).DecodeFrom(d)
-		bh = b.Header()
 	}))
 	return
 }
@@ -677,22 +622,24 @@ func (db *DBStore) AddState(cs consensus.State) {
 
 // Block implements Store.
 func (db *DBStore) Block(id types.BlockID) (types.Block, *consensus.V1BlockSupplement, bool) {
-	_, b, bs, ok := db.getBlock(id)
-	if !ok || b == nil {
+	sb, ok := db.getBlock(id)
+	if !ok || sb.Block == nil {
 		return types.Block{}, nil, false
 	}
-	return *b, bs, ok
+	return *sb.Block, sb.Supplement, ok
 }
 
 // AddBlock implements Store.
 func (db *DBStore) AddBlock(b types.Block, bs *consensus.V1BlockSupplement) {
-	db.putBlock(b.Header(), &b, bs)
+	db.putBlock(supplementedBlock{b.Header(), &b, bs})
 }
 
 // PruneBlock implements Store.
 func (db *DBStore) PruneBlock(id types.BlockID) {
-	if bh, _, _, ok := db.getBlock(id); ok {
-		db.putBlock(bh, nil, nil)
+	if sb, ok := db.getBlock(id); ok {
+		sb.Block = nil
+		sb.Supplement = nil
+		db.putBlock(sb)
 	}
 }
 
@@ -785,7 +732,7 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block) (_ *DBSto
 		dbs.putState(genesisState)
 		bs := consensus.V1BlockSupplement{Transactions: make([]consensus.V1TransactionSupplement, len(genesisBlock.Transactions))}
 		cs, cau := consensus.ApplyBlock(genesisState, genesisBlock, bs, time.Time{})
-		dbs.putBlock(genesisBlock.Header(), &genesisBlock, &bs)
+		dbs.putBlock(supplementedBlock{genesisBlock.Header(), &genesisBlock, &bs})
 		dbs.putState(cs)
 		dbs.ApplyBlock(cs, cau)
 		if err := dbs.Flush(); err != nil {
