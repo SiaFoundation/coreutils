@@ -355,7 +355,7 @@ func TestRPCRefresh(t *testing.T) {
 	}
 	fundAndSign := &fundAndSign{w, renterKey}
 
-	formContractFundAccount := func(t *testing.T, renterAllowance, hostCollateral, accountBalance types.Currency) rhp4.ContractRevision {
+	formContractUploadSector := func(t *testing.T, renterAllowance, hostCollateral, accountBalance types.Currency) rhp4.ContractRevision {
 		t.Helper()
 
 		result, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
@@ -390,11 +390,27 @@ func TestRPCRefresh(t *testing.T) {
 			t.Fatal(err)
 		}
 		revision.Revision = fundResult.Revision
+
+		// upload data
+		at := proto4.AccountToken{
+			Account:    account,
+			ValidUntil: time.Now().Add(5 * time.Minute),
+		}
+		at.Signature = renterKey.SignHash(at.SigHash())
+		wRes, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, at, bytes.NewReader(bytes.Repeat([]byte{1}, proto4.LeafSize)), proto4.LeafSize)
+		if err != nil {
+			t.Fatal(err)
+		}
+		aRes, err := rhp4.RPCAppendSectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, []types.Hash256{wRes.Root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		revision.Revision = aRes.Revision
 		return revision
 	}
 
 	t.Run("no allowance or collateral", func(t *testing.T) {
-		revision := formContractFundAccount(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+		revision := formContractUploadSector(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
 
 		// refresh the contract
 		_, err = rhp4.RPCRefreshContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRefreshContractParams{
@@ -410,7 +426,7 @@ func TestRPCRefresh(t *testing.T) {
 	})
 
 	t.Run("valid refresh", func(t *testing.T) {
-		revision := formContractFundAccount(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+		revision := formContractUploadSector(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
 		// refresh the contract
 		refreshResult, err := rhp4.RPCRefreshContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRefreshContractParams{
 			ContractID: revision.ID,
@@ -473,7 +489,7 @@ func TestRPCRenew(t *testing.T) {
 	}
 	fundAndSign := &fundAndSign{w, renterKey}
 
-	formContractFundAccount := func(t *testing.T, renterAllowance, hostCollateral, accountBalance types.Currency) rhp4.ContractRevision {
+	formContractUploadSector := func(t *testing.T, renterAllowance, hostCollateral, accountBalance types.Currency) rhp4.ContractRevision {
 		t.Helper()
 
 		result, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
@@ -514,11 +530,27 @@ func TestRPCRenew(t *testing.T) {
 			t.Fatal(err)
 		}
 		revision.Revision = fundResult.Revision
+
+		// upload data
+		at := proto4.AccountToken{
+			Account:    account,
+			ValidUntil: time.Now().Add(5 * time.Minute),
+		}
+		at.Signature = renterKey.SignHash(at.SigHash())
+		wRes, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, at, bytes.NewReader(bytes.Repeat([]byte{1}, proto4.LeafSize)), proto4.LeafSize)
+		if err != nil {
+			t.Fatal(err)
+		}
+		aRes, err := rhp4.RPCAppendSectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, []types.Hash256{wRes.Root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		revision.Revision = aRes.Revision
 		return revision
 	}
 
 	t.Run("same duration", func(t *testing.T) {
-		revision := formContractFundAccount(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+		revision := formContractUploadSector(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
 
 		// renew the contract
 		_, err = rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
@@ -535,7 +567,7 @@ func TestRPCRenew(t *testing.T) {
 	})
 
 	t.Run("partial rollover", func(t *testing.T) {
-		revision := formContractFundAccount(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+		revision := formContractUploadSector(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
 
 		// renew the contract
 		renewResult, err := rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
@@ -564,7 +596,7 @@ func TestRPCRenew(t *testing.T) {
 	})
 
 	t.Run("full rollover", func(t *testing.T) {
-		revision := formContractFundAccount(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+		revision := formContractUploadSector(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
 
 		// renew the contract
 		renewResult, err := rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
@@ -593,7 +625,7 @@ func TestRPCRenew(t *testing.T) {
 	})
 
 	t.Run("no rollover", func(t *testing.T) {
-		revision := formContractFundAccount(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+		revision := formContractUploadSector(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
 
 		// renew the contract
 		renewResult, err := rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRenewContractParams{
