@@ -826,7 +826,7 @@ func (m *Manager) V2PoolTransaction(id types.TransactionID) (types.V2Transaction
 	if !ok {
 		return types.V2Transaction{}, false
 	}
-	return m.txpool.v2txns[i], ok
+	return m.txpool.v2txns[i].DeepCopy(), ok
 }
 
 // V2PoolTransactions returns the v2 transactions currently in the txpool. Any
@@ -835,7 +835,11 @@ func (m *Manager) V2PoolTransactions() []types.V2Transaction {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.revalidatePool()
-	return append([]types.V2Transaction(nil), m.txpool.v2txns...)
+	v2txns := make([]types.V2Transaction, len(m.txpool.v2txns))
+	for i, txn := range m.txpool.v2txns {
+		v2txns[i] = txn.DeepCopy()
+	}
+	return v2txns
 }
 
 // TransactionsForPartialBlock returns the transactions in the txpool with the
