@@ -295,12 +295,13 @@ func (db *DBStore) putState(cs consensus.State) {
 
 func (db *DBStore) getBlock(id types.BlockID) (bh types.BlockHeader, b *types.Block, bs *consensus.V1BlockSupplement, _ bool) {
 	var sb supplementedBlock
-	ok := db.bucket(bBlocks).get(id[:], &sb)
-	if sb.Header == nil {
+	if ok := db.bucket(bBlocks).get(id[:], &sb); !ok {
+		return types.BlockHeader{}, nil, nil, false
+	} else if sb.Header == nil {
 		sb.Header = new(types.BlockHeader)
 		*sb.Header = sb.Block.Header()
 	}
-	return *sb.Header, sb.Block, sb.Supplement, ok
+	return *sb.Header, sb.Block, sb.Supplement, true
 }
 
 func (db *DBStore) putBlock(bh types.BlockHeader, b *types.Block, bs *consensus.V1BlockSupplement) {
