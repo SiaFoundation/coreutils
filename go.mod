@@ -6,7 +6,7 @@ toolchain go1.23.2
 
 require (
 	go.etcd.io/bbolt v1.3.11
-	go.sia.tech/core v0.7.2
+	go.sia.tech/core v0.7.4-0.20241212191304-8383d656cbed
 	go.sia.tech/mux v1.3.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.31.0

@@ -88,8 +88,10 @@ type (
 
 	// A RevisionState pairs a contract revision with its sector roots.
 	RevisionState struct {
-		Revision types.V2FileContract
-		Roots    []types.Hash256
+		Revision  types.V2FileContract
+		Renewed   bool
+		Revisable bool
+		Roots     []types.Hash256
 	}
 
 	// Contractor is an interface for managing a host's contracts.
@@ -123,9 +125,8 @@ type (
 
 	// A Server handles incoming RHP4 RPC.
 	Server struct {
-		hostKey                   types.PrivateKey
-		priceTableValidity        time.Duration
-		contractProofWindowBuffer uint64
+		hostKey            types.PrivateKey
+		priceTableValidity time.Duration
 
 		chain      ChainManager
 		syncer     Syncer
@@ -136,18 +137,15 @@ type (
 	}
 )
 
-func (s *Server) lockContractForRevision(contractID types.FileContractID) (rev RevisionState, unlock func(), _ error) {
-	rev, unlock, err := s.contractor.LockV2Contract(contractID)
+func (s *Server) lockContractForRevision(contractID types.FileContractID) (RevisionState, func(), error) {
+	rs, unlock, err := s.contractor.LockV2Contract(contractID)
 	if err != nil {
 		return RevisionState{}, nil, fmt.Errorf("failed to lock contract: %w", err)
-	} else if rev.Revision.ProofHeight <= s.chain.Tip().Height+s.contractProofWindowBuffer {
+	} else if !rs.Revisable {
 		unlock()
-		return RevisionState{}, nil, errorBadRequest("contract too close to proof window")
-	} else if rev.Revision.RevisionNumber >= types.MaxRevisionNumber {
-		unlock()
-		return RevisionState{}, nil, errorBadRequest("contract is locked for revision")
+		return RevisionState{}, nil, errorBadRequest("contract is not revisable")
 	}
-	return rev, unlock, nil
+	return rs, unlock, nil
 }
 
 func (s *Server) handleRPCSettings(stream net.Conn) error {
@@ -451,7 +449,9 @@ func (s *Server) handleRPCLatestRevision(stream net.Conn) error {
 	unlock()
 
 	return rhp4.WriteResponse(stream, &rhp4.RPCLatestRevisionResponse{
-		Contract: state.Revision,
+		Contract:  state.Revision,
+		Revisable: state.Revisable,
+		Renewed:   state.Renewed,
 	})
 }
 
@@ -1118,9 +1118,8 @@ func errorDecodingError(f string, p ...any) error {
 // NewServer creates a new RHP4 server
 func NewServer(pk types.PrivateKey, cm ChainManager, syncer Syncer, contracts Contractor, wallet Wallet, settings Settings, sectors Sectors, opts ...ServerOption) *Server {
 	s := &Server{
-		hostKey:                   pk,
-		priceTableValidity:        30 * time.Minute,
-		contractProofWindowBuffer: 10,
+		hostKey:            pk,
+		priceTableValidity: 30 * time.Minute,
 
 		chain:      cm,
 		syncer:     syncer,

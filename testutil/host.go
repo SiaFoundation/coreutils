@@ -93,10 +93,14 @@ func (ec *EphemeralContractor) LockV2Contract(contractID types.FileContractID) (
 		return rhp4.RevisionState{}, nil, errors.New("contract not found")
 	}
 
+	_, renewed := ec.contracts[contractID.V2RenewalID()]
+
 	var once sync.Once
 	return rhp4.RevisionState{
-			Revision: rev,
-			Roots:    ec.roots[contractID],
+			Revision:  rev,
+			Revisable: !renewed && ec.tip.Height < rev.ProofHeight,
+			Renewed:   renewed,
+			Roots:     ec.roots[contractID],
 		}, func() {
 			once.Do(func() {
 				ec.mu.Lock()
@@ -159,8 +163,6 @@ func (ec *EphemeralContractor) RenewV2Contract(renewalSet rhp4.TransactionSet, _
 	existing, ok := ec.contracts[existingID]
 	if !ok {
 		return errors.New("contract not found")
-	} else if existing.RevisionNumber == types.MaxRevisionNumber {
-		return errors.New("contract already at max revision")
 	}
 
 	contractID := existingID.V2RenewalID()
@@ -175,7 +177,6 @@ func (ec *EphemeralContractor) RenewV2Contract(renewalSet rhp4.TransactionSet, _
 		return errors.New("invalid host signature")
 	}
 
-	delete(ec.contracts, existingID) // remove the existing contract
 	ec.contracts[contractID] = renewal.NewContract
 	ec.roots[contractID] = append([]types.Hash256(nil), ec.roots[existingID]...)
 	return nil
@@ -210,7 +211,7 @@ func (ec *EphemeralContractor) ReviseV2Contract(contractID types.FileContractID,
 func (ec *EphemeralContractor) AccountBalance(account proto4.Account) (types.Currency, error) {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
-	balance, _ := ec.accounts[account]
+	balance := ec.accounts[account]
 	return balance, nil
 }
 
