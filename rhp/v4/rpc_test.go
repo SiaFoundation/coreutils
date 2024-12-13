@@ -49,7 +49,7 @@ func (fs *fundAndSign) Address() types.Address {
 }
 
 func testRenterHostPair(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ChainManager, s rhp4.Syncer, w rhp4.Wallet, c rhp4.Contractor, sr rhp4.Settings, ss rhp4.Sectors, log *zap.Logger) rhp4.TransportClient {
-	rs := rhp4.NewServer(hostKey, cm, s, c, w, sr, ss, rhp4.WithContractProofWindowBuffer(10), rhp4.WithPriceTableValidity(2*time.Minute))
+	rs := rhp4.NewServer(hostKey, cm, s, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
 	hostAddr := testutil.ServeSiaMux(tb, rs, log.Named("siamux"))
 
 	transport, err := rhp4.DialSiaMux(context.Background(), hostAddr, hostKey.PublicKey())
@@ -406,6 +406,15 @@ func TestRPCRefresh(t *testing.T) {
 			t.Fatal(err)
 		}
 		revision.Revision = aRes.Revision
+
+		rs, err := rhp4.RPCLatestRevision(context.Background(), transport, revision.ID)
+		if err != nil {
+			t.Fatal(err)
+		} else if rs.Renewed {
+			t.Fatal("expected contract to not be renewed")
+		} else if !rs.Revisable {
+			t.Fatal("expected contract to be revisable")
+		}
 		return revision
 	}
 
@@ -449,6 +458,15 @@ func TestRPCRefresh(t *testing.T) {
 			t.Fatal("renter signature verification failed")
 		} else if !hostKey.PublicKey().VerifyHash(sigHash, refreshResult.Contract.Revision.HostSignature) {
 			t.Fatal("host signature verification failed")
+		}
+
+		rs, err := rhp4.RPCLatestRevision(context.Background(), transport, revision.ID)
+		if err != nil {
+			t.Fatal(err)
+		} else if !rs.Renewed {
+			t.Fatal("expected contract to be renewed")
+		} else if rs.Revisable {
+			t.Fatal("expected contract to not be revisable")
 		}
 	})
 }
@@ -593,6 +611,15 @@ func TestRPCRenew(t *testing.T) {
 		} else if !hostKey.PublicKey().VerifyHash(sigHash, renewResult.Contract.Revision.HostSignature) {
 			t.Fatal("host signature verification failed")
 		}
+
+		rs, err := rhp4.RPCLatestRevision(context.Background(), transport, revision.ID)
+		if err != nil {
+			t.Fatal(err)
+		} else if !rs.Renewed {
+			t.Fatal("expected contract to be renewed")
+		} else if rs.Revisable {
+			t.Fatal("expected contract to not be revisable")
+		}
 	})
 
 	t.Run("full rollover", func(t *testing.T) {
@@ -622,6 +649,15 @@ func TestRPCRenew(t *testing.T) {
 		} else if !hostKey.PublicKey().VerifyHash(sigHash, renewResult.Contract.Revision.HostSignature) {
 			t.Fatal("host signature verification failed")
 		}
+
+		rs, err := rhp4.RPCLatestRevision(context.Background(), transport, revision.ID)
+		if err != nil {
+			t.Fatal(err)
+		} else if !rs.Renewed {
+			t.Fatal("expected contract to be renewed")
+		} else if rs.Revisable {
+			t.Fatal("expected contract to not be revisable")
+		}
 	})
 
 	t.Run("no rollover", func(t *testing.T) {
@@ -650,6 +686,15 @@ func TestRPCRenew(t *testing.T) {
 			t.Fatal("renter signature verification failed")
 		} else if !hostKey.PublicKey().VerifyHash(sigHash, renewResult.Contract.Revision.HostSignature) {
 			t.Fatal("host signature verification failed")
+		}
+
+		rs, err := rhp4.RPCLatestRevision(context.Background(), transport, revision.ID)
+		if err != nil {
+			t.Fatal(err)
+		} else if !rs.Renewed {
+			t.Fatal("expected contract to be renewed")
+		} else if rs.Revisable {
+			t.Fatal("expected contract to not be revisable")
 		}
 	})
 }
@@ -907,10 +952,12 @@ func TestAppendSectors(t *testing.T) {
 	assertLastRevision := func(t *testing.T) {
 		t.Helper()
 
-		lastRev, err := rhp4.RPCLatestRevision(context.Background(), transport, revision.ID)
+		rs, err := rhp4.RPCLatestRevision(context.Background(), transport, revision.ID)
 		if err != nil {
 			t.Fatal(err)
-		} else if !reflect.DeepEqual(lastRev, revision.Revision) {
+		}
+		lastRev := rs.Contract
+		if !reflect.DeepEqual(lastRev, revision.Revision) {
 			t.Log(lastRev)
 			t.Log(revision.Revision)
 			t.Fatalf("expected last revision to match")

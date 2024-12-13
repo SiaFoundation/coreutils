@@ -13,11 +13,3 @@ func WithPriceTableValidity(validity time.Duration) ServerOption {
 		s.priceTableValidity = validity
 	}
 }
-
-// WithContractProofWindowBuffer sets the buffer for revising a contract before
-// its proof window starts.
-func WithContractProofWindowBuffer(buffer uint64) ServerOption {
-	return func(s *Server) {
-		s.contractProofWindowBuffer = buffer
-	}
-}
