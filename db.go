@@ -42,6 +42,19 @@ func (db *BoltChainDB) CreateBucket(name []byte) (chain.DBBucket, error) {
 	return db.tx.CreateBucket(name)
 }
 
+// BucketKeys implements chain.DB.
+func (db *BoltChainDB) BucketKeys(name []byte) [][]byte {
+	if err := db.newTx(); err != nil {
+		panic(err)
+	}
+	var keys [][]byte
+	c := db.tx.Bucket(name).Cursor()
+	for k, _ := c.First(); k != nil; k, _ = c.Next() {
+		keys = append(keys, append([]byte(nil), k...))
+	}
+	return keys
+}
+
 // Flush implements chain.DB.
 func (db *BoltChainDB) Flush() error {
 	if db.tx == nil {

@@ -187,7 +187,7 @@ func (b *dbBucket) getRaw(key []byte) []byte {
 }
 
 func (b *dbBucket) get(key []byte, v types.DecoderFrom) bool {
-	val := b.getRaw(key)
+	val := b.getRaw(b.db.vkey(key))
 	if val == nil {
 		return false
 	}
@@ -210,11 +210,15 @@ func (b *dbBucket) put(key []byte, v types.EncoderTo) {
 	b.db.enc.Reset(&buf)
 	v.EncodeTo(&b.db.enc)
 	b.db.enc.Flush()
-	b.putRaw(key, buf.Bytes())
+	b.putRaw(b.db.vkey(key), buf.Bytes())
+}
+
+func (b *dbBucket) deleteRaw(key []byte) {
+	check(b.b.Delete(key))
 }
 
 func (b *dbBucket) delete(key []byte) {
-	check(b.b.Delete(key))
+	b.deleteRaw(b.db.vkey(key))
 }
 
 var (
@@ -232,12 +236,19 @@ var (
 
 // DBStore implements Store using a key-value database.
 type DBStore struct {
-	db  DB
-	n   *consensus.Network // for getState
-	enc types.Encoder
+	db      DB
+	n       *consensus.Network // for getState
+	version uint8
+	keyBuf  []byte
+	enc     types.Encoder
 
 	unflushed int
 	lastFlush time.Time
+}
+
+func (db *DBStore) vkey(key []byte) []byte {
+	db.keyBuf = append(db.keyBuf[:0], key...)
+	return append(db.keyBuf, db.version)
 }
 
 func (db *DBStore) bucket(name []byte) *dbBucket {
@@ -258,14 +269,14 @@ func (db *DBStore) deleteBestIndex(height uint64) {
 }
 
 func (db *DBStore) getHeight() (height uint64) {
-	if val := db.bucket(bMainChain).getRaw(keyHeight); len(val) == 8 {
+	if val := db.bucket(bMainChain).getRaw(db.vkey(keyHeight)); len(val) == 8 {
 		height = binary.BigEndian.Uint64(val)
 	}
 	return
 }
 
 func (db *DBStore) putHeight(height uint64) {
-	db.bucket(bMainChain).putRaw(keyHeight, db.encHeight(height))
+	db.bucket(bMainChain).putRaw(db.vkey(keyHeight), db.encHeight(height))
 }
 
 func (db *DBStore) getState(id types.BlockID) (cs consensus.State, ok bool) {
@@ -378,13 +389,13 @@ func (db *DBStore) deleteFileContractElement(id types.FileContractID) {
 
 func (db *DBStore) putFileContractExpiration(id types.FileContractID, windowEnd uint64) {
 	b := db.bucket(bFileContractElements)
-	key := db.encHeight(windowEnd)
+	key := db.vkey(db.encHeight(windowEnd))
 	b.putRaw(key, append(b.getRaw(key), id[:]...))
 }
 
 func (db *DBStore) deleteFileContractExpiration(id types.FileContractID, windowEnd uint64) {
 	b := db.bucket(bFileContractElements)
-	key := db.encHeight(windowEnd)
+	key := db.vkey(db.encHeight(windowEnd))
 	val := append([]byte(nil), b.getRaw(key)...)
 	for i := 0; i < len(val); i += 32 {
 		if *(*types.FileContractID)(val[i:]) == id {
@@ -570,7 +581,7 @@ func (db *DBStore) SupplementTipBlock(b types.Block) (bs consensus.V1BlockSupple
 	for i, txn := range b.Transactions {
 		bs.Transactions[i] = db.SupplementTipTransaction(txn)
 	}
-	ids := db.bucket(bFileContractElements).getRaw(db.encHeight(db.getHeight() + 1))
+	ids := db.bucket(bFileContractElements).getRaw(db.vkey(db.encHeight(db.getHeight() + 1)))
 	for i := 0; i < len(ids); i += 32 {
 		fce, ok := db.getFileContractElement(*(*types.FileContractID)(ids[i:]), numLeaves)
 		if !ok {
@@ -704,13 +715,12 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block) (_ *DBSto
 	}
 
 	dbs := &DBStore{
-		db: db,
-		n:  n,
+		db:      db,
+		n:       n,
+		version: 2,
 	}
-
-	// if the db is empty, initialize it; otherwise, check that the genesis
-	// block is correct
-	if dbGenesis, ok := dbs.BestIndex(0); !ok {
+	if version := dbs.bucket(bVersion).getRaw(dbs.vkey(bVersion)); len(version) != 1 {
+		// initialize empty database
 		for _, bucket := range [][]byte{
 			bVersion,
 			bMainChain,
@@ -725,7 +735,7 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block) (_ *DBSto
 				panic(err)
 			}
 		}
-		dbs.bucket(bVersion).putRaw(bVersion, []byte{1})
+		dbs.bucket(bVersion).putRaw(dbs.vkey(bVersion), []byte{dbs.version})
 
 		// store genesis state and apply genesis block to it
 		genesisState := n.GenesisState()
@@ -738,16 +748,21 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block) (_ *DBSto
 		if err := dbs.Flush(); err != nil {
 			return nil, consensus.State{}, err
 		}
-	} else if dbGenesis.ID != genesisBlock.ID() {
-		// try to detect network so we can provide a more helpful error message
-		_, mainnetGenesis := Mainnet()
-		_, zenGenesis := TestnetZen()
-		if genesisBlock.ID() == mainnetGenesis.ID() && dbGenesis.ID == zenGenesis.ID() {
-			return nil, consensus.State{}, errors.New("cannot use Zen testnet database on mainnet")
-		} else if genesisBlock.ID() == zenGenesis.ID() && dbGenesis.ID == mainnetGenesis.ID() {
-			return nil, consensus.State{}, errors.New("cannot use mainnet database on Zen testnet")
-		} else {
-			return nil, consensus.State{}, errors.New("database previously initialized with different genesis block")
+	} else if version[0] != dbs.version {
+		return nil, consensus.State{}, errors.New("incompatible version; please migrate the database")
+	} else {
+		// verify the genesis block
+		if dbGenesis, ok := dbs.BestIndex(0); !ok || dbGenesis.ID != genesisBlock.ID() {
+			// try to detect network so we can provide a more helpful error message
+			_, mainnetGenesis := Mainnet()
+			_, zenGenesis := TestnetZen()
+			if genesisBlock.ID() == mainnetGenesis.ID() && dbGenesis.ID == zenGenesis.ID() {
+				return nil, consensus.State{}, errors.New("cannot use Zen testnet database on mainnet")
+			} else if genesisBlock.ID() == zenGenesis.ID() && dbGenesis.ID == mainnetGenesis.ID() {
+				return nil, consensus.State{}, errors.New("cannot use mainnet database on Zen testnet")
+			} else {
+				return nil, consensus.State{}, errors.New("database previously initialized with different genesis block")
+			}
 		}
 	}
 

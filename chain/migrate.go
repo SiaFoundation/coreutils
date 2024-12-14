@@ -1,7 +1,6 @@
 package chain
 
 import (
-	"errors"
 	"fmt"
 
 	"go.sia.tech/core/consensus"
@@ -91,66 +90,96 @@ func MigrateDB(db DB, n *consensus.Network) error {
 		return nil // nothing to migrate
 	}
 	dbs := &DBStore{
-		db: db,
-		n:  n,
-	}
-	var err error
-	rewrite := func(bucket []byte, key []byte, from types.DecoderFrom, to types.EncoderTo) {
-		if err != nil {
-			return
-		}
-		b := dbs.bucket(bucket)
-		val := b.getRaw(key)
-		if val == nil {
-			return
-		}
-		d := types.NewBufDecoder(val)
-		from.DecodeFrom(d)
-		if d.Err() != nil {
-			err = d.Err()
-			return
-		}
-		b.put(key, to)
-		if dbs.shouldFlush() {
-			dbs.Flush()
-		}
+		db:      db,
+		n:       n,
+		version: 2,
 	}
 
-	version := dbs.bucket(bVersion).getRaw(bVersion)
-	if len(version) != 1 {
-		return errors.New("invalid version")
+	version := dbs.bucket(bVersion).getRaw(dbs.vkey(bVersion))
+	if version == nil {
+		version = []byte{1}
 	}
 	switch version[0] {
 	case 1:
+		var err error
+		addVersion := func(bucket []byte, key []byte) {
+			if err != nil {
+				return
+			}
+			b := dbs.bucket(bucket)
+			b.putRaw(dbs.vkey(key), b.getRaw(key))
+			b.deleteRaw(key)
+		}
+		rewrite := func(bucket []byte, key []byte, from types.DecoderFrom, to types.EncoderTo) {
+			if err != nil {
+				return
+			}
+			b := dbs.bucket(bucket)
+			val := b.getRaw(key)
+			d := types.NewBufDecoder(val)
+			from.DecodeFrom(d)
+			if d.Err() != nil {
+				err = d.Err()
+				return
+			}
+			b.deleteRaw(key)
+			b.put(key, to)
+			if dbs.shouldFlush() {
+				dbs.Flush()
+			}
+		}
+
 		var sb supplementedBlock
 		for _, key := range db.BucketKeys(bBlocks) {
-			rewrite(bBlocks, key, (*oldSupplementedBlock)(&sb), &sb)
+			if len(key) == 32 {
+				rewrite(bBlocks, key, (*oldSupplementedBlock)(&sb), &sb)
+			}
 		}
 		var cs consensus.State
 		for _, key := range db.BucketKeys(bStates) {
-			rewrite(bStates, key, (*versionedState)(&cs), &cs)
+			if len(key) == 32 {
+				rewrite(bStates, key, (*versionedState)(&cs), &cs)
+			}
 		}
 		var sce types.SiacoinElement
 		for _, key := range db.BucketKeys(bSiacoinElements) {
-			rewrite(bSiacoinElements, key, (*oldSiacoinElement)(&sce), &sce)
+			if len(key) == 32 {
+				rewrite(bSiacoinElements, key, (*oldSiacoinElement)(&sce), &sce)
+			}
 		}
 		var sfe types.SiafundElement
 		for _, key := range db.BucketKeys(bSiafundElements) {
-			rewrite(bSiafundElements, key, (*oldSiafundElement)(&sfe), &sfe)
+			if len(key) == 32 {
+				rewrite(bSiafundElements, key, (*oldSiafundElement)(&sfe), &sfe)
+			}
 		}
 		var fce types.FileContractElement
 		for _, key := range db.BucketKeys(bFileContractElements) {
 			if len(key) == 32 {
 				rewrite(bFileContractElements, key, (*oldFileContractElement)(&fce), &fce)
+			} else if len(key) == 8 {
+				addVersion(bFileContractElements, key)
 			}
 		}
+		for _, key := range db.BucketKeys(bMainChain) {
+			if len(key) == 8 || len(key) == 5 {
+				addVersion(bMainChain, key)
+			}
+		}
+		for _, key := range db.BucketKeys(bTree) {
+			if len(key) == 4 {
+				addVersion(bTree, key)
+			}
+		}
+		dbs.bucket(bVersion).deleteRaw(bVersion)
+		dbs.bucket(bVersion).putRaw(dbs.vkey(bVersion), []byte{2})
+
 		if err != nil {
 			return err
 		}
-		dbs.bucket(bVersion).putRaw(bVersion, []byte{2})
 		dbs.Flush()
 		fallthrough
-	case 2:
+	case dbs.version:
 		// up-to-date
 		return nil
 	default:
