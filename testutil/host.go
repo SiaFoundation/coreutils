@@ -252,10 +252,8 @@ func (ec *EphemeralContractor) DebitAccount(account proto4.Account, usage proto4
 	defer ec.mu.Unlock()
 
 	balance, ok := ec.accounts[account]
-	if !ok {
-		return errors.New("account not found")
-	} else if balance.Cmp(usage.RenterCost()) < 0 {
-		return errors.New("insufficient funds")
+	if !ok || balance.Cmp(usage.RenterCost()) < 0 {
+		return proto4.ErrNotEnoughFunds
 	}
 	ec.accounts[account] = balance.Sub(usage.RenterCost())
 	return nil

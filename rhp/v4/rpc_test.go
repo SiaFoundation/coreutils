@@ -752,6 +752,19 @@ func TestAccounts(t *testing.T) {
 
 	cs := cm.TipState()
 
+	// test operations against unknown account
+	token := proto4.AccountToken{
+		Account:    account,
+		ValidUntil: time.Now().Add(time.Hour),
+	}
+
+	tokenSigHash := token.SigHash()
+	token.Signature = renterKey.SignHash(tokenSigHash)
+	_, err = rhp4.RPCVerifySector(context.Background(), transport, settings.Prices, token, types.Hash256{1})
+	if err == nil || !strings.Contains(err.Error(), proto4.ErrNotEnoughFunds.Error()) {
+		t.Fatal(err)
+	}
+
 	balance, err := rhp4.RPCAccountBalance(context.Background(), transport, account)
 	if err != nil {
 		t.Fatal(err)
@@ -802,6 +815,13 @@ func TestAccounts(t *testing.T) {
 		t.Fatal(err)
 	} else if !balance.Equals(accountFundAmount) {
 		t.Fatalf("expected %v, got %v", accountFundAmount, balance)
+	}
+
+	// drain account and try using it
+	_ = c.DebitAccount(account, proto4.Usage{RPC: accountFundAmount})
+	_, err = rhp4.RPCVerifySector(context.Background(), transport, settings.Prices, token, types.Hash256{1})
+	if err == nil || !strings.Contains(err.Error(), proto4.ErrNotEnoughFunds.Error()) {
+		t.Fatal(err)
 	}
 }
 
