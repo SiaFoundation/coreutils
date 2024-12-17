@@ -392,11 +392,7 @@ func TestRPCRefresh(t *testing.T) {
 		revision.Revision = fundResult.Revision
 
 		// upload data
-		at := proto4.AccountToken{
-			Account:    account,
-			ValidUntil: time.Now().Add(5 * time.Minute),
-		}
-		at.Signature = renterKey.SignHash(at.SigHash())
+		at := account.Token(renterKey, hostKey.PublicKey())
 		wRes, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, at, bytes.NewReader(bytes.Repeat([]byte{1}, proto4.LeafSize)), proto4.LeafSize)
 		if err != nil {
 			t.Fatal(err)
@@ -550,11 +546,7 @@ func TestRPCRenew(t *testing.T) {
 		revision.Revision = fundResult.Revision
 
 		// upload data
-		at := proto4.AccountToken{
-			Account:    account,
-			ValidUntil: time.Now().Add(5 * time.Minute),
-		}
-		at.Signature = renterKey.SignHash(at.SigHash())
+		at := account.Token(renterKey, hostKey.PublicKey())
 		wRes, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, at, bytes.NewReader(bytes.Repeat([]byte{1}, proto4.LeafSize)), proto4.LeafSize)
 		if err != nil {
 			t.Fatal(err)
@@ -753,13 +745,7 @@ func TestAccounts(t *testing.T) {
 	cs := cm.TipState()
 
 	// test operations against unknown account
-	token := proto4.AccountToken{
-		Account:    account,
-		ValidUntil: time.Now().Add(time.Hour),
-	}
-
-	tokenSigHash := token.SigHash()
-	token.Signature = renterKey.SignHash(tokenSigHash)
+	token := account.Token(renterKey, hostKey.PublicKey())
 	_, err = rhp4.RPCVerifySector(context.Background(), transport, settings.Prices, token, types.Hash256{1})
 	if err == nil || !strings.Contains(err.Error(), proto4.ErrNotEnoughFunds.Error()) {
 		t.Fatal(err)
@@ -886,14 +872,7 @@ func TestReadWriteSector(t *testing.T) {
 		t.Fatal(err)
 	}
 	revision.Revision = fundResult.Revision
-
-	token := proto4.AccountToken{
-		Account:    account,
-		ValidUntil: time.Now().Add(time.Hour),
-	}
-	tokenSigHash := token.SigHash()
-	token.Signature = renterKey.SignHash(tokenSigHash)
-
+	token := account.Token(renterKey, hostKey.PublicKey())
 	data := frand.Bytes(1024)
 
 	// store the sector
@@ -1005,12 +984,7 @@ func TestAppendSectors(t *testing.T) {
 	revision.Revision = fundResult.Revision
 	assertLastRevision(t)
 
-	token := proto4.AccountToken{
-		Account:    account,
-		ValidUntil: time.Now().Add(time.Hour),
-	}
-	tokenSigHash := token.SigHash()
-	token.Signature = renterKey.SignHash(tokenSigHash)
+	token := account.Token(renterKey, hostKey.PublicKey())
 
 	// store random sectors
 	roots := make([]types.Hash256, 0, 10)
@@ -1121,14 +1095,7 @@ func TestVerifySector(t *testing.T) {
 		t.Fatal(err)
 	}
 	revision.Revision = fundResult.Revision
-
-	token := proto4.AccountToken{
-		Account:    account,
-		ValidUntil: time.Now().Add(time.Hour),
-	}
-	tokenSigHash := token.SigHash()
-	token.Signature = renterKey.SignHash(tokenSigHash)
-
+	token := account.Token(renterKey, hostKey.PublicKey())
 	data := frand.Bytes(1024)
 
 	// store the sector
@@ -1212,13 +1179,7 @@ func TestRPCFreeSectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	revision.Revision = fundResult.Revision
-
-	token := proto4.AccountToken{
-		Account:    account,
-		ValidUntil: time.Now().Add(time.Hour),
-	}
-	tokenSigHash := token.SigHash()
-	token.Signature = renterKey.SignHash(tokenSigHash)
+	token := account.Token(renterKey, hostKey.PublicKey())
 
 	roots := make([]types.Hash256, 10)
 	for i := range roots {
@@ -1333,13 +1294,7 @@ func TestRPCSectorRoots(t *testing.T) {
 		t.Fatal(err)
 	}
 	revision.Revision = fundResult.Revision
-
-	token := proto4.AccountToken{
-		Account:    account,
-		ValidUntil: time.Now().Add(time.Hour),
-	}
-	tokenSigHash := token.SigHash()
-	token.Signature = renterKey.SignHash(tokenSigHash)
+	token := account.Token(renterKey, hostKey.PublicKey())
 
 	roots := make([]types.Hash256, 0, 50)
 
@@ -1441,12 +1396,7 @@ func BenchmarkWrite(b *testing.B) {
 		b.Fatal(err)
 	}
 	revision.Revision = fundResult.Revision
-
-	token := proto4.AccountToken{
-		Account:    account,
-		ValidUntil: time.Now().Add(time.Hour),
-	}
-	token.Signature = renterKey.SignHash(token.SigHash())
+	token := account.Token(renterKey, hostKey.PublicKey())
 
 	var sectors [][proto4.SectorSize]byte
 	for i := 0; i < b.N; i++ {
@@ -1529,12 +1479,7 @@ func BenchmarkRead(b *testing.B) {
 		b.Fatal(err)
 	}
 	revision.Revision = fundResult.Revision
-
-	token := proto4.AccountToken{
-		Account:    account,
-		ValidUntil: time.Now().Add(time.Hour),
-	}
-	token.Signature = renterKey.SignHash(token.SigHash())
+	token := account.Token(renterKey, hostKey.PublicKey())
 
 	var sectors [][proto4.SectorSize]byte
 	roots := make([]types.Hash256, 0, b.N)
@@ -1629,12 +1574,7 @@ func BenchmarkContractUpload(b *testing.B) {
 		b.Fatal(err)
 	}
 	revision.Revision = fundResult.Revision
-
-	token := proto4.AccountToken{
-		Account:    account,
-		ValidUntil: time.Now().Add(time.Hour),
-	}
-	token.Signature = renterKey.SignHash(token.SigHash())
+	token := account.Token(renterKey, hostKey.PublicKey())
 
 	var sectors [][proto4.SectorSize]byte
 	roots := make([]types.Hash256, 0, b.N)
