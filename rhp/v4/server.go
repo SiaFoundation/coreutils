@@ -611,8 +611,8 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	formationTxn.FileContracts[0].RenterSignature = renterSigResp.RenterContractSignature
 
 	// add the renter signatures to the transaction
-	for i := range formationTxn.SiacoinInputs[:len(req.RenterInputs)] {
-		formationTxn.SiacoinInputs[i].SatisfiedPolicy = renterSigResp.RenterSatisfiedPolicies[i]
+	for i, policy := range renterSigResp.RenterSatisfiedPolicies {
+		formationTxn.SiacoinInputs[i].SatisfiedPolicy = policy
 	}
 
 	// add our signature to the contract
