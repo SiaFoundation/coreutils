@@ -585,14 +585,14 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 
 	// update renter input basis to reflect our funding basis
 	if basis != req.Basis {
-		hostInputs := formationTxn.SiacoinInputs[len(formationTxn.SiacoinInputs)-len(req.RenterInputs)]
-		formationTxn.SiacoinInputs = formationTxn.SiacoinInputs[:len(formationTxn.SiacoinInputs)-len(req.RenterInputs)]
+		hostInputs := formationTxn.SiacoinInputs[len(req.RenterInputs):]
+		formationTxn.SiacoinInputs = formationTxn.SiacoinInputs[:len(req.RenterInputs)]
 		txnset, err := s.chain.UpdateV2TransactionSet([]types.V2Transaction{formationTxn}, req.Basis, basis)
 		if err != nil {
 			return errorBadRequest("failed to update renter inputs from %q to %q: %v", req.Basis, basis, err)
 		}
 		formationTxn = txnset[0]
-		formationTxn.SiacoinInputs = append(formationTxn.SiacoinInputs, hostInputs)
+		formationTxn.SiacoinInputs = append(formationTxn.SiacoinInputs, hostInputs...)
 	}
 
 	// read the renter's signatures
@@ -611,8 +611,8 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	formationTxn.FileContracts[0].RenterSignature = renterSigResp.RenterContractSignature
 
 	// add the renter signatures to the transaction
-	for i := range formationTxn.SiacoinInputs[:len(req.RenterInputs)] {
-		formationTxn.SiacoinInputs[i].SatisfiedPolicy = renterSigResp.RenterSatisfiedPolicies[i]
+	for i, policy := range renterSigResp.RenterSatisfiedPolicies {
+		formationTxn.SiacoinInputs[i].SatisfiedPolicy = policy
 	}
 
 	// add our signature to the contract
@@ -722,8 +722,8 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 
 	// update renter inputs to reflect our chain state
 	if basis != req.Basis {
-		hostInputs := renewalTxn.SiacoinInputs[len(renewalTxn.SiacoinInputs)-len(req.RenterInputs):]
-		renewalTxn.SiacoinInputs = renewalTxn.SiacoinInputs[:len(renewalTxn.SiacoinInputs)-len(req.RenterInputs)]
+		hostInputs := renewalTxn.SiacoinInputs[len(req.RenterInputs):]
+		renewalTxn.SiacoinInputs = renewalTxn.SiacoinInputs[:len(req.RenterInputs)]
 		updated, err := s.chain.UpdateV2TransactionSet([]types.V2Transaction{renewalTxn}, req.Basis, basis)
 		if err != nil {
 			return errorBadRequest("failed to update renter inputs from %q to %q: %v", req.Basis, basis, err)
@@ -891,8 +891,8 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 
 	// update renter inputs to reflect our chain state
 	if basis != req.Basis {
-		hostInputs := renewalTxn.SiacoinInputs[len(renewalTxn.SiacoinInputs)-len(req.RenterInputs):]
-		renewalTxn.SiacoinInputs = renewalTxn.SiacoinInputs[:len(renewalTxn.SiacoinInputs)-len(req.RenterInputs)]
+		hostInputs := renewalTxn.SiacoinInputs[len(req.RenterInputs):]
+		renewalTxn.SiacoinInputs = renewalTxn.SiacoinInputs[:len(req.RenterInputs)]
 		updated, err := s.chain.UpdateV2TransactionSet([]types.V2Transaction{renewalTxn}, req.Basis, basis)
 		if err != nil {
 			return errorBadRequest("failed to update renter inputs from %q to %q: %v", req.Basis, basis, err)

@@ -266,16 +266,36 @@ func TestFormContractBasis(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(t, n, genesis)
+	cm1, s, w1 := startTestNode(t, n, genesis)
+	cm2, _, w2 := startTestNode(t, n, genesis)
 
-	// fund the wallet
-	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
+	// fund both wallets
+	mineAndSync(t, cm1, w2.Address(), int(n.MaturityDelay+20))
+	mineAndSync(t, cm1, w1.Address(), int(n.MaturityDelay+20))
+
+	// manually sync the second wallet just before tip
+	_, applied, err := cm1.UpdatesSince(types.ChainIndex{}, int(w1.Tip().Height-5))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var blocks []types.Block
+	for _, cau := range applied {
+		blocks = append(blocks, cau.Block)
+	}
+	if err := cm2.AddBlocks(blocks); err != nil {
+		t.Fatal(err)
+	}
+
+	// wait for the second wallet to sync
+	for cm2.Tip() != w2.Tip() {
+		time.Sleep(time.Millisecond)
+	}
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	sr.Update(proto4.HostSettings{
 		Release:             "test",
 		AcceptingContracts:  true,
-		WalletAddress:       w.Address(),
+		WalletAddress:       w1.Address(),
 		MaxCollateral:       types.Siacoins(10000),
 		MaxContractDuration: 1000,
 		RemainingStorage:    100 * proto4.SectorSize,
@@ -289,30 +309,34 @@ func TestFormContractBasis(t *testing.T) {
 		},
 	})
 	ss := testutil.NewEphemeralSectorStore()
-	c := testutil.NewEphemeralContractor(cm)
+	c := testutil.NewEphemeralContractor(cm1)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPair(t, hostKey, cm1, s, w1, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	fundAndSign := &fundAndSign{w, renterKey}
-	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	result, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+	balance, err := w2.Balance()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fundAndSign := &fundAndSign{w2, renterKey}
+	result, err := rhp4.RPCFormContract(context.Background(), transport, cm2, fundAndSign, cm1.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
-		RenterAddress:   w.Address(),
-		Allowance:       renterAllowance,
-		Collateral:      hostCollateral,
-		ProofHeight:     cm.Tip().Height + 50,
+		RenterAddress:   w2.Address(),
+		Allowance:       balance.Confirmed.Mul64(96).Div64(100), // almost the whole balance to force as many inputs as possible
+		Collateral:      types.ZeroCurrency,
+		ProofHeight:     cm1.Tip().Height + 50,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// verify the transaction set is valid
-	if known, err := cm.AddV2PoolTransactions(result.FormationSet.Basis, result.FormationSet.Transactions); err != nil {
+	if known, err := cm1.AddV2PoolTransactions(result.FormationSet.Basis, result.FormationSet.Transactions); err != nil {
 		t.Fatal(err)
 	} else if !known {
 		t.Fatal("expected transaction set to be known")
