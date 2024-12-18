@@ -3,6 +3,7 @@ package rhp_test
 import (
 	"bytes"
 	"context"
+	"math"
 	"net"
 	"reflect"
 	"strings"
@@ -266,10 +267,44 @@ func TestFormContractBasis(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(t, n, genesis)
+	cm, s, _ := startTestNode(t, n, genesis)
+
+	// create a separate wallet that doesn't automatically sync with the test node
+	wCS, wState, err := chain.NewDBStore(chain.NewMemDB(), n, genesis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wCM := chain.NewManager(wCS, wState)
+	wStore := testutil.NewEphemeralWalletStore()
+	w, err := wallet.NewSingleAddressWallet(renterKey, wCM, wStore)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// fund the wallet
-	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20))
+
+	// manually sync wallet's chain manager until one block before the tip
+	blocks, _, err := cm.BlocksForHistory([]types.BlockID{genesis.ID()}, cm.Tip().Height-1)
+	if err != nil {
+		t.Fatal(err)
+	} else if err := wCM.AddBlocks(blocks); err != nil {
+		t.Fatal(err)
+	}
+	rus, aus, err := wCM.UpdatesSince(types.ChainIndex{}, math.MaxInt32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = wStore.UpdateChainState(func(tx wallet.UpdateTx) error {
+		return w.UpdateChainState(tx, rus, aus)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	balance, err := w.Balance()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	sr.Update(proto4.HostSettings{
@@ -299,12 +334,11 @@ func TestFormContractBasis(t *testing.T) {
 	}
 
 	fundAndSign := &fundAndSign{w, renterKey}
-	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
 	result, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
 		RenterPublicKey: renterKey.PublicKey(),
 		RenterAddress:   w.Address(),
-		Allowance:       renterAllowance,
-		Collateral:      hostCollateral,
+		Allowance:       balance.Confirmed.Mul64(96).Div64(100), // almost the whole balance to force as many inputs as possible
+		Collateral:      types.ZeroCurrency,
 		ProofHeight:     cm.Tip().Height + 50,
 	})
 	if err != nil {
