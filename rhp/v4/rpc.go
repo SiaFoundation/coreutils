@@ -568,11 +568,13 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 		RenterParents: formationSet,
 	}
 	if err := rhp4.WriteRequest(s, rhp4.RPCFormContractID, &req); err != nil {
+		signer.ReleaseInputs([]types.V2Transaction{formationTxn})
 		return RPCFormContractResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
 	var hostInputsResp rhp4.RPCFormContractResponse
 	if err := rhp4.ReadResponse(s, &hostInputsResp); err != nil {
+		signer.ReleaseInputs([]types.V2Transaction{formationTxn})
 		return RPCFormContractResult{}, fmt.Errorf("failed to read host inputs response: %w", err)
 	}
 
@@ -584,6 +586,7 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 	}
 
 	if n := hostInputSum.Cmp(fc.TotalCollateral); n < 0 {
+		signer.ReleaseInputs([]types.V2Transaction{formationTxn})
 		return RPCFormContractResult{}, fmt.Errorf("expected host to fund at least %v, got %v", fc.TotalCollateral, hostInputSum)
 	} else if n > 0 {
 		// add change output
@@ -606,12 +609,14 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 	}
 	// send the renter signatures
 	if err := rhp4.WriteResponse(s, &renterPolicyResp); err != nil {
+		signer.ReleaseInputs([]types.V2Transaction{formationTxn})
 		return RPCFormContractResult{}, fmt.Errorf("failed to write signature response: %w", err)
 	}
 
 	// read the finalized transaction set
 	var hostTransactionSetResp rhp4.RPCFormContractThirdResponse
 	if err := rhp4.ReadResponse(s, &hostTransactionSetResp); err != nil {
+		// at this point the formation txn must already have been broadcast, so no need to release inputs
 		return RPCFormContractResult{}, fmt.Errorf("failed to read final response: %w", err)
 	}
 
@@ -681,6 +686,7 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 
 	req.Basis, req.RenterParents, err = tp.V2TransactionSet(basis, renewalTxn)
 	if err != nil {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRenewContractResult{}, fmt.Errorf("failed to get transaction set: %w", err)
 	}
 	for _, si := range renewalTxn.SiacoinInputs {
@@ -695,11 +701,13 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCRenewContractID, &req); err != nil {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRenewContractResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
 	var hostInputsResp rhp4.RPCRenewContractResponse
 	if err := rhp4.ReadResponse(s, &hostInputsResp); err != nil {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRenewContractResult{}, fmt.Errorf("failed to read host inputs response: %w", err)
 	}
 
@@ -712,6 +720,7 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 
 	// verify the host added enough inputs
 	if n := hostInputSum.Cmp(hostCost); n < 0 {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRenewContractResult{}, fmt.Errorf("expected host to fund %v, got %v", hostCost, hostInputSum)
 	} else if n > 0 {
 		// add change output
@@ -739,12 +748,14 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 		renterPolicyResp.RenterSatisfiedPolicies = append(renterPolicyResp.RenterSatisfiedPolicies, si.SatisfiedPolicy)
 	}
 	if err := rhp4.WriteResponse(s, &renterPolicyResp); err != nil {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRenewContractResult{}, fmt.Errorf("failed to write signature response: %w", err)
 	}
 
 	// read the finalized transaction set
 	var hostTransactionSetResp rhp4.RPCRenewContractThirdResponse
 	if err := rhp4.ReadResponse(s, &hostTransactionSetResp); err != nil {
+		// at this point the renewal txn must already have been broadcast, so no need to release inputs
 		return RPCRenewContractResult{}, fmt.Errorf("failed to read final response: %w", err)
 	}
 
@@ -812,6 +823,7 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 
 	req.Basis, req.RenterParents, err = tp.V2TransactionSet(basis, renewalTxn)
 	if err != nil {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRefreshContractResult{}, fmt.Errorf("failed to get transaction set: %w", err)
 	}
 	for _, si := range renewalTxn.SiacoinInputs {
@@ -826,11 +838,13 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCRefreshContractID, &req); err != nil {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRefreshContractResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
 
 	var hostInputsResp rhp4.RPCRefreshContractResponse
 	if err := rhp4.ReadResponse(s, &hostInputsResp); err != nil {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRefreshContractResult{}, fmt.Errorf("failed to read host inputs response: %w", err)
 	}
 
@@ -843,6 +857,7 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 
 	// verify the host added enough inputs
 	if n := hostInputSum.Cmp(hostCost); n < 0 {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRefreshContractResult{}, fmt.Errorf("expected host to fund %v, got %v", hostCost, hostInputSum)
 	} else if n > 0 {
 		// add change output
@@ -870,12 +885,14 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 		renterPolicyResp.RenterSatisfiedPolicies = append(renterPolicyResp.RenterSatisfiedPolicies, si.SatisfiedPolicy)
 	}
 	if err := rhp4.WriteResponse(s, &renterPolicyResp); err != nil {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRefreshContractResult{}, fmt.Errorf("failed to write signature response: %w", err)
 	}
 
 	// read the finalized transaction set
 	var hostTransactionSetResp rhp4.RPCRefreshContractThirdResponse
 	if err := rhp4.ReadResponse(s, &hostTransactionSetResp); err != nil {
+		// at this point the renewal txn must already have been broadcast, so no need to release inputs
 		return RPCRefreshContractResult{}, fmt.Errorf("failed to read final response: %w", err)
 	}
 
