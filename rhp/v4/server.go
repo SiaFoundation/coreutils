@@ -566,6 +566,7 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 		})
 	}
 
+	var broadcast bool
 	// fund the host collateral
 	basis, toSign, err := s.wallet.FundV2Transaction(&formationTxn, hostCost, true)
 	if errors.Is(err, wallet.ErrNotEnoughFunds) {
@@ -573,6 +574,13 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	} else if err != nil {
 		return fmt.Errorf("failed to fund transaction: %w", err)
 	}
+	defer func() {
+		if broadcast {
+			return
+		}
+		// release the inputs if the transaction is not going to be broadcast
+		s.wallet.ReleaseInputs(nil, []types.V2Transaction{formationTxn})
+	}()
 	// sign the transaction inputs
 	s.wallet.SignV2Inputs(&formationTxn, toSign)
 	// send the host inputs to the renter
@@ -633,7 +641,6 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	} else if _, err = s.chain.AddV2PoolTransactions(basis, formationSet); err != nil {
 		return errorBadRequest("failed to broadcast formation transaction: %v", err)
 	}
-	s.syncer.BroadcastV2TransactionSet(basis, formationSet)
 
 	// add the contract to the contractor
 	err = s.contractor.AddV2Contract(TransactionSet{
@@ -643,6 +650,9 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	if err != nil {
 		return fmt.Errorf("failed to add contract: %w", err)
 	}
+	// broadcast the finalized contract formation set
+	broadcast = true // set broadcast so the UTXOs will not be released if the renter happens to disconnect before receiving the last response
+	s.syncer.BroadcastV2TransactionSet(basis, formationSet)
 
 	// send the finalized transaction set to the renter
 	return rhp4.WriteResponse(stream, &rhp4.RPCFormContractThirdResponse{
@@ -713,12 +723,20 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 		return fmt.Errorf("failed to get contract element: %w", err)
 	}
 
+	var broadcast bool
 	basis, toSign, err := s.wallet.FundV2Transaction(&renewalTxn, hostCost, true)
 	if errors.Is(err, wallet.ErrNotEnoughFunds) {
 		return rhp4.ErrHostFundError
 	} else if err != nil {
 		return fmt.Errorf("failed to fund transaction: %w", err)
 	}
+	defer func() {
+		if broadcast {
+			return
+		}
+		// release the locked UTXOs if the transaction is not going to be broadcast
+		s.wallet.ReleaseInputs(nil, []types.V2Transaction{renewalTxn})
+	}()
 
 	// update renter inputs to reflect our chain state
 	if basis != req.Basis {
@@ -799,8 +817,6 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 	} else if _, err = s.chain.AddV2PoolTransactions(basis, renewalSet); err != nil {
 		return errorBadRequest("failed to broadcast renewal set: %v", err)
 	}
-	// broadcast the transaction set
-	s.syncer.BroadcastV2TransactionSet(basis, renewalSet)
 
 	// add the contract to the contractor
 	err = s.contractor.RenewV2Contract(TransactionSet{
@@ -810,6 +826,9 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 	if err != nil {
 		return fmt.Errorf("failed to add contract: %w", err)
 	}
+
+	broadcast = true // set broadcast so the UTXOs will not be released if the renter happens to disconnect before receiving the last response
+	s.syncer.BroadcastV2TransactionSet(basis, renewalSet)
 
 	// send the finalized transaction set to the renter
 	return rhp4.WriteResponse(stream, &rhp4.RPCRefreshContractThirdResponse{
@@ -882,12 +901,20 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 		return fmt.Errorf("failed to get contract element: %w", err)
 	}
 
+	var broadcast bool
 	basis, toSign, err := s.wallet.FundV2Transaction(&renewalTxn, hostCost, true)
 	if errors.Is(err, wallet.ErrNotEnoughFunds) {
 		return rhp4.ErrHostFundError
 	} else if err != nil {
 		return fmt.Errorf("failed to fund transaction: %w", err)
 	}
+	defer func() {
+		if broadcast {
+			return
+		}
+		// release the locked UTXOs if the transaction is not going to be broadcast
+		s.wallet.ReleaseInputs(nil, []types.V2Transaction{renewalTxn})
+	}()
 
 	// update renter inputs to reflect our chain state
 	if basis != req.Basis {
@@ -968,8 +995,6 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	} else if _, err = s.chain.AddV2PoolTransactions(basis, renewalSet); err != nil {
 		return errorBadRequest("failed to broadcast renewal set: %v", err)
 	}
-	// broadcast the transaction set
-	s.syncer.BroadcastV2TransactionSet(basis, renewalSet)
 
 	// add the contract to the contractor
 	err = s.contractor.RenewV2Contract(TransactionSet{
@@ -979,6 +1004,9 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	if err != nil {
 		return fmt.Errorf("failed to add contract: %w", err)
 	}
+
+	broadcast = true // set broadcast so the UTXOs will not be released if the renter happens to disconnect before receiving the last response
+	s.syncer.BroadcastV2TransactionSet(basis, renewalSet)
 
 	// send the finalized transaction set to the renter
 	return rhp4.WriteResponse(stream, &rhp4.RPCRenewContractThirdResponse{
