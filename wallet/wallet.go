@@ -218,14 +218,9 @@ func (sw *SingleAddressWallet) SpendableOutputs() ([]types.SiacoinElement, error
 	return unspent, nil
 }
 
-func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, useUnconfirmed bool) ([]types.SiacoinElement, types.Currency, error) {
+func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, useUnconfirmed bool, elements []types.SiacoinElement) ([]types.SiacoinElement, types.Currency, error) {
 	if amount.IsZero() {
 		return nil, types.ZeroCurrency, nil
-	}
-
-	elements, err := sw.store.UnspentSiacoinElements()
-	if err != nil {
-		return nil, types.ZeroCurrency, err
 	}
 
 	tpoolSpent := make(map[types.SiacoinOutputID]bool)
@@ -353,10 +348,15 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 		return nil, nil
 	}
 
+	elements, err := sw.store.UnspentSiacoinElements()
+	if err != nil {
+		return nil, err
+	}
+
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
-	selected, inputSum, err := sw.selectUTXOs(amount, len(txn.SiacoinInputs), useUnconfirmed)
+	selected, inputSum, err := sw.selectUTXOs(amount, len(txn.SiacoinInputs), useUnconfirmed, elements)
 	if err != nil {
 		return nil, err
 	}
@@ -413,14 +413,20 @@ func (sw *SingleAddressWallet) SignTransaction(txn *types.Transaction, toSign []
 //
 // The returned index should be used as the basis for AddV2PoolTransactions.
 func (sw *SingleAddressWallet) FundV2Transaction(txn *types.V2Transaction, amount types.Currency, useUnconfirmed bool) (types.ChainIndex, []int, error) {
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
-
 	if amount.IsZero() {
 		return sw.tip, nil, nil
 	}
 
-	selected, inputSum, err := sw.selectUTXOs(amount, len(txn.SiacoinInputs), useUnconfirmed)
+	// fetch outputs from the store
+	elements, err := sw.store.UnspentSiacoinElements()
+	if err != nil {
+		return types.ChainIndex{}, nil, err
+	}
+
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+
+	selected, inputSum, err := sw.selectUTXOs(amount, len(txn.SiacoinInputs), useUnconfirmed, elements)
 	if err != nil {
 		return types.ChainIndex{}, nil, err
 	}
@@ -581,13 +587,7 @@ func (sw *SingleAddressWallet) UnconfirmedEvents() (annotated []Event, err error
 	return annotated, nil
 }
 
-func (sw *SingleAddressWallet) selectRedistributeUTXOs(bh uint64, outputs int, amount types.Currency) ([]types.SiacoinElement, int, error) {
-	// fetch outputs from the store
-	elements, err := sw.store.UnspentSiacoinElements()
-	if err != nil {
-		return nil, 0, err
-	}
-
+func (sw *SingleAddressWallet) selectRedistributeUTXOs(bh uint64, outputs int, amount types.Currency, elements []types.SiacoinElement) ([]types.SiacoinElement, int, error) {
 	// fetch outputs currently in the pool
 	inPool := make(map[types.SiacoinOutputID]bool)
 	for _, txn := range sw.cm.PoolTransactions() {
@@ -631,10 +631,16 @@ func (sw *SingleAddressWallet) selectRedistributeUTXOs(bh uint64, outputs int, a
 // outputs. It also returns a list of output IDs that need to be signed.
 func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte types.Currency) (txns []types.Transaction, toSign []types.Hash256, err error) {
 	state := sw.cm.TipState()
+
+	elements, err := sw.store.UnspentSiacoinElements()
+	if err != nil {
+		return nil, nil, err
+	}
+
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
-	utxos, outputs, err := sw.selectRedistributeUTXOs(state.Index.Height, outputs, amount)
+	utxos, outputs, err := sw.selectRedistributeUTXOs(state.Index.Height, outputs, amount, elements)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -724,10 +730,16 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 // outputs. It also returns a list of output IDs that need to be signed.
 func (sw *SingleAddressWallet) RedistributeV2(outputs int, amount, feePerByte types.Currency) (txns []types.V2Transaction, toSign [][]int, err error) {
 	state := sw.cm.TipState()
+
+	elements, err := sw.store.UnspentSiacoinElements()
+	if err != nil {
+		return nil, nil, err
+	}
+
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
-	utxos, outputs, err := sw.selectRedistributeUTXOs(state.Index.Height, outputs, amount)
+	utxos, outputs, err := sw.selectRedistributeUTXOs(state.Index.Height, outputs, amount, elements)
 	if err != nil {
 		return nil, nil, err
 	}
