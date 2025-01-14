@@ -290,9 +290,6 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 
 // applyChainUpdate atomically applies a chain update
 func (sw *SingleAddressWallet) applyChainUpdate(tx UpdateTx, address types.Address, cau chain.ApplyUpdate) error {
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
-
 	// update current state elements
 	if err := tx.UpdateWalletSiacoinElementProofs(cau); err != nil {
 		return fmt.Errorf("failed to update state elements: %w", err)
@@ -319,15 +316,14 @@ func (sw *SingleAddressWallet) applyChainUpdate(tx UpdateTx, address types.Addre
 	if err := tx.WalletApplyIndex(cau.State.Index, createdUTXOs, spentUTXOs, appliedEvents(cau, address), cau.Block.Timestamp); err != nil {
 		return fmt.Errorf("failed to apply index: %w", err)
 	}
+	sw.mu.Lock()
 	sw.tip = cau.State.Index
+	sw.mu.Unlock()
 	return nil
 }
 
 // revertChainUpdate atomically reverts a chain update from a wallet
 func (sw *SingleAddressWallet) revertChainUpdate(tx UpdateTx, revertedIndex types.ChainIndex, address types.Address, cru chain.RevertUpdate) error {
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
-
 	var removedUTXOs, unspentUTXOs []types.SiacoinElement
 	cru.ForEachSiacoinElement(func(se types.SiacoinElement, created, spent bool) {
 		switch {
@@ -355,7 +351,9 @@ func (sw *SingleAddressWallet) revertChainUpdate(tx UpdateTx, revertedIndex type
 	if err := tx.UpdateWalletSiacoinElementProofs(cru); err != nil {
 		return fmt.Errorf("failed to update state elements: %w", err)
 	}
+	sw.mu.Lock()
 	sw.tip = revertedIndex
+	sw.mu.Unlock()
 	return nil
 }
 
