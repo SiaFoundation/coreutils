@@ -1,3 +1,16 @@
+## 0.10.0 (2025-01-15)
+
+### Breaking Changes
+
+#### Increased V2 Allow Height to 526,000
+
+Delays activation of the v2 hardfork to June 6th, 2025 in response to concerns about the scope of updates necessary for partners to support v2
+
+### Fixes
+
+- Improve locking in SingleAddressWallet by avoiding acquiring the mutex before a db transaction
+- Increased default UTXO reservation in SingleAddressWallet to 3 hours
+
 ## 0.9.1 (2025-01-12)
 
 ### Fixes
