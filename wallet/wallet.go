@@ -925,7 +925,7 @@ func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store Single
 		DefragThreshold:     30,
 		MaxInputsForDefrag:  30,
 		MaxDefragUTXOs:      10,
-		ReservationDuration: 15 * time.Minute,
+		ReservationDuration: 3 * time.Hour,
 		Log:                 zap.NewNop(),
 	}
 
