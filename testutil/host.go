@@ -75,6 +75,7 @@ func (ec *EphemeralContractor) V2FileContractElement(contractID types.FileContra
 	if !ok {
 		return types.ChainIndex{}, types.V2FileContractElement{}, errors.New("contract not found")
 	}
+	element.StateElement.MerkleProof = append([]types.Hash256(nil), element.StateElement.MerkleProof...)
 	return ec.tip, element, nil
 }
 
