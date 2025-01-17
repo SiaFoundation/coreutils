@@ -687,13 +687,24 @@ func (s *Syncer) Run(ctx context.Context) error {
 
 // Close closes the Syncer's net.Listener.
 func (s *Syncer) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.l == nil {
+		return nil // already closed
+	}
 	err := s.l.Close()
+	s.mu.Unlock()
 	s.wg.Wait()
+	s.mu.Lock()
+	s.l = nil
 	return err
 }
 
 // Connect forms an outbound connection to a peer.
 func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
+	if s.l == nil {
+		return nil, errors.New("syncer is closed")
+	}
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
