@@ -208,9 +208,10 @@ type Syncer struct {
 
 	wg sync.WaitGroup
 
-	mu      sync.Mutex
-	peers   map[string]*Peer
-	strikes map[string]int
+	mu          sync.Mutex
+	peerRemoved sync.Cond // broadcasts when peer is removed from 'peers'
+	peers       map[string]*Peer
+	strikes     map[string]int
 }
 
 func (s *Syncer) resync(p *Peer, reason string) {
@@ -272,6 +273,9 @@ func (s *Syncer) runPeer(p *Peer) error {
 		s.mu.Lock()
 		delete(s.peers, p.t.Addr)
 		s.mu.Unlock()
+
+		// notify goroutines of removed peer
+		s.peerRemoved.Broadcast()
 	}()
 
 	inflight := make(chan struct{}, s.config.MaxInflightRPCs)
@@ -664,12 +668,9 @@ func (s *Syncer) Run(ctx context.Context) error {
 	<-errChan
 
 	// wait for all peer goroutines to exit
-	// TODO: a cond would be nicer than polling here
 	s.mu.Lock()
 	for len(s.peers) != 0 {
-		s.mu.Unlock()
-		time.Sleep(100 * time.Millisecond)
-		s.mu.Lock()
+		s.peerRemoved.Wait()
 	}
 	s.mu.Unlock()
 
@@ -786,7 +787,7 @@ func New(l net.Listener, cm ChainManager, pm PeerStore, header gateway.Header, o
 	for _, opt := range opts {
 		opt(&config)
 	}
-	return &Syncer{
+	s := &Syncer{
 		l:       l,
 		cm:      cm,
 		pm:      pm,
@@ -796,4 +797,6 @@ func New(l net.Listener, cm ChainManager, pm PeerStore, header gateway.Header, o
 		peers:   make(map[string]*Peer),
 		strikes: make(map[string]int),
 	}
+	s.peerRemoved = sync.Cond{L: &s.mu}
+	return s
 }
