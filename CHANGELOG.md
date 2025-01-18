@@ -1,3 +1,10 @@
+## 0.10.1 (2025-01-18)
+
+### Fixes
+
+- Update core to v0.9.1
+- Use condition rather than polling to determine whether all peers are closed in 'Run'
+
 ## 0.10.0 (2025-01-15)
 
 ### Breaking Changes
