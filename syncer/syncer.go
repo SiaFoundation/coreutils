@@ -83,6 +83,7 @@ type config struct {
 	MaxInboundPeers            int
 	MaxOutboundPeers           int
 	MaxInflightRPCs            int
+	RPCTimeout                 time.Duration
 	ConnectTimeout             time.Duration
 	ShareNodesTimeout          time.Duration
 	SendBlockTimeout           time.Duration
@@ -123,6 +124,11 @@ func WithMaxInflightRPCs(n int) Option {
 // 5 seconds.
 func WithConnectTimeout(d time.Duration) Option {
 	return func(c *config) { c.ConnectTimeout = d }
+}
+
+// WithRPCTimeout sets the timeout for all incoming RPCs. The default is 2 minutes.
+func WithRPCTimeout(d time.Duration) Option {
+	return func(c *config) { c.RPCTimeout = d }
 }
 
 // WithShareNodesTimeout sets the timeout for the ShareNodes RPC. The default is
@@ -294,10 +300,9 @@ func (s *Syncer) runPeer(p *Peer) error {
 		go func() {
 			defer s.wg.Done()
 			defer stream.Close()
-			// NOTE: we do not set any deadlines on the stream. If a peer is
-			// slow, fine; we don't need to worry about resource exhaustion
-			// unless we have tons of peers.
-			if err := s.handleRPC(id, stream, p); err != nil {
+			if err := stream.SetDeadline(time.Now().Add(s.config.RPCTimeout)); err != nil {
+				s.log.Debug("failed to set rpc deadline", zap.Error(err))
+			} else if err := s.handleRPC(id, stream, p); err != nil {
 				s.log.Debug("rpc failed", zap.Stringer("peer", p), zap.Stringer("rpc", id), zap.Error(err))
 			}
 			<-inflight
@@ -771,6 +776,7 @@ func New(l net.Listener, cm ChainManager, pm PeerStore, header gateway.Header, o
 		MaxOutboundPeers:           16,
 		MaxInflightRPCs:            3,
 		ConnectTimeout:             5 * time.Second,
+		RPCTimeout:                 2 * time.Minute,
 		ShareNodesTimeout:          5 * time.Second,
 		SendBlockTimeout:           60 * time.Second,
 		SendTransactionsTimeout:    60 * time.Second,
