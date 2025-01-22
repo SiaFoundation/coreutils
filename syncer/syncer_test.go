@@ -97,7 +97,7 @@ func TestSyncer(t *testing.T) {
 func TestSyncerChain(t *testing.T) {
 	log := zaptest.NewLogger(t)
 
-	newDuo := func() (*chain.Manager, *syncer.Syncer) {
+	newDuo := func(name string) (*chain.Manager, *syncer.Syncer) {
 		n, genesis := testutil.Network()
 		store, tipState1, err := chain.NewDBStore(chain.NewMemDB(), n, genesis)
 		if err != nil {
@@ -115,16 +115,25 @@ func TestSyncerChain(t *testing.T) {
 			GenesisID:  genesis.ID(),
 			UniqueID:   gateway.GenerateUniqueID(),
 			NetAddress: l.Addr().String(),
-		}, syncer.WithLogger(log.Named("syncer1")))
+		}, syncer.WithLogger(log.Named(name)),
+			syncer.WithSendBlockTimeout(2*time.Second),
+			syncer.WithSendBlocksTimeout(2*time.Second),
+			syncer.WithRelayHeaderTimeout(2*time.Second),
+			syncer.WithRPCTimeout(2*time.Second),
+			syncer.WithShareNodesTimeout(2*time.Second),
+			syncer.WithPeerDiscoveryInterval(2*time.Second),
+			syncer.WithBanDuration(2*time.Second),
+			syncer.WithSyncInterval(2*time.Second),
+		)
 		t.Cleanup(func() { s.Close() })
 		go s.Run(context.Background())
 
 		return cm, s
 	}
 
-	cm1, s1 := newDuo()
-	cm2, s2 := newDuo()
-	cm3, s3 := newDuo()
+	cm1, s1 := newDuo("syncer1")
+	cm2, s2 := newDuo("syncer2")
+	cm3, s3 := newDuo("syncer3")
 
 	// cm1 should be on a 10 block chain
 	testutil.MineBlocks(t, cm1, types.VoidAddress, 10)
