@@ -558,12 +558,16 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		for _, p := range s.peers {
-			if p.Synced() {
-				continue
-			}
 			peers = append(peers, p)
 		}
-		sort.Slice(peers, func(i, j int) bool {
+		// shuffle peers to make sure we don't always pick the same 3 peers in
+		// case they were all already synced and support v2. Also use stable sort to
+		// keep the shuffled order mostly intact
+		frand.Shuffle(len(peers), func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
+		sort.SliceStable(peers, func(i, j int) bool {
+			if peers[i].Synced() != peers[j].Synced() {
+				return !peers[i].Synced() // prefer unsynced peers
+			}
 			return peers[i].t.SupportsV2() && !peers[j].t.SupportsV2()
 		})
 		if len(peers) > 3 {
