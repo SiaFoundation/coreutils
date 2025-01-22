@@ -93,3 +93,68 @@ func TestSyncer(t *testing.T) {
 		t.Fatalf("tips are not equal: %v != %v", cm1.Tip(), cm2.Tip())
 	}
 }
+
+func TestSyncerChain(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	newDuo := func() (*chain.Manager, *syncer.Syncer) {
+		n, genesis := testutil.Network()
+		store, tipState1, err := chain.NewDBStore(chain.NewMemDB(), n, genesis)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cm := chain.NewManager(store, tipState1)
+
+		l, err := net.Listen("tcp", ":0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { l.Close() })
+
+		s := syncer.New(l, cm, testutil.NewEphemeralPeerStore(), gateway.Header{
+			GenesisID:  genesis.ID(),
+			UniqueID:   gateway.GenerateUniqueID(),
+			NetAddress: l.Addr().String(),
+		}, syncer.WithLogger(log.Named("syncer1")))
+		t.Cleanup(func() { s.Close() })
+		go s.Run(context.Background())
+
+		return cm, s
+	}
+
+	cm1, s1 := newDuo()
+	cm2, s2 := newDuo()
+	cm3, s3 := newDuo()
+
+	// cm1 should be on a 10 block chain
+	testutil.MineBlocks(t, cm1, types.VoidAddress, 10)
+
+	// cm2 should be on a 5 block chain
+	testutil.MineBlocks(t, cm2, types.VoidAddress, 5)
+
+	// cm3 is on a 1 block chain
+	testutil.MineBlocks(t, cm3, types.VoidAddress, 1)
+
+	// connect s1 <-> s2 <-> s3
+	if _, err := s1.Connect(context.Background(), s2.Addr()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s2.Connect(context.Background(), s3.Addr()); err != nil {
+		t.Fatal(err)
+	}
+
+	sync := func() {
+		t.Helper()
+		for i := 0; i < 1000; i++ {
+			if cm1.Tip() == cm2.Tip() && cm2.Tip() == cm3.Tip() {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for sync: cm1: %v cm2: %v cm3: %v", cm1.Tip().Height, cm2.Tip().Height, cm3.Tip().Height)
+	}
+	sync()
+
+	testutil.MineBlocks(t, cm2, types.VoidAddress, 20)
+	sync()
+}
