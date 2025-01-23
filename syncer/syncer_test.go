@@ -2,6 +2,7 @@ package syncer_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -11,52 +12,43 @@ import (
 	"go.sia.tech/coreutils/chain"
 	"go.sia.tech/coreutils/syncer"
 	"go.sia.tech/coreutils/testutil"
+	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 )
+
+func newTestSyncer(t testing.TB, name string, log *zap.Logger) (*syncer.Syncer, *chain.Manager) {
+	n, genesis := testutil.Network()
+	store, tipState1, err := chain.NewDBStore(chain.NewMemDB(), n, genesis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm := chain.NewManager(store, tipState1)
+
+	l, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		l.Close()
+	})
+
+	s := syncer.New(l, cm, testutil.NewEphemeralPeerStore(), gateway.Header{
+		GenesisID:  genesis.ID(),
+		UniqueID:   gateway.GenerateUniqueID(),
+		NetAddress: l.Addr().String(),
+	}, syncer.WithLogger(log.Named(name)))
+	go s.Run(context.Background())
+	return s, cm
+}
 
 func TestSyncer(t *testing.T) {
 	log := zaptest.NewLogger(t)
 
-	n, genesis := testutil.Network()
-	store1, tipState1, err := chain.NewDBStore(chain.NewMemDB(), n, genesis)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cm1 := chain.NewManager(store1, tipState1)
-
-	store2, tipState2, err := chain.NewDBStore(chain.NewMemDB(), n, genesis)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cm2 := chain.NewManager(store2, tipState2)
-
-	l1, err := net.Listen("tcp", ":0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l1.Close()
-
-	l2, err := net.Listen("tcp", ":0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l2.Close()
-
-	s1 := syncer.New(l1, cm1, testutil.NewEphemeralPeerStore(), gateway.Header{
-		GenesisID:  genesis.ID(),
-		UniqueID:   gateway.GenerateUniqueID(),
-		NetAddress: l1.Addr().String(),
-	}, syncer.WithLogger(log.Named("syncer1")))
+	s1, cm1 := newTestSyncer(t, "syncer1", log)
 	defer s1.Close()
-	go s1.Run(context.Background())
 
-	s2 := syncer.New(l2, cm2, testutil.NewEphemeralPeerStore(), gateway.Header{
-		GenesisID:  genesis.ID(),
-		UniqueID:   gateway.GenerateUniqueID(),
-		NetAddress: l2.Addr().String(),
-	}, syncer.WithLogger(log.Named("syncer2")), syncer.WithSyncInterval(10*time.Millisecond))
+	s2, cm2 := newTestSyncer(t, "syncer2", log)
 	defer s2.Close()
-	go s2.Run(context.Background())
 
 	// mine a few blocks on cm1
 	testutil.MineBlocks(t, cm1, types.VoidAddress, 10)
@@ -70,7 +62,7 @@ func TestSyncer(t *testing.T) {
 	}
 
 	// connect the syncers
-	if _, err := s1.Connect(context.Background(), l2.Addr().String()); err != nil {
+	if _, err := s1.Connect(context.Background(), s2.Addr()); err != nil {
 		t.Fatal(err)
 	}
 	// broadcast blocks from s1
@@ -91,5 +83,16 @@ func TestSyncer(t *testing.T) {
 
 	if cm1.Tip() != cm2.Tip() {
 		t.Fatalf("tips are not equal: %v != %v", cm1.Tip(), cm2.Tip())
+	}
+}
+
+func TestSyncerConnectAfterClose(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	s, _ := newTestSyncer(t, "syncer1", log)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	} else if _, err := s.Connect(context.Background(), "localhost:1234"); !errors.Is(err, syncer.ErrClosed) {
+		t.Fatal(err)
 	}
 }
