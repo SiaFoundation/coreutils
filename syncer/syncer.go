@@ -706,9 +706,12 @@ func (s *Syncer) Close() error {
 
 // Connect forms an outbound connection to a peer.
 func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
+	s.mu.Lock()
 	if s.closed {
+		s.mu.Unlock()
 		return nil, ErrClosed
 	}
+	s.mu.Unlock()
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
