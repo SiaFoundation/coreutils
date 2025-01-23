@@ -12,12 +12,10 @@ import (
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/gateway"
 	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils/internal/threadgroup"
 	"go.uber.org/zap"
 	"lukechampine.com/frand"
 )
-
-// ErrClosed is returned when a method is called on an already closed Syncer.
-var ErrClosed = errors.New("syncer is closed")
 
 // A ChainManager manages blockchain state.
 type ChainManager interface {
@@ -215,12 +213,11 @@ type Syncer struct {
 	config config
 	log    *zap.Logger // redundant, but convenient
 
-	wg sync.WaitGroup
+	tg *threadgroup.ThreadGroup
 
 	mu          sync.Mutex
 	peerRemoved sync.Cond // broadcasts when peer is removed from 'peers'
 	peers       map[string]*Peer
-	closed      bool
 	strikes     map[string]int
 }
 
@@ -300,9 +297,13 @@ func (s *Syncer) runPeer(p *Peer) error {
 			return fmt.Errorf("failed to accept rpc: %w", err)
 		}
 		inflight <- struct{}{}
-		s.wg.Add(1)
+
 		go func() {
-			defer s.wg.Done()
+			done, err := s.tg.Add()
+			if err != nil {
+				return
+			}
+			defer done()
 			defer stream.Close()
 			if err := stream.SetDeadline(time.Now().Add(s.config.RPCTimeout)); err != nil {
 				s.log.Debug("failed to set rpc deadline", zap.Error(err))
@@ -372,8 +373,11 @@ func (s *Syncer) relayV2TransactionSet(index types.ChainIndex, txns []types.V2Tr
 func (s *Syncer) allowConnect(ctx context.Context, peer string, inbound bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
-		return ErrClosed
+
+	select {
+	case <-s.tg.Done():
+		return threadgroup.ErrClosed
+	default:
 	}
 
 	var addrs []net.IPAddr
@@ -421,19 +425,19 @@ func (s *Syncer) alreadyConnected(id gateway.UniqueID) bool {
 
 func (s *Syncer) acceptLoop(ctx context.Context) error {
 	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
+		ctx, done, err := s.tg.AddContext(ctx)
+		if err != nil {
+			return threadgroup.ErrClosed
 		}
 
 		conn, err := s.l.Accept()
 		if err != nil {
+			done()
 			return err
 		}
-		s.wg.Add(1)
+
 		go func() {
-			defer s.wg.Done()
+			defer done()
 			defer conn.Close()
 			if err := s.allowConnect(ctx, conn.RemoteAddr().String(), true); err != nil {
 				s.log.Debug("rejected inbound connection", zap.Stringer("remoteAddress", conn.RemoteAddr()), zap.Error(err))
@@ -654,16 +658,25 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 // connections, and syncing the blockchain from active peers. It blocks until an
 // error occurs, upon which all connections are closed and goroutines are
 // terminated.
-func (s *Syncer) Run(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
-	s.wg.Add(1)
-	defer s.wg.Done()
+func (s *Syncer) Run() error {
+	ctx, cancel, err := s.tg.AddContext(context.Background())
+	if err != nil {
+		return err
+	}
+
 	errChan := make(chan error)
-	s.wg.Add(3)
-	go func() { errChan <- s.acceptLoop(ctx); s.wg.Done() }()
-	go func() { errChan <- s.peerLoop(ctx); s.wg.Done() }()
-	go func() { errChan <- s.syncLoop(ctx); s.wg.Done() }()
-	err := <-errChan
+	for _, fn := range []func(context.Context) error{s.acceptLoop, s.peerLoop, s.syncLoop} {
+		go func() {
+			done, err := s.tg.Add()
+			if err != nil {
+				errChan <- fn(ctx)
+				return
+			}
+			errChan <- fn(ctx)
+			done()
+		}()
+	}
+	err = <-errChan
 	cancel()
 
 	// when one goroutine exits, shutdown and wait for the others
@@ -691,27 +704,19 @@ func (s *Syncer) Run(ctx context.Context) error {
 
 // Close closes the Syncer's net.Listener.
 func (s *Syncer) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return nil // already closed
-	}
-	s.closed = true
 	err := s.l.Close()
-	s.mu.Unlock()
-	s.wg.Wait()
-	s.mu.Lock()
+	s.tg.Stop()
 	return err
 }
 
 // Connect forms an outbound connection to a peer.
 func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return nil, ErrClosed
+	ctx, done, err := s.tg.AddContext(ctx)
+	if err != nil {
+		return nil, err
 	}
-	s.mu.Unlock()
+	defer done()
+
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
@@ -731,9 +736,12 @@ func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
 		ConnAddr: conn.RemoteAddr().String(),
 		Inbound:  false,
 	}
-	s.wg.Add(1)
 	go func() {
-		defer s.wg.Done()
+		done, err := s.tg.Add()
+		if err != nil {
+			return
+		}
+		defer done()
 		s.runPeer(p)
 	}()
 
@@ -820,6 +828,7 @@ func New(l net.Listener, cm ChainManager, pm PeerStore, header gateway.Header, o
 		log:     config.Logger,
 		peers:   make(map[string]*Peer),
 		strikes: make(map[string]int),
+		tg:      threadgroup.New(),
 	}
 	s.peerRemoved = sync.Cond{L: &s.mu}
 	return s

@@ -10,6 +10,7 @@ import (
 	"go.sia.tech/core/gateway"
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/chain"
+	"go.sia.tech/coreutils/internal/threadgroup"
 	"go.sia.tech/coreutils/syncer"
 	"go.sia.tech/coreutils/testutil"
 	"go.uber.org/zap"
@@ -37,7 +38,7 @@ func newTestSyncer(t testing.TB, name string, log *zap.Logger) (*syncer.Syncer, 
 		UniqueID:   gateway.GenerateUniqueID(),
 		NetAddress: l.Addr().String(),
 	}, syncer.WithLogger(log.Named(name)))
-	go s.Run(context.Background())
+	go s.Run()
 	return s, cm
 }
 
@@ -92,7 +93,7 @@ func TestSyncerConnectAfterClose(t *testing.T) {
 	s, _ := newTestSyncer(t, "syncer1", log)
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
-	} else if _, err := s.Connect(context.Background(), "localhost:1234"); !errors.Is(err, syncer.ErrClosed) {
+	} else if _, err := s.Connect(context.Background(), "localhost:1234"); !errors.Is(err, threadgroup.ErrClosed) {
 		t.Fatal(err)
 	}
 }
