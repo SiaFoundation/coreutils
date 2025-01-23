@@ -16,6 +16,9 @@ import (
 	"lukechampine.com/frand"
 )
 
+// ErrClosed is returned when a method is called on an already closed Syncer.
+var ErrClosed = errors.New("syncer is closed")
+
 // A ChainManager manages blockchain state.
 type ChainManager interface {
 	History() ([32]types.BlockID, error)
@@ -217,6 +220,7 @@ type Syncer struct {
 	mu          sync.Mutex
 	peerRemoved sync.Cond // broadcasts when peer is removed from 'peers'
 	peers       map[string]*Peer
+	closed      bool
 	strikes     map[string]int
 }
 
@@ -368,8 +372,8 @@ func (s *Syncer) relayV2TransactionSet(index types.ChainIndex, txns []types.V2Tr
 func (s *Syncer) allowConnect(ctx context.Context, peer string, inbound bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.l == nil {
-		return errors.New("syncer is shutting down")
+	if s.closed {
+		return ErrClosed
 	}
 
 	var addrs []net.IPAddr
@@ -689,21 +693,21 @@ func (s *Syncer) Run(ctx context.Context) error {
 func (s *Syncer) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.l == nil {
+	if s.closed {
 		return nil // already closed
 	}
+	s.closed = true
 	err := s.l.Close()
 	s.mu.Unlock()
 	s.wg.Wait()
 	s.mu.Lock()
-	s.l = nil
 	return err
 }
 
 // Connect forms an outbound connection to a peer.
 func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
-	if s.l == nil {
-		return nil, errors.New("syncer is closed")
+	if s.closed {
+		return nil, ErrClosed
 	}
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	if err != nil {
