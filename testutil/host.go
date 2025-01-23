@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"errors"
 	"net"
@@ -74,6 +75,21 @@ func (ec *EphemeralContractor) V2FileContractElement(contractID types.FileContra
 	element, ok := ec.contractElements[contractID]
 	if !ok {
 		return types.ChainIndex{}, types.V2FileContractElement{}, errors.New("contract not found")
+	}
+
+	// deep-copy element to avoid passing a reference to the
+	// EphemeralContractor's internal state
+	buf := new(bytes.Buffer)
+	enc := types.NewEncoder(buf)
+	element.EncodeTo(enc)
+	if err := enc.Flush(); err != nil {
+		return types.ChainIndex{}, types.V2FileContractElement{}, err
+	}
+	var copied types.V2FileContractElement
+	dec := types.NewBufDecoder(buf.Bytes())
+	copied.DecodeFrom(dec)
+	if err := dec.Err(); err != nil {
+		return types.ChainIndex{}, types.V2FileContractElement{}, err
 	}
 	return ec.tip, element, nil
 }
