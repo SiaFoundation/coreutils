@@ -12,7 +12,7 @@ import (
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/gateway"
 	"go.sia.tech/core/types"
-	"go.sia.tech/coreutils/internal/threadgroup"
+	"go.sia.tech/coreutils/threadgroup"
 	"go.uber.org/zap"
 	"lukechampine.com/frand"
 )
