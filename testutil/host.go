@@ -62,10 +62,16 @@ type EphemeralContractor struct {
 
 	accounts map[proto4.Account]types.Currency
 
-	mu sync.Mutex
+	mu       sync.Mutex
+	shutdown chan struct{}
 }
 
 var _ rhp4.Contractor = (*EphemeralContractor)(nil)
+
+func (ec *EphemeralContractor) Close() error {
+	close(ec.shutdown)
+	return nil
+}
 
 // V2FileContractElement returns the contract state element for the given contract ID.
 func (ec *EphemeralContractor) V2FileContractElement(contractID types.FileContractID) (types.ChainIndex, types.V2FileContractElement, error) {
@@ -422,6 +428,7 @@ func NewEphemeralContractor(cm *chain.Manager) *EphemeralContractor {
 		roots:            make(map[types.FileContractID][]types.Hash256),
 		locks:            make(map[types.FileContractID]bool),
 		accounts:         make(map[proto4.Account]types.Currency),
+		shutdown:         make(chan struct{}),
 	}
 
 	reorgCh := make(chan types.ChainIndex, 1)
@@ -433,7 +440,12 @@ func NewEphemeralContractor(cm *chain.Manager) *EphemeralContractor {
 	})
 
 	go func() {
-		for range reorgCh {
+		for {
+			select {
+			case <-reorgCh:
+			case <-ec.shutdown:
+				return
+			}
 			for {
 				reverted, applied, err := cm.UpdatesSince(ec.tip, 1000)
 				if err != nil {
