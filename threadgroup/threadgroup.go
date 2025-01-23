@@ -49,9 +49,7 @@ func (tg *ThreadGroup) WithContext(parent context.Context) (context.Context, con
 	go func() {
 		select {
 		case <-ctx.Done():
-			break
 		case <-tg.closed:
-			break
 		}
 		// threadgroup or parent context cancelled, cancel the child context
 		cancel()
