@@ -374,11 +374,11 @@ func (s *Syncer) allowConnect(ctx context.Context, peer string, inbound bool) er
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	select {
-	case <-s.tg.Done():
-		return threadgroup.ErrClosed
-	default:
+	done, err := s.tg.Add()
+	if err != nil {
+		return err
 	}
+	defer done()
 
 	var addrs []net.IPAddr
 	if peerHost, _, err := net.SplitHostPort(peer); err != nil {
@@ -424,19 +424,29 @@ func (s *Syncer) alreadyConnected(id gateway.UniqueID) bool {
 }
 
 func (s *Syncer) acceptLoop(ctx context.Context) error {
+	ctx, done, err := s.tg.AddContext(ctx)
+	if err != nil {
+		return threadgroup.ErrClosed
+	}
+	defer done()
+
 	for {
-		ctx, done, err := s.tg.AddContext(ctx)
-		if err != nil {
+		select {
+		case <-ctx.Done():
 			return threadgroup.ErrClosed
+		default:
 		}
 
 		conn, err := s.l.Accept()
 		if err != nil {
-			done()
 			return err
 		}
 
 		go func() {
+			done, err := s.tg.Add()
+			if err != nil {
+				return
+			}
 			defer done()
 			defer conn.Close()
 			if err := s.allowConnect(ctx, conn.RemoteAddr().String(), true); err != nil {
@@ -663,13 +673,14 @@ func (s *Syncer) Run() error {
 	if err != nil {
 		return err
 	}
+	defer cancel()
 
 	errChan := make(chan error)
 	for _, fn := range []func(context.Context) error{s.acceptLoop, s.peerLoop, s.syncLoop} {
 		go func() {
 			done, err := s.tg.Add()
 			if err != nil {
-				errChan <- fn(ctx)
+				errChan <- err
 				return
 			}
 			errChan <- fn(ctx)
@@ -677,7 +688,6 @@ func (s *Syncer) Run() error {
 		}()
 	}
 	err = <-errChan
-	cancel()
 
 	// when one goroutine exits, shutdown and wait for the others
 	s.l.Close()
@@ -736,14 +746,7 @@ func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
 		ConnAddr: conn.RemoteAddr().String(),
 		Inbound:  false,
 	}
-	go func() {
-		done, err := s.tg.Add()
-		if err != nil {
-			return
-		}
-		defer done()
-		s.runPeer(p)
-	}()
+	go s.runPeer(p)
 
 	// runPeer does this too, but doing it outside the goroutine prevents a race
 	// where the peer is absent from Peers() despite Connect() having returned
