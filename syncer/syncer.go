@@ -299,9 +299,15 @@ func (s *Syncer) runPeer(p *Peer) error {
 			p.setErr(err)
 			return fmt.Errorf("failed to accept rpc: %w", err)
 		}
-		inflight <- struct{}{}
+		select {
+		case inflight <- struct{}{}:
+		case <-s.tg.Done():
+			return threadgroup.ErrClosed
+		}
 
 		go func() {
+			defer func() { <-inflight }()
+
 			done, err := s.tg.Add()
 			if err != nil {
 				return
@@ -313,7 +319,6 @@ func (s *Syncer) runPeer(p *Peer) error {
 			} else if err := s.handleRPC(id, stream, p); err != nil {
 				s.log.Debug("rpc failed", zap.Stringer("peer", p), zap.Stringer("rpc", id), zap.Error(err))
 			}
-			<-inflight
 		}()
 	}
 }
