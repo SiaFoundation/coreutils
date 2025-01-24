@@ -1,19 +1,24 @@
 package testutil
 
 import (
-	"crypto/ed25519"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"net"
 	"sync"
 	"testing"
 
+	"github.com/quic-go/quic-go"
 	"go.sia.tech/core/consensus"
 	proto4 "go.sia.tech/core/rhp/v4"
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/chain"
 	rhp4 "go.sia.tech/coreutils/rhp/v4"
-	"go.sia.tech/mux/v2"
 	"go.uber.org/zap"
+	"lukechampine.com/frand"
 )
 
 // An EphemeralSectorStore is an in-memory minimal rhp4.SectorStore for testing.
@@ -353,21 +358,6 @@ func (esr *EphemeralSettingsReporter) Update(settings proto4.HostSettings) {
 	esr.settings = settings
 }
 
-// A muxTransport is a rhp4.Transport that wraps a mux.Mux.
-type muxTransport struct {
-	m *mux.Mux
-}
-
-// Close implements the rhp4.Transport interface.
-func (mt *muxTransport) Close() error {
-	return mt.m.Close()
-}
-
-// AcceptStream implements the rhp4.Transport interface.
-func (mt *muxTransport) AcceptStream() (net.Conn, error) {
-	return mt.m.AcceptStream()
-}
-
 // ServeSiaMux starts a RHP4 host listening on a random port and returns the address.
 func ServeSiaMux(tb testing.TB, s *rhp4.Server, log *zap.Logger) string {
 	l, err := net.Listen("tcp", "localhost:0")
@@ -376,25 +366,44 @@ func ServeSiaMux(tb testing.TB, s *rhp4.Server, log *zap.Logger) string {
 	}
 	tb.Cleanup(func() { l.Close() })
 
-	go func() {
-		for {
-			conn, err := l.Accept()
-			if err != nil {
-				return
-			}
-			log := log.With(zap.Stringer("peerAddress", conn.RemoteAddr()))
-
-			go func() {
-				defer conn.Close()
-				m, err := mux.Accept(conn, ed25519.PrivateKey(s.HostKey()))
-				if err != nil {
-					panic(err)
-				}
-				s.Serve(&muxTransport{m}, log)
-			}()
-		}
-	}()
+	go rhp4.ServeSiaMux(l, s, log)
 	return l.Addr().String()
+}
+
+// ServeQUIC starts a RHP4 host listening on a random port and returns the address.
+func ServeQUIC(tb testing.TB, s *rhp4.Server, log *zap.Logger) string {
+	key, err := rsa.GenerateKey(frand.Reader, 2048)
+	if err != nil {
+		tb.Fatal("failed to generate key:", err)
+	}
+	template := x509.Certificate{SerialNumber: big.NewInt(1)}
+	certDER, err := x509.CreateCertificate(frand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		tb.Fatal("failed to create certificate:", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+
+	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		tb.Fatal("failed to create tls key pair:", err)
+	}
+
+	l, err := quic.ListenAddr("[::]:4848", &tls.Config{
+		Certificates:       []tls.Certificate{tlsCert},
+		NextProtos:         []string{"h3", "sia/rhp4"},
+		InsecureSkipVerify: true,
+	},
+		&quic.Config{
+			EnableDatagrams: true,
+		})
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { l.Close() })
+
+	go rhp4.ServeQUIC(l, s, log)
+	return "localhost:4848"
 }
 
 // NewEphemeralSettingsReporter creates an EphemeralSettingsReporter for testing.
