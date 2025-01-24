@@ -264,6 +264,17 @@ func (s *Syncer) ban(p *Peer, err error) error {
 }
 
 func (s *Syncer) runPeer(p *Peer) error {
+	// always try and remove the peer from the map when we're done, cause it
+	// might already have been added by Connect()
+	defer func() {
+		s.mu.Lock()
+		delete(s.peers, p.t.Addr)
+		s.mu.Unlock()
+
+		// notify goroutines of removed peer
+		s.peerRemoved.Broadcast()
+	}()
+
 	if err := s.pm.AddPeer(p.t.Addr); err != nil {
 		return fmt.Errorf("failed to add peer: %w", err)
 	}
@@ -276,14 +287,6 @@ func (s *Syncer) runPeer(p *Peer) error {
 	s.mu.Lock()
 	s.peers[p.t.Addr] = p
 	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		delete(s.peers, p.t.Addr)
-		s.mu.Unlock()
-
-		// notify goroutines of removed peer
-		s.peerRemoved.Broadcast()
-	}()
 
 	inflight := make(chan struct{}, s.config.MaxInflightRPCs)
 
@@ -746,7 +749,14 @@ func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
 		ConnAddr: conn.RemoteAddr().String(),
 		Inbound:  false,
 	}
-	go s.runPeer(p)
+	go func() {
+		done, err := s.tg.Add()
+		if err != nil {
+			return
+		}
+		s.runPeer(p)
+		done()
+	}()
 
 	// runPeer does this too, but doing it outside the goroutine prevents a race
 	// where the peer is absent from Peers() despite Connect() having returned
