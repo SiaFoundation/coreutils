@@ -429,7 +429,7 @@ func (s *Syncer) alreadyConnected(id gateway.UniqueID) bool {
 func (s *Syncer) acceptLoop(ctx context.Context) error {
 	ctx, done, err := s.tg.AddContext(ctx)
 	if err != nil {
-		return threadgroup.ErrClosed
+		return err
 	}
 	defer done()
 
@@ -672,11 +672,11 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 // error occurs, upon which all connections are closed and goroutines are
 // terminated.
 func (s *Syncer) Run() error {
-	ctx, cancel, err := s.tg.AddContext(context.Background())
+	ctx, done, err := s.tg.AddContext(context.Background())
 	if err != nil {
 		return err
 	}
-	defer cancel()
+	defer done()
 
 	errChan := make(chan error)
 	for _, fn := range []func(context.Context) error{s.acceptLoop, s.peerLoop, s.syncLoop} {
