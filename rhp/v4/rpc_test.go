@@ -3,6 +3,7 @@ package rhp_test
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"net"
 	"reflect"
 	"strings"
@@ -48,7 +49,7 @@ func (fs *fundAndSign) Address() types.Address {
 	return fs.w.Address()
 }
 
-func testRenterHostPair(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ChainManager, s rhp4.Syncer, w rhp4.Wallet, c rhp4.Contractor, sr rhp4.Settings, ss rhp4.Sectors, log *zap.Logger) rhp4.TransportClient {
+func testRenterHostPairSiaMux(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ChainManager, s rhp4.Syncer, w rhp4.Wallet, c rhp4.Contractor, sr rhp4.Settings, ss rhp4.Sectors, log *zap.Logger) rhp4.TransportClient {
 	rs := rhp4.NewServer(hostKey, cm, s, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
 	hostAddr := testutil.ServeSiaMux(tb, rs, log.Named("siamux"))
 
@@ -58,6 +59,20 @@ func testRenterHostPair(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ChainMa
 	}
 	tb.Cleanup(func() { transport.Close() })
 
+	return transport
+}
+
+func testRenterHostPairQUIC(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ChainManager, s rhp4.Syncer, w rhp4.Wallet, c rhp4.Contractor, sr rhp4.Settings, ss rhp4.Sectors, log *zap.Logger) rhp4.TransportClient {
+	rs := rhp4.NewServer(hostKey, cm, s, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
+	hostAddr := testutil.ServeQUIC(tb, rs, log.Named("quic"))
+
+	transport, err := rhp4.DialQUIC(context.Background(), hostAddr, hostKey.PublicKey(), rhp4.WithTLSConfig(func(tc *tls.Config) {
+		tc.InsecureSkipVerify = true
+	}))
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { transport.Close() })
 	return transport
 }
 
@@ -140,64 +155,6 @@ func mineAndSync(tb testing.TB, cm *chain.Manager, addr types.Address, n int, ti
 	}
 }
 
-func TestSettings(t *testing.T) {
-	n, genesis := testutil.V2Network()
-	hostKey := types.GeneratePrivateKey()
-
-	cm, s, w := startTestNode(t, n, genesis)
-
-	// fund the wallet
-	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
-
-	sr := testutil.NewEphemeralSettingsReporter()
-	sr.Update(proto4.HostSettings{
-		Release:             "test",
-		AcceptingContracts:  true,
-		WalletAddress:       w.Address(),
-		MaxCollateral:       types.Siacoins(10000),
-		MaxContractDuration: 1000,
-		RemainingStorage:    100 * proto4.SectorSize,
-		TotalStorage:        100 * proto4.SectorSize,
-		Prices: proto4.HostPrices{
-			ContractPrice: types.Siacoins(uint32(frand.Uint64n(10000))),
-			StoragePrice:  types.Siacoins(uint32(frand.Uint64n(10000))),
-			IngressPrice:  types.Siacoins(uint32(frand.Uint64n(10000))),
-			EgressPrice:   types.Siacoins(uint32(frand.Uint64n(10000))),
-			Collateral:    types.Siacoins(uint32(frand.Uint64n(10000))),
-		},
-	})
-	ss := testutil.NewEphemeralSectorStore()
-	c := testutil.NewEphemeralContractor(cm)
-
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
-
-	settings, err := rhp4.RPCSettings(context.Background(), transport)
-	if err != nil {
-		t.Fatal(err)
-	} else if settings.Prices.ValidUntil.Before(time.Now()) {
-		t.Fatal("settings expired")
-	}
-
-	// verify the signature
-	sigHash := settings.Prices.SigHash()
-	if !hostKey.PublicKey().VerifyHash(sigHash, settings.Prices.Signature) {
-		t.Fatal("signature verification failed")
-	}
-
-	// adjust the calculated fields to match the expected values
-	expected := sr.RHP4Settings()
-	expected.ProtocolVersion = settings.ProtocolVersion
-	expected.Prices.Signature = settings.Prices.Signature
-	expected.Prices.ValidUntil = settings.Prices.ValidUntil
-	expected.Prices.TipHeight = settings.Prices.TipHeight
-
-	if !reflect.DeepEqual(settings, expected) {
-		t.Error("retrieved", settings)
-		t.Error("expected", expected)
-		t.Fatal("settings mismatch")
-	}
-}
-
 func TestFormContract(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
@@ -227,120 +184,213 @@ func TestFormContract(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	testFormContract := func(t *testing.T, transport rhp4.TransportClient) {
+		settings, err := rhp4.RPCSettings(context.Background(), transport)
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	settings, err := rhp4.RPCSettings(context.Background(), transport)
-	if err != nil {
-		t.Fatal(err)
+		fundAndSign := &fundAndSign{w, renterKey}
+		renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
+		result, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+			RenterPublicKey: renterKey.PublicKey(),
+			RenterAddress:   w.Address(),
+			Allowance:       renterAllowance,
+			Collateral:      hostCollateral,
+			ProofHeight:     cm.Tip().Height + 50,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// verify the transaction set is valid
+		if known, err := cm.AddV2PoolTransactions(result.FormationSet.Basis, result.FormationSet.Transactions); err != nil {
+			t.Fatal(err)
+		} else if !known {
+			t.Fatal("expected transaction set to be known")
+		}
+
+		sigHash := cm.TipState().ContractSigHash(result.Contract.Revision)
+		if !renterKey.PublicKey().VerifyHash(sigHash, result.Contract.Revision.RenterSignature) {
+			t.Fatal("renter signature verification failed")
+		} else if !hostKey.PublicKey().VerifyHash(sigHash, result.Contract.Revision.HostSignature) {
+			t.Fatal("host signature verification failed")
+		}
 	}
 
-	fundAndSign := &fundAndSign{w, renterKey}
-	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
-	result, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
-		RenterPublicKey: renterKey.PublicKey(),
-		RenterAddress:   w.Address(),
-		Allowance:       renterAllowance,
-		Collateral:      hostCollateral,
-		ProofHeight:     cm.Tip().Height + 50,
+	t.Run("siamux", func(t *testing.T) {
+		transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+		testFormContract(t, transport)
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 
-	// verify the transaction set is valid
-	if known, err := cm.AddV2PoolTransactions(result.FormationSet.Basis, result.FormationSet.Transactions); err != nil {
-		t.Fatal(err)
-	} else if !known {
-		t.Fatal("expected transaction set to be known")
-	}
-
-	sigHash := cm.TipState().ContractSigHash(result.Contract.Revision)
-	if !renterKey.PublicKey().VerifyHash(sigHash, result.Contract.Revision.RenterSignature) {
-		t.Fatal("renter signature verification failed")
-	} else if !hostKey.PublicKey().VerifyHash(sigHash, result.Contract.Revision.HostSignature) {
-		t.Fatal("host signature verification failed")
-	}
+	t.Run("quic", func(t *testing.T) {
+		transport := testRenterHostPairQUIC(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+		testFormContract(t, transport)
+	})
 }
 
 func TestFormContractBasis(t *testing.T) {
-	n, genesis := testutil.V2Network()
-	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
+	t.Run("siamux", func(t *testing.T) {
+		n, genesis := testutil.V2Network()
+		hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm1, s, w1 := startTestNode(t, n, genesis)
-	cm2, _, w2 := startTestNode(t, n, genesis)
+		cm1, s1, w1 := startTestNode(t, n, genesis)
+		cm2, _, w2 := startTestNode(t, n, genesis)
 
-	// fund both wallets
-	mineAndSync(t, cm1, w2.Address(), int(n.MaturityDelay+20))
-	mineAndSync(t, cm1, w1.Address(), int(n.MaturityDelay+20))
+		// fund both wallets
+		mineAndSync(t, cm1, w2.Address(), int(n.MaturityDelay+20))
+		mineAndSync(t, cm1, w1.Address(), int(n.MaturityDelay+20))
 
-	// manually sync the second wallet just before tip
-	_, applied, err := cm1.UpdatesSince(types.ChainIndex{}, int(w1.Tip().Height-5))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var blocks []types.Block
-	for _, cau := range applied {
-		blocks = append(blocks, cau.Block)
-	}
-	if err := cm2.AddBlocks(blocks); err != nil {
-		t.Fatal(err)
-	}
+		// manually sync the second wallet just before tip
+		_, applied, err := cm1.UpdatesSince(types.ChainIndex{}, int(w1.Tip().Height-5))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var blocks []types.Block
+		for _, cau := range applied {
+			blocks = append(blocks, cau.Block)
+		}
+		if err := cm2.AddBlocks(blocks); err != nil {
+			t.Fatal(err)
+		}
 
-	// wait for the second wallet to sync
-	for cm2.Tip() != w2.Tip() {
-		time.Sleep(time.Millisecond)
-	}
+		// wait for the second wallet to sync
+		for cm2.Tip() != w2.Tip() {
+			time.Sleep(time.Millisecond)
+		}
 
-	sr := testutil.NewEphemeralSettingsReporter()
-	sr.Update(proto4.HostSettings{
-		Release:             "test",
-		AcceptingContracts:  true,
-		WalletAddress:       w1.Address(),
-		MaxCollateral:       types.Siacoins(10000),
-		MaxContractDuration: 1000,
-		RemainingStorage:    100 * proto4.SectorSize,
-		TotalStorage:        100 * proto4.SectorSize,
-		Prices: proto4.HostPrices{
-			ContractPrice: types.Siacoins(1).Div64(5), // 0.2 SC
-			StoragePrice:  types.NewCurrency64(100),   // 100 H / byte / block
-			IngressPrice:  types.NewCurrency64(100),   // 100 H / byte
-			EgressPrice:   types.NewCurrency64(100),   // 100 H / byte
-			Collateral:    types.NewCurrency64(200),
-		},
+		sr := testutil.NewEphemeralSettingsReporter()
+		sr.Update(proto4.HostSettings{
+			Release:             "test",
+			AcceptingContracts:  true,
+			WalletAddress:       w1.Address(),
+			MaxCollateral:       types.Siacoins(10000),
+			MaxContractDuration: 1000,
+			RemainingStorage:    100 * proto4.SectorSize,
+			TotalStorage:        100 * proto4.SectorSize,
+			Prices: proto4.HostPrices{
+				ContractPrice: types.Siacoins(1).Div64(5), // 0.2 SC
+				StoragePrice:  types.NewCurrency64(100),   // 100 H / byte / block
+				IngressPrice:  types.NewCurrency64(100),   // 100 H / byte
+				EgressPrice:   types.NewCurrency64(100),   // 100 H / byte
+				Collateral:    types.NewCurrency64(200),
+			},
+		})
+		ss := testutil.NewEphemeralSectorStore()
+		c := testutil.NewEphemeralContractor(cm1)
+
+		transport := testRenterHostPairSiaMux(t, hostKey, cm1, s1, w1, c, sr, ss, zap.NewNop())
+
+		settings, err := rhp4.RPCSettings(context.Background(), transport)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		balance, err := w2.Balance()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		fundAndSign := &fundAndSign{w2, renterKey}
+		result, err := rhp4.RPCFormContract(context.Background(), transport, cm2, fundAndSign, cm1.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+			RenterPublicKey: renterKey.PublicKey(),
+			RenterAddress:   w2.Address(),
+			Allowance:       balance.Confirmed.Mul64(96).Div64(100), // almost the whole balance to force as many inputs as possible
+			Collateral:      types.ZeroCurrency,
+			ProofHeight:     cm1.Tip().Height + 50,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// verify the transaction set is valid
+		if known, err := cm1.AddV2PoolTransactions(result.FormationSet.Basis, result.FormationSet.Transactions); err != nil {
+			t.Fatal(err)
+		} else if !known {
+			t.Fatal("expected transaction set to be known")
+		}
 	})
-	ss := testutil.NewEphemeralSectorStore()
-	c := testutil.NewEphemeralContractor(cm1)
 
-	transport := testRenterHostPair(t, hostKey, cm1, s, w1, c, sr, ss, zap.NewNop())
+	t.Run("quic", func(t *testing.T) {
+		n, genesis := testutil.V2Network()
+		hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	settings, err := rhp4.RPCSettings(context.Background(), transport)
-	if err != nil {
-		t.Fatal(err)
-	}
+		cm1, s1, w1 := startTestNode(t, n, genesis)
+		cm2, _, w2 := startTestNode(t, n, genesis)
 
-	balance, err := w2.Balance()
-	if err != nil {
-		t.Fatal(err)
-	}
+		// fund both wallets
+		mineAndSync(t, cm1, w2.Address(), int(n.MaturityDelay+20))
+		mineAndSync(t, cm1, w1.Address(), int(n.MaturityDelay+20))
 
-	fundAndSign := &fundAndSign{w2, renterKey}
-	result, err := rhp4.RPCFormContract(context.Background(), transport, cm2, fundAndSign, cm1.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
-		RenterPublicKey: renterKey.PublicKey(),
-		RenterAddress:   w2.Address(),
-		Allowance:       balance.Confirmed.Mul64(96).Div64(100), // almost the whole balance to force as many inputs as possible
-		Collateral:      types.ZeroCurrency,
-		ProofHeight:     cm1.Tip().Height + 50,
+		// manually sync the second wallet just before tip
+		_, applied, err := cm1.UpdatesSince(types.ChainIndex{}, int(w1.Tip().Height-5))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var blocks []types.Block
+		for _, cau := range applied {
+			blocks = append(blocks, cau.Block)
+		}
+		if err := cm2.AddBlocks(blocks); err != nil {
+			t.Fatal(err)
+		}
+
+		// wait for the second wallet to sync
+		for cm2.Tip() != w2.Tip() {
+			time.Sleep(time.Millisecond)
+		}
+
+		sr := testutil.NewEphemeralSettingsReporter()
+		sr.Update(proto4.HostSettings{
+			Release:             "test",
+			AcceptingContracts:  true,
+			WalletAddress:       w1.Address(),
+			MaxCollateral:       types.Siacoins(10000),
+			MaxContractDuration: 1000,
+			RemainingStorage:    100 * proto4.SectorSize,
+			TotalStorage:        100 * proto4.SectorSize,
+			Prices: proto4.HostPrices{
+				ContractPrice: types.Siacoins(1).Div64(5), // 0.2 SC
+				StoragePrice:  types.NewCurrency64(100),   // 100 H / byte / block
+				IngressPrice:  types.NewCurrency64(100),   // 100 H / byte
+				EgressPrice:   types.NewCurrency64(100),   // 100 H / byte
+				Collateral:    types.NewCurrency64(200),
+			},
+		})
+		ss := testutil.NewEphemeralSectorStore()
+		c := testutil.NewEphemeralContractor(cm1)
+
+		transport := testRenterHostPairQUIC(t, hostKey, cm1, s1, w1, c, sr, ss, zap.NewNop())
+
+		settings, err := rhp4.RPCSettings(context.Background(), transport)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		balance, err := w2.Balance()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		fundAndSign := &fundAndSign{w2, renterKey}
+		result, err := rhp4.RPCFormContract(context.Background(), transport, cm2, fundAndSign, cm1.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+			RenterPublicKey: renterKey.PublicKey(),
+			RenterAddress:   w2.Address(),
+			Allowance:       balance.Confirmed.Mul64(96).Div64(100), // almost the whole balance to force as many inputs as possible
+			Collateral:      types.ZeroCurrency,
+			ProofHeight:     cm1.Tip().Height + 50,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// verify the transaction set is valid
+		if known, err := cm1.AddV2PoolTransactions(result.FormationSet.Basis, result.FormationSet.Transactions); err != nil {
+			t.Fatal(err)
+		} else if !known {
+			t.Fatal("expected transaction set to be known")
+		}
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// verify the transaction set is valid
-	if known, err := cm1.AddV2PoolTransactions(result.FormationSet.Basis, result.FormationSet.Transactions); err != nil {
-		t.Fatal(err)
-	} else if !known {
-		t.Fatal("expected transaction set to be known")
-	}
 }
 
 func TestRPCRefresh(t *testing.T) {
@@ -371,7 +421,7 @@ func TestRPCRefresh(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -519,7 +569,7 @@ func TestRPCRenew(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -745,7 +795,7 @@ func TestAccounts(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -864,7 +914,7 @@ func TestReadWriteSector(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -951,7 +1001,7 @@ func TestAppendSectors(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -1087,7 +1137,7 @@ func TestVerifySector(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -1171,7 +1221,7 @@ func TestRPCFreeSectors(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -1286,7 +1336,7 @@ func TestRPCSectorRoots(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -1388,7 +1438,7 @@ func BenchmarkWrite(b *testing.B) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(b, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(b, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -1471,7 +1521,7 @@ func BenchmarkRead(b *testing.B) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(b, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(b, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -1566,7 +1616,7 @@ func BenchmarkContractUpload(b *testing.B) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPair(b, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(b, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {

@@ -34,7 +34,7 @@ func (r zeroReader) Read(p []byte) (int, error) {
 type (
 	// A TransportClient is a generic multiplexer for outgoing streams.
 	TransportClient interface {
-		DialStream(context.Context) net.Conn
+		DialStream() (net.Conn, error)
 
 		FrameSize() int
 		PeerKey() types.PublicKey
@@ -177,8 +177,11 @@ type (
 	}
 )
 
-func callSingleRoundtripRPC(ctx context.Context, t TransportClient, rpcID types.Specifier, req, resp rhp4.Object) error {
-	s := t.DialStream(ctx)
+func callSingleRoundtripRPC(t TransportClient, rpcID types.Specifier, req, resp rhp4.Object) error {
+	s, err := t.DialStream()
+	if err != nil {
+		return fmt.Errorf("failed to dial stream: %w", err)
+	}
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rpcID, req); err != nil {
@@ -192,7 +195,7 @@ func callSingleRoundtripRPC(ctx context.Context, t TransportClient, rpcID types.
 // RPCSettings returns the current settings of the host.
 func RPCSettings(ctx context.Context, t TransportClient) (rhp4.HostSettings, error) {
 	var resp rhp4.RPCSettingsResponse
-	err := callSingleRoundtripRPC(ctx, t, rhp4.RPCSettingsID, nil, &resp)
+	err := callSingleRoundtripRPC(t, rhp4.RPCSettingsID, nil, &resp)
 	return resp.Settings, err
 }
 
@@ -209,7 +212,10 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 		return RPCReadSectorResult{}, fmt.Errorf("invalid request: %w", err)
 	}
 
-	s := t.DialStream(ctx)
+	s, err := t.DialStream()
+	if err != nil {
+		return RPCReadSectorResult{}, fmt.Errorf("failed to dial stream: %w", err)
+	}
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCReadSectorID, req); err != nil {
@@ -253,10 +259,13 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 		return RPCWriteSectorResult{}, fmt.Errorf("invalid request: %w", err)
 	}
 
-	stream := t.DialStream(ctx)
-	defer stream.Close()
+	s, err := t.DialStream()
+	if err != nil {
+		return RPCWriteSectorResult{}, fmt.Errorf("failed to dial stream: %w", err)
+	}
+	defer s.Close()
 
-	bw := bufio.NewWriterSize(stream, t.FrameSize())
+	bw := bufio.NewWriterSize(s, t.FrameSize())
 
 	if err := rhp4.WriteRequest(bw, rhp4.RPCWriteSectorID, &req); err != nil {
 		return RPCWriteSectorResult{}, fmt.Errorf("failed to write request: %w", err)
@@ -278,7 +287,7 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 	}
 
 	var resp rhp4.RPCWriteSectorResponse
-	if err := rhp4.ReadResponse(stream, &resp); err != nil {
+	if err := rhp4.ReadResponse(s, &resp); err != nil {
 		return RPCWriteSectorResult{}, fmt.Errorf("failed to read response: %w", err)
 	} else if resp.Root != root {
 		return RPCWriteSectorResult{}, ErrInvalidRoot
@@ -300,7 +309,7 @@ func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPri
 	}
 
 	var resp rhp4.RPCVerifySectorResponse
-	if err := callSingleRoundtripRPC(ctx, t, rhp4.RPCVerifySectorID, &req, &resp); err != nil {
+	if err := callSingleRoundtripRPC(t, rhp4.RPCVerifySectorID, &req, &resp); err != nil {
 		return RPCVerifySectorResult{}, err
 	} else if !rhp4.VerifyLeafProof(resp.Proof, resp.Leaf, req.LeafIndex, root) {
 		return RPCVerifySectorResult{}, ErrInvalidProof
@@ -320,7 +329,10 @@ func RPCFreeSectors(ctx context.Context, t TransportClient, cs consensus.State, 
 	}
 	req.ChallengeSignature = sk.SignHash(req.ChallengeSigHash(contract.Revision.RevisionNumber + 1))
 
-	s := t.DialStream(ctx)
+	s, err := t.DialStream()
+	if err != nil {
+		return RPCFreeSectorsResult{}, fmt.Errorf("failed to dial stream: %w", err)
+	}
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCFreeSectorsID, &req); err != nil {
@@ -374,7 +386,10 @@ func RPCAppendSectors(ctx context.Context, t TransportClient, cs consensus.State
 	}
 	req.ChallengeSignature = sk.SignHash(req.ChallengeSigHash(contract.Revision.RevisionNumber + 1))
 
-	s := t.DialStream(ctx)
+	s, err := t.DialStream()
+	if err != nil {
+		return RPCAppendSectorsResult{}, fmt.Errorf("failed to dial stream: %w", err)
+	}
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCAppendSectorsID, &req); err != nil {
@@ -446,7 +461,7 @@ func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State,
 	}
 
 	var resp rhp4.RPCFundAccountsResponse
-	if err := callSingleRoundtripRPC(ctx, t, rhp4.RPCFundAccountsID, &req, &resp); err != nil {
+	if err := callSingleRoundtripRPC(t, rhp4.RPCFundAccountsID, &req, &resp); err != nil {
 		return RPCFundAccountResult{}, err
 	}
 
@@ -476,7 +491,7 @@ func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State,
 // RPCLatestRevision returns the latest revision of a contract.
 func RPCLatestRevision(ctx context.Context, t TransportClient, contractID types.FileContractID) (resp rhp4.RPCLatestRevisionResponse, err error) {
 	req := rhp4.RPCLatestRevisionRequest{ContractID: contractID}
-	err = callSingleRoundtripRPC(ctx, t, rhp4.RPCLatestRevisionID, &req, &resp)
+	err = callSingleRoundtripRPC(t, rhp4.RPCLatestRevisionID, &req, &resp)
 	return
 }
 
@@ -503,7 +518,7 @@ func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, 
 
 	numSectors := (contract.Revision.Filesize + rhp4.SectorSize - 1) / rhp4.SectorSize
 	var resp rhp4.RPCSectorRootsResponse
-	if err := callSingleRoundtripRPC(ctx, t, rhp4.RPCSectorRootsID, &req, &resp); err != nil {
+	if err := callSingleRoundtripRPC(t, rhp4.RPCSectorRootsID, &req, &resp); err != nil {
 		return RPCSectorRootsResult{}, err
 	} else if !rhp4.VerifySectorRootsProof(resp.Proof, resp.Roots, numSectors, offset, offset+length, contract.Revision.FileMerkleRoot) {
 		return RPCSectorRootsResult{}, ErrInvalidProof
@@ -526,7 +541,7 @@ func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, 
 func RPCAccountBalance(ctx context.Context, t TransportClient, account rhp4.Account) (types.Currency, error) {
 	req := &rhp4.RPCAccountBalanceRequest{Account: account}
 	var resp rhp4.RPCAccountBalanceResponse
-	err := callSingleRoundtripRPC(ctx, t, rhp4.RPCAccountBalanceID, req, &resp)
+	err := callSingleRoundtripRPC(t, rhp4.RPCAccountBalanceID, req, &resp)
 	return resp.Balance, err
 }
 
@@ -556,7 +571,10 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 		renterSiacoinElements = append(renterSiacoinElements, i.Parent)
 	}
 
-	s := t.DialStream(ctx)
+	s, err := t.DialStream()
+	if err != nil {
+		return RPCFormContractResult{}, fmt.Errorf("failed to dial stream: %w", err)
+	}
 	defer s.Close()
 
 	req := rhp4.RPCFormContractRequest{
@@ -697,7 +715,10 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 	sigHash := req.ChallengeSigHash(existing.RevisionNumber)
 	req.ChallengeSignature = signer.SignHash(sigHash)
 
-	s := t.DialStream(ctx)
+	s, err := t.DialStream()
+	if err != nil {
+		return RPCRenewContractResult{}, fmt.Errorf("failed to dial stream: %w", err)
+	}
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCRenewContractID, &req); err != nil {
@@ -834,7 +855,10 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 	sigHash := req.ChallengeSigHash(existing.RevisionNumber)
 	req.ChallengeSignature = signer.SignHash(sigHash)
 
-	s := t.DialStream(ctx)
+	s, err := t.DialStream()
+	if err != nil {
+		return RPCRefreshContractResult{}, fmt.Errorf("failed to dial stream: %w", err)
+	}
 	defer s.Close()
 
 	if err := rhp4.WriteRequest(s, rhp4.RPCRefreshContractID, &req); err != nil {
