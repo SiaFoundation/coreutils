@@ -20,6 +20,9 @@ import (
 const (
 	// ProtocolQUIC is the identifier for the QUIC/WebTransport transport.
 	ProtocolQUIC chain.Protocol = "quic"
+
+	// TLSNextProtoRHP4 is the ALPN identifier for the Quic RHP4 protocol.
+	TLSNextProtoRHP4 = "sia/rhp4"
 )
 
 type (
@@ -48,32 +51,32 @@ func WithTLSConfig(fn func(*tls.Config)) QUICTransportOption {
 	}
 }
 
-// LocalAddr Implements net.Conn
+// LocalAddr implements net.Conn
 func (qs *quicStream) LocalAddr() net.Addr {
 	return qs.localAddr
 }
 
-// RemoteAddr Implements net.Conn
+// RemoteAddr implements net.Conn
 func (qs *quicStream) RemoteAddr() net.Addr {
 	return qs.remoteAddr
 }
 
-// Close Implements [TransportClient]
+// Close implements [TransportClient]
 func (qt *quicClientTransport) Close() error {
 	return qt.conn.CloseWithError(0, "")
 }
 
-// FrameSize Implements [TransportClient]
+// FrameSize implements [TransportClient]
 func (qt *quicClientTransport) FrameSize() int {
 	return 1440 * 3
 }
 
-// PeerKey Implements [TransportClient]
+// PeerKey implements [TransportClient]
 func (qt *quicClientTransport) PeerKey() types.PublicKey {
 	return qt.peerKey
 }
 
-// DialStream Implements [TransportClient]
+// DialStream implements [TransportClient]
 func (qt *quicClientTransport) DialStream() (net.Conn, error) {
 	s, err := qt.conn.OpenStream()
 	if err != nil {
@@ -86,7 +89,7 @@ func (qt *quicClientTransport) DialStream() (net.Conn, error) {
 func DialQUIC(ctx context.Context, addr string, peerKey types.PublicKey, opts ...QUICTransportOption) (TransportClient, error) {
 	tc := &tls.Config{
 		Rand:       frand.Reader,
-		NextProtos: []string{"sia/rhp4"},
+		NextProtos: []string{TLSNextProtoRHP4},
 	}
 	qc := &quic.Config{
 		EnableDatagrams: true,
@@ -112,7 +115,7 @@ type (
 	}
 )
 
-// AcceptStream Implements [TransportServer]
+// AcceptStream implements [TransportServer]
 func (qt *qtTransport) AcceptStream() (net.Conn, error) {
 	s, err := qt.qc.AcceptStream(context.Background())
 	if err != nil {
@@ -125,7 +128,7 @@ func (qt *qtTransport) AcceptStream() (net.Conn, error) {
 	}, nil
 }
 
-// Close Implements [TransportServer]
+// Close implements [TransportServer]
 func (qt *qtTransport) Close() error {
 	return qt.qc.CloseWithError(0, "")
 }
@@ -200,7 +203,6 @@ func ServeQUIC(l *quic.Listener, s *Server, log *zap.Logger) {
 			}
 			return
 		}
-		log.Debug("accepted connection")
 		proto := conn.ConnectionState().TLS.NegotiatedProtocol
 		log := log.With(zap.String("peerAddress", conn.RemoteAddr().String()), zap.String("protocol", proto))
 		log.Debug("serving connection")
@@ -210,10 +212,9 @@ func ServeQUIC(l *quic.Listener, s *Server, log *zap.Logger) {
 				defer conn.CloseWithError(0, "")
 				wts.ServeQUICConn(conn)
 			}()
-		case "sia/rhp4": // quic
+		case TLSNextProtoRHP4: // quic
 			go func() {
 				defer conn.CloseWithError(0, "")
-				log.Debug("serving rhp4 connection")
 				if err := s.Serve(&qtTransport{qc: conn}, log); err != nil {
 					log.Debug("failed to serve connection", zap.Error(err))
 				}

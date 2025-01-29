@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 	"go.sia.tech/core/consensus"
 	proto4 "go.sia.tech/core/rhp/v4"
 	"go.sia.tech/core/types"
@@ -391,7 +392,7 @@ func ServeQUIC(tb testing.TB, s *rhp4.Server, log *zap.Logger) string {
 
 	l, err := quic.ListenAddr("[::]:4848", &tls.Config{
 		Certificates:       []tls.Certificate{tlsCert},
-		NextProtos:         []string{"h3", "sia/rhp4"},
+		NextProtos:         []string{http3.NextProtoH3, rhp4.TLSNextProtoRHP4},
 		InsecureSkipVerify: true,
 	},
 		&quic.Config{
