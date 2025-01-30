@@ -111,19 +111,17 @@ func TestV2MineBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, cau := range applied {
-		cau.ForEachSiacoinElement(func(sce types.SiacoinElement, created, spent bool) {
-			switch {
-			case created && spent:
-				return
-			case sce.SiacoinOutput.Address != types.AnyoneCanSpend().Address():
-				return
-			case created:
-				elements[sce.ID] = sce
-			case spent:
-				delete(elements, sce.ID)
+		for _, sced := range cau.SiacoinElementDiffs() {
+			sce := sced.SiacoinElement
+			if sce.SiacoinOutput.Address == types.AnyoneCanSpend().Address() {
+				if sced.Created {
+					elements[sce.ID] = sce
+				}
+				if sced.Spent {
+					delete(elements, sce.ID)
+				}
 			}
-		})
-
+		}
 		for k, v := range elements {
 			cau.UpdateElementProof(&v.StateElement)
 			elements[k] = v

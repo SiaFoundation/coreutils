@@ -688,26 +688,26 @@ func (m *Manager) revertPoolUpdate(cru consensus.RevertUpdate, cs consensus.Stat
 			return
 		} else if uncreated == nil {
 			uncreated = make(map[types.Hash256]bool)
-			cru.ForEachSiacoinElement(func(sce types.SiacoinElement, created, spent bool) {
-				if created {
-					uncreated[types.Hash256(sce.ID)] = true
+			for _, sced := range cru.SiacoinElementDiffs() {
+				if sced.Created {
+					uncreated[types.Hash256(sced.SiacoinElement.ID)] = true
 				}
-			})
-			cru.ForEachSiafundElement(func(sfe types.SiafundElement, created, spent bool) {
-				if created {
-					uncreated[types.Hash256(sfe.ID)] = true
+			}
+			for _, sfed := range cru.SiafundElementDiffs() {
+				if sfed.Created {
+					uncreated[types.Hash256(sfed.SiafundElement.ID)] = true
 				}
-			})
-			cru.ForEachFileContractElement(func(fce types.FileContractElement, created bool, rev *types.FileContractElement, resolved, valid bool) {
-				if created {
-					uncreated[types.Hash256(fce.ID)] = true
+			}
+			for _, fced := range cru.FileContractElementDiffs() {
+				if fced.Created {
+					uncreated[types.Hash256(fced.FileContractElement.ID)] = true
 				}
-			})
-			cru.ForEachV2FileContractElement(func(fce types.V2FileContractElement, created bool, rev *types.V2FileContractElement, res types.V2FileContractResolutionType) {
-				if created {
-					uncreated[types.Hash256(fce.ID)] = true
+			}
+			for _, v2fced := range cru.V2FileContractElementDiffs() {
+				if v2fced.Created {
+					uncreated[types.Hash256(v2fced.V2FileContractElement.ID)] = true
 				}
-			})
+			}
 		}
 		if uncreated[id] {
 			*e = types.StateElement{LeafIndex: types.UnassignedLeafIndex}
@@ -745,26 +745,27 @@ func (m *Manager) applyPoolUpdate(cau consensus.ApplyUpdate, cs consensus.State)
 			return
 		} else if newElements == nil {
 			newElements = make(map[types.Hash256]types.StateElement)
-			cau.ForEachSiacoinElement(func(sce types.SiacoinElement, created, spent bool) {
-				if created {
-					newElements[types.Hash256(sce.ID)] = sce.StateElement
+
+			for _, sced := range cau.SiacoinElementDiffs() {
+				if sced.Created {
+					newElements[types.Hash256(sced.SiacoinElement.ID)] = sced.SiacoinElement.StateElement
 				}
-			})
-			cau.ForEachSiafundElement(func(sfe types.SiafundElement, created, spent bool) {
-				if created {
-					newElements[types.Hash256(sfe.ID)] = sfe.StateElement
+			}
+			for _, sfed := range cau.SiafundElementDiffs() {
+				if sfed.Created {
+					newElements[types.Hash256(sfed.SiafundElement.ID)] = sfed.SiafundElement.StateElement
 				}
-			})
-			cau.ForEachFileContractElement(func(fce types.FileContractElement, created bool, rev *types.FileContractElement, resolved, valid bool) {
-				if created {
-					newElements[types.Hash256(fce.ID)] = fce.StateElement
+			}
+			for _, fced := range cau.FileContractElementDiffs() {
+				if fced.Created {
+					newElements[types.Hash256(fced.FileContractElement.ID)] = fced.FileContractElement.StateElement
 				}
-			})
-			cau.ForEachV2FileContractElement(func(fce types.V2FileContractElement, created bool, rev *types.V2FileContractElement, res types.V2FileContractResolutionType) {
-				if created {
-					newElements[types.Hash256(fce.ID)] = fce.StateElement
+			}
+			for _, v2fced := range cau.V2FileContractElementDiffs() {
+				if v2fced.Created {
+					newElements[types.Hash256(v2fced.V2FileContractElement.ID)] = v2fced.V2FileContractElement.StateElement
 				}
-			})
+			}
 		}
 		if se, ok := newElements[id]; ok {
 			*e = se
@@ -1112,16 +1113,16 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 			confirmedTxns[txn.ID()] = true
 		}
 		confirmedStateElements := make(map[types.Hash256]types.StateElement)
-		cau.ForEachSiacoinElement(func(sce types.SiacoinElement, created, spent bool) {
-			if created {
-				confirmedStateElements[types.Hash256(sce.ID)] = sce.StateElement
+		for _, sced := range cau.SiacoinElementDiffs() {
+			if sced.Created {
+				confirmedStateElements[types.Hash256(sced.SiacoinElement.ID)] = sced.SiacoinElement.StateElement
 			}
-		})
-		cau.ForEachSiafundElement(func(sfe types.SiafundElement, created, spent bool) {
-			if created {
-				confirmedStateElements[types.Hash256(sfe.ID)] = sfe.StateElement
+		}
+		for _, sfed := range cau.SiafundElementDiffs() {
+			if sfed.Created {
+				confirmedStateElements[types.Hash256(sfed.SiafundElement.ID)] = sfed.SiafundElement.StateElement
 			}
-		})
+		}
 
 		rem := txns[:0]
 		for i := range txns {

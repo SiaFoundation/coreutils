@@ -41,18 +41,17 @@ func (ms *memState) Sync(t *testing.T, cm *chain.Manager) {
 			}
 
 			// revert utxos
-			cru.ForEachSiacoinElement(func(sce types.SiacoinElement, created, spent bool) {
-				switch {
-				case sce.SiacoinOutput.Address != types.AnyoneCanSpend().Address():
-					return
-				case created && spent:
-					return
-				case spent:
-					ms.utxos[sce.ID] = sce
-				case created:
-					delete(ms.utxos, sce.ID)
+			for _, sced := range cru.SiacoinElementDiffs() {
+				sce := sced.SiacoinElement
+				if sce.SiacoinOutput.Address == types.AnyoneCanSpend().Address() {
+					if sced.Spent {
+						ms.utxos[sce.ID] = sce
+					}
+					if sced.Created {
+						delete(ms.utxos, sce.ID)
+					}
 				}
-			})
+			}
 
 			// update utxos proofs
 			for key := range ms.utxos {
@@ -72,18 +71,17 @@ func (ms *memState) Sync(t *testing.T, cm *chain.Manager) {
 			ms.chainIndexElements = append(ms.chainIndexElements, cau.ChainIndexElement())
 
 			// apply utxos
-			cau.ForEachSiacoinElement(func(sce types.SiacoinElement, created, spent bool) {
-				switch {
-				case sce.SiacoinOutput.Address != types.AnyoneCanSpend().Address():
-					return
-				case created && spent:
-					return
-				case spent:
-					delete(ms.utxos, sce.ID)
-				case created:
-					ms.utxos[sce.ID] = sce
+			for _, sced := range cau.SiacoinElementDiffs() {
+				sce := sced.SiacoinElement
+				if sce.SiacoinOutput.Address == types.AnyoneCanSpend().Address() {
+					if sced.Created {
+						ms.utxos[sce.ID] = sce
+					}
+					if sced.Spent {
+						delete(ms.utxos, sce.ID)
+					}
 				}
-			})
+			}
 
 			// update utxos proofs
 			for key := range ms.utxos {
