@@ -1560,11 +1560,8 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		}
 
 		// get the confirmed file contract element
-		var fce types.V2FileContractElement
-		applied[0].ForEachV2FileContractElement(func(ele types.V2FileContractElement, _ bool, _ *types.V2FileContractElement, _ types.V2FileContractResolutionType) {
-			fce = ele
-		})
-		for _, cau := range applied {
+		fce := applied[0].V2FileContractElementDiffs()[0].V2FileContractElement
+		for _, cau := range applied[1:] {
 			cau.UpdateElementProof(&fce.StateElement)
 		}
 
@@ -1636,12 +1633,8 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		}
 
 		// get the confirmed file contract element
-		var fce types.V2FileContractElement
-		applied[0].ForEachV2FileContractElement(func(ele types.V2FileContractElement, _ bool, _ *types.V2FileContractElement, _ types.V2FileContractResolutionType) {
-			fce = ele
-		})
-		// update its proof
-		for _, cau := range applied {
+		fce := applied[0].V2FileContractElementDiffs()[0].V2FileContractElement
+		for _, cau := range applied[1:] {
 			cau.UpdateElementProof(&fce.StateElement)
 		}
 		// get the proof index element
@@ -1719,11 +1712,8 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		}
 
 		// get the confirmed file contract element
-		var fce types.V2FileContractElement
-		applied[0].ForEachV2FileContractElement(func(ele types.V2FileContractElement, _ bool, _ *types.V2FileContractElement, _ types.V2FileContractResolutionType) {
-			fce = ele
-		})
-		for _, cau := range applied {
+		fce := applied[0].V2FileContractElementDiffs()[0].V2FileContractElement
+		for _, cau := range applied[1:] {
 			cau.UpdateElementProof(&fce.StateElement)
 		}
 

@@ -283,20 +283,20 @@ func (ec *EphemeralContractor) UpdateChainState(reverted []chain.RevertUpdate, a
 	defer ec.mu.Unlock()
 
 	for _, cru := range reverted {
-		cru.ForEachV2FileContractElement(func(fce types.V2FileContractElement, created bool, rev *types.V2FileContractElement, res types.V2FileContractResolutionType) {
-			if _, ok := ec.contracts[types.FileContractID(fce.ID)]; !ok {
-				return
+		for _, fced := range cru.V2FileContractElementDiffs() {
+			if _, ok := ec.contracts[fced.V2FileContractElement.ID]; !ok {
+				continue
 			}
-
 			switch {
-			case created:
-				delete(ec.contractElements, types.FileContractID(fce.ID))
-			case res != nil:
-				ec.contractElements[types.FileContractID(fce.ID)] = fce
-			case rev != nil:
-				ec.contractElements[types.FileContractID(fce.ID)] = *rev
+			case fced.Created:
+				delete(ec.contractElements, fced.V2FileContractElement.ID)
+			case fced.Resolution != nil:
+				ec.contractElements[fced.V2FileContractElement.ID] = fced.V2FileContractElement
+			case fced.Revision != nil:
+				fced.V2FileContractElement.V2FileContract = *fced.Revision
+				ec.contractElements[fced.V2FileContractElement.ID] = fced.V2FileContractElement
 			}
-		})
+		}
 
 		for id, fce := range ec.contractElements {
 			cru.UpdateElementProof(&fce.StateElement)
@@ -305,20 +305,20 @@ func (ec *EphemeralContractor) UpdateChainState(reverted []chain.RevertUpdate, a
 		ec.tip = cru.State.Index
 	}
 	for _, cau := range applied {
-		cau.ForEachV2FileContractElement(func(fce types.V2FileContractElement, created bool, rev *types.V2FileContractElement, res types.V2FileContractResolutionType) {
-			if _, ok := ec.contracts[types.FileContractID(fce.ID)]; !ok {
-				return
+		for _, fced := range cau.V2FileContractElementDiffs() {
+			if _, ok := ec.contracts[fced.V2FileContractElement.ID]; !ok {
+				continue
 			}
-
 			switch {
-			case created:
-				ec.contractElements[types.FileContractID(fce.ID)] = fce
-			case res != nil:
-				delete(ec.contractElements, types.FileContractID(fce.ID))
-			case rev != nil:
-				ec.contractElements[types.FileContractID(fce.ID)] = *rev
+			case fced.Created:
+				ec.contractElements[fced.V2FileContractElement.ID] = fced.V2FileContractElement
+			case fced.Resolution != nil:
+				delete(ec.contractElements, fced.V2FileContractElement.ID)
+			case fced.Revision != nil:
+				fced.V2FileContractElement.V2FileContract = *fced.Revision
+				ec.contractElements[fced.V2FileContractElement.ID] = fced.V2FileContractElement
 			}
-		})
+		}
 
 		for id, fce := range ec.contractElements {
 			cau.UpdateElementProof(&fce.StateElement)

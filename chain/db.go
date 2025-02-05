@@ -468,86 +468,93 @@ func (db *DBStore) applyElements(cau consensus.ApplyUpdate) {
 		db.bucket(bTree).put(db.treeKey(row, col), h)
 	})
 
-	cau.ForEachSiacoinElement(func(sce types.SiacoinElement, created, spent bool) {
-		if created && spent {
-			return // ephemeral
-		} else if spent {
-			db.deleteSiacoinElement(types.SiacoinOutputID(sce.ID))
+	for _, sced := range cau.SiacoinElementDiffs() {
+		if sced.Created && sced.Spent {
+			continue // ephemeral
+		} else if sced.Spent {
+			db.deleteSiacoinElement(sced.SiacoinElement.ID)
 		} else {
-			db.putSiacoinElement(sce)
+			db.putSiacoinElement(sced.SiacoinElement)
 		}
-	})
-	cau.ForEachSiafundElement(func(sfe types.SiafundElement, created, spent bool) {
-		if created && spent {
-			return
-		} else if spent {
-			db.deleteSiafundElement(types.SiafundOutputID(sfe.ID))
+	}
+	for _, sfed := range cau.SiafundElementDiffs() {
+		if sfed.Created && sfed.Spent {
+			continue // ephemeral
+		} else if sfed.Spent {
+			db.deleteSiafundElement(sfed.SiafundElement.ID)
 		} else {
-			db.putSiafundElement(sfe)
+			db.putSiafundElement(sfed.SiafundElement)
 		}
-	})
-	cau.ForEachFileContractElement(func(fce types.FileContractElement, created bool, rev *types.FileContractElement, resolved, valid bool) {
-		if created && resolved {
-			return
-		} else if resolved {
-			db.deleteFileContractElement(types.FileContractID(fce.ID))
-			db.deleteFileContractExpiration(types.FileContractID(fce.ID), fce.FileContract.WindowEnd)
-		} else if rev != nil {
-			db.putFileContractElement(*rev)
+	}
+	for _, fced := range cau.FileContractElementDiffs() {
+		fce := fced.FileContractElement
+		if fced.Created && fced.Resolved {
+			continue
+		} else if fced.Resolved {
+			db.deleteFileContractElement(fce.ID)
+			db.deleteFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
+		} else if fced.Revision != nil {
+			rev := fce
+			rev.FileContract = *fced.Revision
+			db.putFileContractElement(rev)
 			if rev.FileContract.WindowEnd != fce.FileContract.WindowEnd {
-				db.deleteFileContractExpiration(types.FileContractID(fce.ID), fce.FileContract.WindowEnd)
-				db.putFileContractExpiration(types.FileContractID(fce.ID), rev.FileContract.WindowEnd)
+				db.deleteFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
+				db.putFileContractExpiration(fce.ID, rev.FileContract.WindowEnd)
 			}
 		} else {
 			db.putFileContractElement(fce)
-			db.putFileContractExpiration(types.FileContractID(fce.ID), fce.FileContract.WindowEnd)
+			db.putFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
 		}
-	})
+	}
 }
 
 func (db *DBStore) revertElements(cru consensus.RevertUpdate) {
-	cru.ForEachFileContractElement(func(fce types.FileContractElement, created bool, rev *types.FileContractElement, resolved, valid bool) {
-		if created && resolved {
-			return
-		} else if resolved {
+	for _, fced := range cru.FileContractElementDiffs() {
+		fce := fced.FileContractElement
+		if fced.Created && fced.Resolved {
+			continue
+		} else if fced.Resolved {
 			// contract no longer resolved; restore it
 			db.putFileContractElement(fce)
-			db.putFileContractExpiration(types.FileContractID(fce.ID), fce.FileContract.WindowEnd)
-		} else if rev != nil {
+			db.putFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
+		} else if fced.Revision != nil {
 			// contract no longer revised; restore prior revision
+			rev := fce
+			rev.FileContract = *fced.Revision
 			db.putFileContractElement(fce)
 			if rev.FileContract.WindowEnd != fce.FileContract.WindowEnd {
-				db.deleteFileContractExpiration(types.FileContractID(fce.ID), rev.FileContract.WindowEnd)
-				db.putFileContractExpiration(types.FileContractID(fce.ID), fce.FileContract.WindowEnd)
+				db.deleteFileContractExpiration(fce.ID, rev.FileContract.WindowEnd)
+				db.putFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
 			}
 		} else {
 			// contract no longer exists; delete it
-			db.deleteFileContractElement(types.FileContractID(fce.ID))
-			db.deleteFileContractExpiration(types.FileContractID(fce.ID), fce.FileContract.WindowEnd)
+			db.deleteFileContractElement(fce.ID)
+			db.deleteFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
 		}
-	})
-	cru.ForEachSiafundElement(func(sfe types.SiafundElement, created, spent bool) {
-		if created && spent {
-			return
-		} else if spent {
+	}
+
+	for _, sfed := range cru.SiafundElementDiffs() {
+		if sfed.Created && sfed.Spent {
+			continue // ephemeral
+		} else if sfed.Spent {
 			// output no longer spent; restore it
-			db.putSiafundElement(sfe)
+			db.putSiafundElement(sfed.SiafundElement)
 		} else {
 			// output no longer exists; delete it
-			db.deleteSiafundElement(types.SiafundOutputID(sfe.ID))
+			db.deleteSiafundElement(sfed.SiafundElement.ID)
 		}
-	})
-	cru.ForEachSiacoinElement(func(sce types.SiacoinElement, created, spent bool) {
-		if created && spent {
-			return
-		} else if spent {
+	}
+	for _, sced := range cru.SiacoinElementDiffs() {
+		if sced.Created && sced.Spent {
+			continue // ephemeral
+		} else if sced.Spent {
 			// output no longer spent; restore it
-			db.putSiacoinElement(sce)
+			db.putSiacoinElement(sced.SiacoinElement)
 		} else {
 			// output no longer exists; delete it
-			db.deleteSiacoinElement(types.SiacoinOutputID(sce.ID))
+			db.deleteSiacoinElement(sced.SiacoinElement.ID)
 		}
-	})
+	}
 
 	cru.ForEachTreeNode(func(row, col uint64, h types.Hash256) {
 		db.bucket(bTree).put(db.treeKey(row, col), h)
