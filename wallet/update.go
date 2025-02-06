@@ -189,7 +189,7 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 					panic("missing siacoin element")
 				}
 
-				addEvent(types.Hash256(fce.ID.ValidOutputID(0)), EventTypeV1ContractResolution, EventV1ContractResolution{
+				addEvent(types.Hash256(outputID), EventTypeV1ContractResolution, EventV1ContractResolution{
 					Parent:         fce,
 					SiacoinElement: sce,
 					Missed:         false,
@@ -207,7 +207,7 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 					panic("missing siacoin element")
 				}
 
-				addEvent(types.Hash256(fce.ID.MissedOutputID(0)), EventTypeV1ContractResolution, EventV1ContractResolution{
+				addEvent(types.Hash256(outputID), EventTypeV1ContractResolution, EventV1ContractResolution{
 					Parent:         fce,
 					SiacoinElement: sce,
 					Missed:         true,
