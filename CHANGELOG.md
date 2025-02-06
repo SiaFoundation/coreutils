@@ -1,3 +1,15 @@
+## 0.11.0 (2025-02-06)
+
+### Breaking Changes
+
+- Add support for QUIC and WebTransport to RHP4
+
+### Fixes
+
+- Fixed data race in EphemeralContractor related to V2FileContractElement.
+- Fixed syncer deadlocking when Connect is called after Close.
+- Set 2 minute deadline for all incoming RPC in syncer
+
 ## 0.10.1 (2025-01-18)
 
 ### Fixes
