@@ -340,7 +340,7 @@ func (er *EventV2ContractResolution) DecodeFrom(d *types.Decoder) {
 }
 
 // EncodeTo implements types.EncoderTo
-func (ev *Event) EncodeTo(e *types.Encoder) {
+func (ev Event) EncodeTo(e *types.Encoder) {
 	ev.ID.EncodeTo(e)
 	ev.Index.EncodeTo(e)
 	e.WriteUint64(ev.Confirmations)
