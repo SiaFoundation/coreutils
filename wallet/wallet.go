@@ -629,7 +629,7 @@ func (sw *SingleAddressWallet) selectRedistributeUTXOs(bh uint64, outputs int, a
 // Redistribute returns a transaction that redistributes money in the wallet by
 // selecting a minimal set of inputs to cover the creation of the requested
 // outputs. It also returns a list of output IDs that need to be signed.
-func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte types.Currency) (txns []types.Transaction, toSign []types.Hash256, err error) {
+func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte types.Currency) (txns []types.Transaction, toSign [][]types.Hash256, err error) {
 	state := sw.cm.TipState()
 
 	elements, err := sw.store.UnspentSiacoinElements()
@@ -653,8 +653,10 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 	// in case of an error we need to free all inputs
 	defer func() {
 		if err != nil {
-			for _, id := range toSign {
-				delete(sw.locked, types.SiacoinOutputID(id))
+			for _, ids := range toSign {
+				for _, id := range ids {
+					delete(sw.locked, types.SiacoinOutputID(id))
+				}
 			}
 		}
 	}()
@@ -690,6 +692,9 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 			}
 		}
 
+		// remove used inputs from utxos
+		utxos = utxos[len(inputs):]
+
 		// not enough outputs found
 		fee := feePerInput.Mul64(uint64(len(inputs))).Add(outputFees)
 		if sumOut := SumOutputs(inputs); sumOut.Cmp(want.Add(fee)) < 0 {
@@ -711,15 +716,17 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 		}
 
 		// add the inputs
+		toSignTxn := make([]types.Hash256, 0, len(inputs))
 		for _, sce := range inputs {
+			toSignTxn = append(toSignTxn, types.Hash256(sce.ID))
 			txn.SiacoinInputs = append(txn.SiacoinInputs, types.SiacoinInput{
 				ParentID:         types.SiacoinOutputID(sce.ID),
 				UnlockConditions: types.StandardUnlockConditions(sw.priv.PublicKey()),
 			})
-			toSign = append(toSign, types.Hash256(sce.ID))
 			sw.locked[sce.ID] = time.Now().Add(sw.cfg.ReservationDuration)
 		}
 		txns = append(txns, txn)
+		toSign = append(toSign, toSignTxn)
 	}
 
 	return
@@ -785,6 +792,9 @@ func (sw *SingleAddressWallet) RedistributeV2(outputs int, amount, feePerByte ty
 				break
 			}
 		}
+
+		// remove used inputs from utxos
+		utxos = utxos[len(inputs):]
 
 		// not enough outputs found
 		fee := feePerInput.Mul64(uint64(len(inputs))).Add(outputFees)

@@ -500,7 +500,7 @@ func TestWalletRedistribute(t *testing.T) {
 		}
 
 		for i := 0; i < len(txns); i++ {
-			w.SignTransaction(&txns[i], toSign, types.CoveredFields{WholeTransaction: true})
+			w.SignTransaction(&txns[i], toSign[i], types.CoveredFields{WholeTransaction: true})
 		}
 		if _, err := cm.AddPoolTransactions(txns); err != nil {
 			return fmt.Errorf("failed to add transactions to pool: %w", err)
@@ -556,6 +556,17 @@ func TestWalletRedistribute(t *testing.T) {
 		t.Fatalf("expected no transactions, got %v", len(txns))
 	} else if len(toSign) != 0 {
 		t.Fatalf("expected no ids, got %v", len(toSign))
+	}
+
+	// redistribute the wallet into more outputs than the batch size to make
+	// sure the resulting txn set contains more than 1 txn
+	outputs, err := w.SpendableOutputs()
+	if err != nil {
+		t.Fatal(err)
+	} else if len(outputs) >= 11 {
+		t.Fatalf("expected at least 11 outputs, got %v", len(outputs))
+	} else if err := redistribute(types.Siacoins(1e3), 11); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -651,6 +662,17 @@ func TestWalletRedistributeV2(t *testing.T) {
 		t.Fatalf("expected no transactions, got %v", len(txns))
 	} else if len(toSign) != 0 {
 		t.Fatalf("expected no ids, got %v", len(toSign))
+	}
+
+	// redistribute the wallet into more outputs than the batch size to make
+	// sure the resulting txn set contains more than 1 txn
+	outputs, err := w.SpendableOutputs()
+	if err != nil {
+		t.Fatal(err)
+	} else if len(outputs) >= 11 {
+		t.Fatalf("expected at least 11 outputs, got %v", len(outputs))
+	} else if err := redistribute(types.Siacoins(1e3), 11); err != nil {
+		t.Fatal(err)
 	}
 }
 
