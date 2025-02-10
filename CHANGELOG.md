@@ -1,3 +1,9 @@
+## 0.11.1 (2025-02-10)
+
+### Fixes
+
+- Fixes an issue where redistribution of wallet outputs that require more than a single transaction would produce an invalid transaction set
+
 ## 0.11.0 (2025-02-06)
 
 ### Breaking Changes
