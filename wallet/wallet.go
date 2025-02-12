@@ -698,6 +698,10 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 		// not enough outputs found
 		fee := feePerInput.Mul64(uint64(len(inputs))).Add(outputFees)
 		if sumOut := SumOutputs(inputs); sumOut.Cmp(want.Add(fee)) < 0 {
+			if len(txns) > 0 {
+				// consider redistributing successful if we could generate at least one txn
+				break
+			}
 			return nil, nil, fmt.Errorf("%w: inputs %v < needed %v + txnFee %v", ErrNotEnoughFunds, sumOut.String(), want.String(), fee.String())
 		}
 
@@ -799,6 +803,10 @@ func (sw *SingleAddressWallet) RedistributeV2(outputs int, amount, feePerByte ty
 		// not enough outputs found
 		fee := feePerInput.Mul64(uint64(len(inputs))).Add(outputFees)
 		if sumOut := SumOutputs(inputs); sumOut.Cmp(want.Add(fee)) < 0 {
+			if len(txns) > 0 {
+				// consider redistributing successful if we could generate at least one txn
+				break
+			}
 			return nil, nil, fmt.Errorf("%w: inputs %v < needed %v + txnFee %v", ErrNotEnoughFunds, sumOut.String(), want.String(), fee.String())
 		}
 
