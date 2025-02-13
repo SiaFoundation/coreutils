@@ -91,6 +91,8 @@ func (et *ephemeralWalletUpdateTxn) WalletRevertIndex(index types.ChainIndex, re
 
 // UpdateChainState applies and reverts chain updates to the wallet.
 func (es *EphemeralWalletStore) UpdateChainState(fn func(ux wallet.UpdateTx) error) error {
+	es.mu.Lock()
+	defer es.mu.Unlock()
 	return fn(&ephemeralWalletUpdateTxn{store: es})
 }
 
