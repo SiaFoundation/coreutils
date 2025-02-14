@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"math"
 	"net"
 	"reflect"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"go.sia.tech/coreutils/testutil"
 	"go.sia.tech/coreutils/wallet"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest"
 	"lukechampine.com/frand"
 )
 
@@ -763,6 +765,184 @@ func TestRPCRenew(t *testing.T) {
 			t.Fatal("expected contract to not be revisable")
 		}
 	})
+}
+
+func TestReplenishAccounts(t *testing.T) {
+	n, genesis := testutil.V2Network()
+	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
+
+	cm, s, w := startTestNode(t, n, genesis)
+
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
+
+	sr := testutil.NewEphemeralSettingsReporter()
+	sr.Update(proto4.HostSettings{
+		Release:             "test",
+		AcceptingContracts:  true,
+		WalletAddress:       w.Address(),
+		MaxCollateral:       types.Siacoins(10000),
+		MaxContractDuration: 1000,
+		RemainingStorage:    100 * proto4.SectorSize,
+		TotalStorage:        100 * proto4.SectorSize,
+		Prices: proto4.HostPrices{
+			ContractPrice: types.Siacoins(1).Div64(5), // 0.2 SC
+			StoragePrice:  types.NewCurrency64(100),   // 100 H / byte / block
+			IngressPrice:  types.NewCurrency64(100),   // 100 H / byte
+			EgressPrice:   types.NewCurrency64(100),   // 100 H / byte
+			Collateral:    types.NewCurrency64(200),
+		},
+	})
+	ss := testutil.NewEphemeralSectorStore()
+	c := testutil.NewEphemeralContractor(cm)
+
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zaptest.NewLogger(t))
+
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fundAndSign := &fundAndSign{w, renterKey}
+	renterAllowance, hostCollateral := types.Siacoins(1000), types.Siacoins(2000)
+	formResult, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+		RenterPublicKey: renterKey.PublicKey(),
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := formResult.Contract
+
+	cs := cm.TipState()
+
+	var balances []rhp4.AccountBalance
+	// add some random unknown accounts
+	for i := 0; i < 5; i++ {
+		balances = append(balances, rhp4.AccountBalance{
+			Account: proto4.Account(frand.Entropy256()),
+			Balance: types.ZeroCurrency,
+		})
+	}
+
+	var deposits []proto4.AccountDeposit
+	for i := 0; i < 10; i++ {
+		// fund an account with random values below 1SC
+		account1 := frand.Entropy256()
+		deposits = append(deposits, proto4.AccountDeposit{
+			Account: account1,
+			Amount:  types.NewCurrency64(frand.Uint64n(math.MaxUint64)),
+		})
+
+		// fund an account with 1SC
+		account2 := frand.Entropy256()
+		deposits = append(deposits, proto4.AccountDeposit{
+			Account: account2,
+			Amount:  types.Siacoins(1),
+		})
+
+		// fund an account with > 1SC
+		account3 := frand.Entropy256()
+		deposits = append(deposits, proto4.AccountDeposit{
+			Account: account3,
+			Amount:  types.Siacoins(1 + uint32(frand.Uint64n(5))),
+		})
+	}
+
+	// fund the initial set of accounts
+	fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, deposits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fundResult.Balances) != len(deposits) {
+		t.Fatalf("expected %v, got %v", len(deposits), len(balances))
+	}
+	for i, deposit := range deposits {
+		if fundResult.Balances[i].Account != deposit.Account {
+			t.Fatalf("expected %v, got %v", deposit.Account, fundResult.Balances[i].Account)
+		} else if !fundResult.Balances[i].Balance.Equals(deposit.Amount) {
+			t.Fatalf("expected %v, got %v", deposit.Amount, fundResult.Balances[i].Balance)
+		}
+	}
+	revision.Revision = fundResult.Revision
+	balances = append(balances, fundResult.Balances...)
+
+	replenishParams := rhp4.RPCReplenishAccountsParams{
+		Contract: revision,
+		Target:   types.Siacoins(1),
+	}
+	var expectedCost types.Currency
+	for _, balance := range balances {
+		replenishParams.Accounts = append(replenishParams.Accounts, balance.Account)
+		if balance.Balance.Cmp(replenishParams.Target) < 0 {
+			expectedCost = expectedCost.Add(replenishParams.Target.Sub(balance.Balance))
+		}
+	}
+
+	// replenish the accounts
+	replenishResult, err := rhp4.RPCReplenishAccounts(context.Background(), transport, replenishParams, cs, fundAndSign)
+	if err != nil {
+		t.Fatal(err)
+	} else if !replenishResult.Usage.AccountFunding.Equals(expectedCost) {
+		t.Fatalf("expected %v, got %v", expectedCost, replenishResult.Usage.AccountFunding)
+	} else if len(replenishResult.Deposits) != len(replenishParams.Accounts) {
+		t.Fatalf("expected %v, got %v", len(replenishParams.Accounts), len(replenishResult.Deposits))
+	}
+	revisionTransfer := revision.Revision.RenterOutput.Value.Sub(replenishResult.Revision.RenterOutput.Value)
+	if !revisionTransfer.Equals(replenishResult.Usage.AccountFunding) {
+		t.Fatalf("expected %v, got %v", replenishResult.Usage.AccountFunding, revisionTransfer)
+	}
+	revision.Revision = replenishResult.Revision
+
+	balanceMap := make(map[proto4.Account]types.Currency)
+	for _, account := range balances {
+		balance, err := rhp4.RPCAccountBalance(context.Background(), transport, account.Account)
+		if err != nil {
+			t.Fatal(err)
+		}
+		balanceMap[account.Account] = balance
+		if account.Balance.Cmp(replenishParams.Target) < 0 {
+			if !balance.Equals(replenishParams.Target) {
+				t.Fatalf("expected %v, got %v", replenishParams.Target, balance)
+			}
+		} else if !balance.Equals(account.Balance) {
+			// balances that were already >= 1SC should not have changed
+			t.Fatalf("expected %v, got %v", account.Balance, balance)
+		}
+	}
+
+	// call replenish again with the same accounts, the balances should not change
+	replenishParams.Contract = revision
+	replenishResult, err = rhp4.RPCReplenishAccounts(context.Background(), transport, replenishParams, cs, fundAndSign)
+	if err != nil {
+		t.Fatal(err)
+	} else if !replenishResult.Usage.AccountFunding.Equals(types.ZeroCurrency) {
+		t.Fatalf("expected %v, got %v", expectedCost, replenishResult.Usage.AccountFunding)
+	} else if len(replenishResult.Deposits) != len(replenishParams.Accounts) {
+		t.Fatalf("expected %v, got %v", len(replenishParams.Accounts), len(replenishResult.Deposits))
+	}
+	for _, deposit := range replenishResult.Deposits {
+		if !deposit.Amount.IsZero() {
+			t.Fatalf("expected zero, got %v", deposit.Amount)
+		}
+	}
+
+	for _, account := range balances {
+		balance, err := rhp4.RPCAccountBalance(context.Background(), transport, account.Account)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		expected, ok := balanceMap[account.Account]
+		if !ok {
+			t.Fatalf("expected account not found")
+		} else if !balance.Equals(expected) {
+			t.Fatalf("expected %v, got %v", expected, balance)
+		}
+	}
 }
 
 func TestAccounts(t *testing.T) {

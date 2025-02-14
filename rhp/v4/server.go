@@ -112,6 +112,11 @@ type (
 
 		// AccountBalance returns the balance of an account.
 		AccountBalance(rhp4.Account) (types.Currency, error)
+		// AccountBalances returns the balances of multiple accounts.
+		// The returned slice must be in the same order and have the
+		// same length as the input slice. If an account is not found,
+		// its balance will be types.ZeroCurrency.
+		AccountBalances([]rhp4.Account) ([]types.Currency, error)
 		// CreditAccountsWithContract atomically revises a contract and credits the account.
 		CreditAccountsWithContract([]rhp4.AccountDeposit, types.FileContractID, types.V2FileContract, rhp4.Usage) ([]types.Currency, error)
 		// DebitAccount debits an account.
@@ -432,6 +437,80 @@ func (s *Server) handleRPCFundAccounts(stream net.Conn) error {
 
 	return rhp4.WriteResponse(stream, &rhp4.RPCFundAccountsResponse{
 		Balances:      balances,
+		HostSignature: revision.HostSignature,
+	})
+}
+
+func (s *Server) handleRPCReplenishAccounts(stream net.Conn) error {
+	var req rhp4.RPCReplenishAccountsRequest
+	if err := rhp4.ReadRequest(stream, &req); err != nil {
+		return errorDecodingError("failed to read request: %v", err)
+	} else if err := req.Validate(); err != nil {
+		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
+	}
+
+	// lock the existing contract
+	state, unlock, err := s.lockContractForRevision(req.ContractID)
+	if err != nil {
+		return fmt.Errorf("failed to lock contract %q: %w", req.ContractID, err)
+	}
+	defer unlock()
+
+	// validate challenge signature
+	existing := state.Revision
+	if !req.ValidChallengeSignature(existing) {
+		return fmt.Errorf("failed to validate challenge signature: %w", rhp4.ErrInvalidSignature)
+	}
+
+	balances, err := s.contractor.AccountBalances(req.Accounts)
+	if err != nil {
+		return fmt.Errorf("failed to get account balances: %w", err)
+	}
+
+	var depositSum types.Currency
+	var costResp rhp4.RPCReplenishAccountsResponse
+	for i, balance := range balances {
+		deposit := rhp4.AccountDeposit{
+			Account: req.Accounts[i],
+		}
+
+		value, underflows := req.Target.SubWithUnderflow(balance)
+		if !underflows {
+			deposit.Amount = value
+		}
+		depositSum = depositSum.Add(deposit.Amount)
+		costResp.Deposits = append(costResp.Deposits, deposit)
+	}
+
+	if err := rhp4.WriteResponse(stream, &costResp); err != nil {
+		return fmt.Errorf("failed to write response: %w", err)
+	} else if depositSum.IsZero() {
+		return nil
+	}
+
+	revision, usage, err := rhp4.ReviseForReplenish(existing, depositSum)
+	if err != nil {
+		return fmt.Errorf("failed to revise contract: %w", err)
+	}
+
+	var renterSigResp rhp4.RPCReplenishAccountsSecondResponse
+	if err := rhp4.ReadResponse(stream, &renterSigResp); err != nil {
+		return errorDecodingError("failed to read renter signature response: %v", err)
+	}
+
+	sigHash := s.chain.TipState().ContractSigHash(revision)
+	if !revision.RenterPublicKey.VerifyHash(sigHash, renterSigResp.RenterSignature) {
+		return rhp4.ErrInvalidSignature
+	}
+	revision.RenterSignature = renterSigResp.RenterSignature
+	revision.HostSignature = s.hostKey.SignHash(sigHash)
+
+	_, err = s.contractor.CreditAccountsWithContract(costResp.Deposits, req.ContractID, revision, usage)
+	if err != nil {
+		return fmt.Errorf("failed to credit accounts: %w", err)
+	}
+
+	return rhp4.WriteResponse(stream, &rhp4.RPCReplenishAccountsThirdResponse{
 		HostSignature: revision.HostSignature,
 	})
 }
@@ -1074,6 +1153,8 @@ func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 		err = s.handleRPCAccountBalance(stream)
 	case rhp4.RPCFundAccountsID:
 		err = s.handleRPCFundAccounts(stream)
+	case rhp4.RPCReplenishAccountsID:
+		err = s.handleRPCReplenishAccounts(stream)
 	// sector
 	case rhp4.RPCAppendSectorsID:
 		err = s.handleRPCAppendSectors(stream)
