@@ -40,6 +40,8 @@ func TestEventsJSONRoundTrip(t *testing.T) {
 	}
 
 	if !reflect.DeepEqual(we, we2) {
+		t.Log(we)
+		t.Log(we2)
 		t.Fatal("round-trip failed")
 	}
 }
