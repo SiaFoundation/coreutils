@@ -157,6 +157,26 @@ func mineAndSync(tb testing.TB, cm *chain.Manager, addr types.Address, n int, ti
 	}
 }
 
+func assertValidRevision(t *testing.T, cm rhp4.ChainManager, c rhp4.Contractor, revision rhp4.ContractRevision) {
+	t.Helper()
+
+	basis, fce, err := c.V2FileContractElement(revision.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revisionTxn := types.V2Transaction{
+		FileContractRevisions: []types.V2FileContractRevision{
+			{
+				Parent:   fce,
+				Revision: revision.Revision,
+			},
+		},
+	}
+	if _, err := cm.AddV2PoolTransactions(basis, []types.V2Transaction{revisionTxn}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFormContract(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
@@ -817,6 +837,9 @@ func TestReplenishAccounts(t *testing.T) {
 	}
 	revision := formResult.Contract
 
+	// mine to confirm the contract
+	mineAndSync(t, cm, types.VoidAddress, 1, w, c)
+
 	cs := cm.TipState()
 
 	var balances []rhp4.AccountBalance
@@ -896,6 +919,7 @@ func TestReplenishAccounts(t *testing.T) {
 		t.Fatalf("expected %v, got %v", replenishResult.Usage.AccountFunding, revisionTransfer)
 	}
 	revision.Revision = replenishResult.Revision
+	assertValidRevision(t, cm, c, revision)
 
 	balanceMap := make(map[proto4.Account]types.Currency)
 	for _, account := range balances {
@@ -943,6 +967,8 @@ func TestReplenishAccounts(t *testing.T) {
 			t.Fatalf("expected %v, got %v", expected, balance)
 		}
 	}
+
+	assertValidRevision(t, cm, c, revision)
 }
 
 func TestAccounts(t *testing.T) {
@@ -1202,6 +1228,9 @@ func TestAppendSectors(t *testing.T) {
 	}
 	revision := formResult.Contract
 
+	// mine to confirm the contract
+	mineAndSync(t, cm, types.VoidAddress, 1, w, c)
+
 	assertLastRevision := func(t *testing.T) {
 		t.Helper()
 
@@ -1221,6 +1250,10 @@ func TestAppendSectors(t *testing.T) {
 			t.Fatal("renter signature invalid")
 		} else if !hostKey.PublicKey().VerifyHash(sigHash, lastRev.HostSignature) {
 			t.Fatal("host signature invalid")
+		}
+
+		if revision.Revision.RevisionNumber > 0 {
+			assertValidRevision(t, cm, c, revision)
 		}
 	}
 	assertLastRevision(t)
@@ -1422,6 +1455,9 @@ func TestRPCFreeSectors(t *testing.T) {
 	}
 	revision := formResult.Contract
 
+	// mine to confirm
+	mineAndSync(t, cm, types.VoidAddress, 1, w, c)
+
 	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 
@@ -1448,16 +1484,21 @@ func TestRPCFreeSectors(t *testing.T) {
 		roots[i] = writeResult.Root
 	}
 
-	assertRevision := func(t *testing.T, revision types.V2FileContract, roots []types.Hash256) {
+	assertRevision := func(t *testing.T, revision rhp4.ContractRevision, roots []types.Hash256) {
 		t.Helper()
 
 		expectedRoot := proto4.MetaRoot(roots)
 		n := len(roots)
+		contract := revision.Revision
 
-		if revision.Filesize/proto4.SectorSize != uint64(n) {
-			t.Fatalf("expected %v sectors, got %v", n, revision.Filesize/proto4.SectorSize)
-		} else if revision.FileMerkleRoot != expectedRoot {
-			t.Fatalf("expected %v, got %v", expectedRoot, revision.FileMerkleRoot)
+		if contract.Filesize/proto4.SectorSize != uint64(n) {
+			t.Fatalf("expected %v sectors, got %v", n, contract.Filesize/proto4.SectorSize)
+		} else if contract.FileMerkleRoot != expectedRoot {
+			t.Fatalf("expected %v, got %v", expectedRoot, contract.FileMerkleRoot)
+		}
+
+		if contract.RevisionNumber > 0 {
+			assertValidRevision(t, cm, c, revision)
 		}
 	}
 
@@ -1466,8 +1507,8 @@ func TestRPCFreeSectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertRevision(t, appendResult.Revision, roots)
 	revision.Revision = appendResult.Revision
+	assertRevision(t, revision, roots)
 
 	// randomly remove half the sectors
 	indices := make([]uint64, len(roots)/2)
@@ -1484,7 +1525,8 @@ func TestRPCFreeSectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertRevision(t, removeResult.Revision, newRoots)
+	revision.Revision = removeResult.Revision
+	assertRevision(t, revision, newRoots)
 }
 
 func TestRPCSectorRoots(t *testing.T) {
@@ -1537,6 +1579,9 @@ func TestRPCSectorRoots(t *testing.T) {
 	}
 	revision := formResult.Contract
 
+	// mine to confirm
+	mineAndSync(t, cm, types.VoidAddress, 1, w, c)
+
 	cs := cm.TipState()
 	account := proto4.Account(renterKey.PublicKey())
 
@@ -1585,6 +1630,7 @@ func TestRPCSectorRoots(t *testing.T) {
 			t.Fatal(err)
 		}
 		revision.Revision = appendResult.Revision
+		assertValidRevision(t, cm, c, revision)
 		checkRoots(t, roots)
 	}
 }

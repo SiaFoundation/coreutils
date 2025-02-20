@@ -380,6 +380,7 @@ func RPCFreeSectors(ctx context.Context, t TransportClient, cs consensus.State, 
 	if err := rhp4.ReadResponse(s, &hostSignature); err != nil {
 		return RPCFreeSectorsResult{}, fmt.Errorf("failed to read host signatures: %w", err)
 	}
+	revision.HostSignature = hostSignature.HostSignature
 	// validate the host signature
 	if !contract.Revision.HostPublicKey.VerifyHash(sigHash, hostSignature.HostSignature) {
 		return RPCFreeSectorsResult{}, rhp4.ErrInvalidSignature
