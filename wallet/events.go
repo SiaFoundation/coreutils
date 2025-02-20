@@ -234,6 +234,7 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 		Index          types.ChainIndex `json:"index"`
 		Timestamp      time.Time        `json:"timestamp"`
 		MaturityHeight uint64           `json:"maturityHeight"`
+		Confirmations  uint64           `json:"confirmations"`
 		Type           string           `json:"type"`
 		Data           json.RawMessage  `json:"data"`
 		Relevant       []types.Address  `json:"relevant,omitempty"`
@@ -245,6 +246,7 @@ func (e *Event) UnmarshalJSON(b []byte) error {
 	e.ID = je.ID
 	e.Index = je.Index
 	e.Timestamp = je.Timestamp
+	e.Confirmations = je.Confirmations
 	e.MaturityHeight = je.MaturityHeight
 	e.Type = je.Type
 	e.Relevant = je.Relevant
