@@ -232,6 +232,19 @@ func (ec *EphemeralContractor) AccountBalance(account proto4.Account) (types.Cur
 	return balance, nil
 }
 
+// AccountBalances returns the balances of multiple accounts.
+// The order of the returned balances corresponds to the order of the input
+// accounts. If an account is not found, its balance will be types.ZeroCurrency.
+func (ec *EphemeralContractor) AccountBalances(accounts []proto4.Account) ([]types.Currency, error) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	balances := make([]types.Currency, 0, len(accounts))
+	for _, account := range accounts {
+		balances = append(balances, ec.accounts[account])
+	}
+	return balances, nil
+}
+
 // CreditAccountsWithContract credits accounts with the given deposits and
 // revises the contract revision. The contract must be locked before calling
 // this method.

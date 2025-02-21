@@ -145,6 +145,20 @@ type (
 		Usage    rhp4.Usage           `json:"usage"`
 	}
 
+	// RPCReplenishAccountsParams contains the parameters for the replenish accounts RPC.
+	RPCReplenishAccountsParams struct {
+		Accounts []rhp4.Account   `json:"accounts"`
+		Target   types.Currency   `json:"target"`
+		Contract ContractRevision `json:"contract"`
+	}
+
+	// RPCReplenishAccountsResult contains the result of executing the replenish accounts RPC.
+	RPCReplenishAccountsResult struct {
+		Revision types.V2FileContract  `json:"revision"`
+		Deposits []rhp4.AccountDeposit `json:"deposits"`
+		Usage    rhp4.Usage            `json:"usage"`
+	}
+
 	// RPCSectorRootsResult contains the result of executing the sector roots RPC.
 	RPCSectorRootsResult struct {
 		Revision types.V2FileContract `json:"revision"`
@@ -366,6 +380,7 @@ func RPCFreeSectors(ctx context.Context, t TransportClient, cs consensus.State, 
 	if err := rhp4.ReadResponse(s, &hostSignature); err != nil {
 		return RPCFreeSectorsResult{}, fmt.Errorf("failed to read host signatures: %w", err)
 	}
+	revision.HostSignature = hostSignature.HostSignature
 	// validate the host signature
 	if !contract.Revision.HostPublicKey.VerifyHash(sigHash, hostSignature.HostSignature) {
 		return RPCFreeSectorsResult{}, rhp4.ErrInvalidSignature
@@ -484,6 +499,83 @@ func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State,
 	return RPCFundAccountResult{
 		Revision: revision,
 		Balances: balances,
+		Usage:    usage,
+	}, nil
+}
+
+// RPCReplenishAccounts replenishes accounts on the host.
+func RPCReplenishAccounts(ctx context.Context, t TransportClient, p RPCReplenishAccountsParams, cs consensus.State, signer ContractSigner) (RPCReplenishAccountsResult, error) {
+	req := rhp4.RPCReplenishAccountsRequest{
+		Accounts:   p.Accounts,
+		Target:     p.Target,
+		ContractID: p.Contract.ID,
+	}
+	challengeSigHash := req.ChallengeSigHash(p.Contract.Revision.RevisionNumber)
+	req.ChallengeSignature = signer.SignHash(challengeSigHash)
+
+	if err := req.Validate(); err != nil {
+		return RPCReplenishAccountsResult{}, fmt.Errorf("invalid request: %w", err)
+	}
+
+	s, err := t.DialStream()
+	if err != nil {
+		return RPCReplenishAccountsResult{}, fmt.Errorf("failed to dial stream: %w", err)
+	}
+	defer s.Close()
+
+	if err := rhp4.WriteRequest(s, rhp4.RPCReplenishAccountsID, &req); err != nil {
+		return RPCReplenishAccountsResult{}, fmt.Errorf("failed to write request: %w", err)
+	}
+
+	maxCost := p.Target.Mul64(uint64(len(p.Accounts)))
+
+	var resp rhp4.RPCReplenishAccountsResponse
+	if err := rhp4.ReadResponse(s, &resp); err != nil {
+		return RPCReplenishAccountsResult{}, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	for _, deposit := range resp.Deposits {
+		if deposit.Amount.Cmp(p.Target) > 0 {
+			return RPCReplenishAccountsResult{}, fmt.Errorf("expected deposit <= %v, got %v", p.Target, deposit.Amount)
+		}
+	}
+
+	totalCost := resp.TotalCost()
+	if totalCost.IsZero() {
+		// return early with the current revision if no deposits are needed
+		return RPCReplenishAccountsResult{
+			Revision: p.Contract.Revision,
+			Deposits: resp.Deposits,
+		}, nil
+	} else if totalCost.Cmp(maxCost) > 0 {
+		return RPCReplenishAccountsResult{}, fmt.Errorf("expected cost <= %v, got %v", maxCost, totalCost)
+	}
+
+	revision, usage, err := rhp4.ReviseForReplenish(p.Contract.Revision, totalCost)
+	if err != nil {
+		return RPCReplenishAccountsResult{}, fmt.Errorf("failed to revise contract: %w", err)
+	}
+
+	sigHash := cs.ContractSigHash(revision)
+	revision.RenterSignature = signer.SignHash(sigHash)
+
+	signatureResp := rhp4.RPCReplenishAccountsSecondResponse{
+		RenterSignature: revision.RenterSignature,
+	}
+	if err := rhp4.WriteResponse(s, &signatureResp); err != nil {
+		return RPCReplenishAccountsResult{}, fmt.Errorf("failed to write signature response: %w", err)
+	}
+
+	var hostSignature rhp4.RPCReplenishAccountsThirdResponse
+	if err := rhp4.ReadResponse(s, &hostSignature); err != nil {
+		return RPCReplenishAccountsResult{}, fmt.Errorf("failed to read host signatures: %w", err)
+	} else if !p.Contract.Revision.HostPublicKey.VerifyHash(sigHash, hostSignature.HostSignature) {
+		return RPCReplenishAccountsResult{}, fmt.Errorf("failed to validate host signature: %w", rhp4.ErrInvalidSignature)
+	}
+	revision.HostSignature = hostSignature.HostSignature
+	return RPCReplenishAccountsResult{
+		Revision: revision,
+		Deposits: resp.Deposits,
 		Usage:    usage,
 	}, nil
 }
