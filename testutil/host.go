@@ -27,6 +27,7 @@ import (
 // Calls to GetCertificate will return a new self-signed certificate each time.
 type EphemeralCertManager struct{}
 
+// GetCertificate returns a new self-signed certificate each time it is called.
 func (ec *EphemeralCertManager) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 	key, err := rsa.GenerateKey(frand.Reader, 2048)
 	if err != nil {
