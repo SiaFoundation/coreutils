@@ -37,7 +37,6 @@ type (
 	client struct {
 		conn    quic.Connection
 		peerKey types.PublicKey
-		close   chan struct{}
 	}
 
 	// A CertManager provides a valid TLS certificate based on the given ClientHelloInfo.
@@ -114,7 +113,6 @@ func Dial(ctx context.Context, addr string, peerKey types.PublicKey, opts ...Cli
 	return &client{
 		conn:    conn,
 		peerKey: peerKey,
-		close:   make(chan struct{}),
 	}, nil
 }
 
