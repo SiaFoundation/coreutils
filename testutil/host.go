@@ -6,21 +6,47 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"sync"
 	"testing"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
 	"go.sia.tech/core/consensus"
 	proto4 "go.sia.tech/core/rhp/v4"
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/chain"
 	rhp4 "go.sia.tech/coreutils/rhp/v4"
+	"go.sia.tech/coreutils/rhp/v4/quic"
+	"go.sia.tech/coreutils/rhp/v4/siamux"
 	"go.uber.org/zap"
 	"lukechampine.com/frand"
 )
+
+// An EphemeralCertManager is an in-memory minimal rhp4.CertManager for testing.
+// Calls to GetCertificate will return a new self-signed certificate each time.
+type EphemeralCertManager struct{}
+
+// GetCertificate returns a new self-signed certificate each time it is called.
+func (ec *EphemeralCertManager) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	key, err := rsa.GenerateKey(frand.Reader, 2048)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate key: %w", err)
+	}
+	template := x509.Certificate{SerialNumber: big.NewInt(1)}
+	certDER, err := x509.CreateCertificate(frand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cert: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tls cert: %w", err)
+	}
+	return &cert, nil
+}
 
 // An EphemeralSectorStore is an in-memory minimal rhp4.SectorStore for testing.
 type EphemeralSectorStore struct {
@@ -380,44 +406,30 @@ func ServeSiaMux(tb testing.TB, s *rhp4.Server, log *zap.Logger) string {
 	}
 	tb.Cleanup(func() { l.Close() })
 
-	go rhp4.ServeSiaMux(l, s, log)
+	go siamux.Serve(l, s, log)
 	return l.Addr().String()
 }
 
 // ServeQUIC starts a RHP4 host listening on a random port and returns the address.
 func ServeQUIC(tb testing.TB, s *rhp4.Server, log *zap.Logger) string {
-	key, err := rsa.GenerateKey(frand.Reader, 2048)
+	udpAddr, err := net.ResolveUDPAddr("udp", "localhost:0")
 	if err != nil {
-		tb.Fatal("failed to generate key:", err)
-	}
-	template := x509.Certificate{SerialNumber: big.NewInt(1)}
-	certDER, err := x509.CreateCertificate(frand.Reader, &template, &template, &key.PublicKey, key)
-	if err != nil {
-		tb.Fatal("failed to create certificate:", err)
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-
-	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		tb.Fatal("failed to create tls key pair:", err)
+		tb.Fatal(err)
 	}
 
-	l, err := quic.ListenAddr("[::]:4848", &tls.Config{
-		Certificates:       []tls.Certificate{tlsCert},
-		NextProtos:         []string{http3.NextProtoH3, rhp4.TLSNextProtoRHP4},
-		InsecureSkipVerify: true,
-	},
-		&quic.Config{
-			EnableDatagrams: true,
-		})
+	conn, err := net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { conn.Close() })
+
+	l, err := quic.Listen(conn, &EphemeralCertManager{})
 	if err != nil {
 		tb.Fatal(err)
 	}
 	tb.Cleanup(func() { l.Close() })
-
-	go rhp4.ServeQUIC(l, s, log)
-	return "localhost:4848"
+	go quic.Serve(l, s, log)
+	return conn.LocalAddr().String()
 }
 
 // NewEphemeralSettingsReporter creates an EphemeralSettingsReporter for testing.
