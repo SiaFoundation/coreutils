@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	// ProtocolQUIC is the identifier for the QUIC/WebTransport transport.
-	ProtocolQUIC chain.Protocol = "quic"
+	// Protocol is the identifier for the QUIC/WebTransport transport.
+	Protocol chain.Protocol = "quic"
 
 	// TLSNextProtoRHP4 is the ALPN identifier for the Quic RHP4 protocol.
 	TLSNextProtoRHP4 = "sia/rhp4"
