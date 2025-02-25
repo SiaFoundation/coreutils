@@ -185,7 +185,8 @@ func Listen(conn net.PacketConn, certs CertManager) (*quic.Listener, error) {
 		GetCertificate: certs.GetCertificate,
 		NextProtos:     []string{TLSNextProtoRHP4, http3.NextProtoH3},
 	}, &quic.Config{
-		EnableDatagrams: true,
+		EnableDatagrams:    true,
+		MaxIncomingStreams: 1000,
 	})
 }
 
