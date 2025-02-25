@@ -18,6 +18,8 @@ import (
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/chain"
 	rhp4 "go.sia.tech/coreutils/rhp/v4"
+	"go.sia.tech/coreutils/rhp/v4/quic"
+	"go.sia.tech/coreutils/rhp/v4/siamux"
 	"go.sia.tech/coreutils/syncer"
 	"go.sia.tech/coreutils/testutil"
 	"go.sia.tech/coreutils/wallet"
@@ -55,7 +57,7 @@ func testRenterHostPairSiaMux(tb testing.TB, hostKey types.PrivateKey, cm rhp4.C
 	rs := rhp4.NewServer(hostKey, cm, s, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
 	hostAddr := testutil.ServeSiaMux(tb, rs, log.Named("siamux"))
 
-	transport, err := rhp4.DialSiaMux(context.Background(), hostAddr, hostKey.PublicKey())
+	transport, err := siamux.Dial(context.Background(), hostAddr, hostKey.PublicKey())
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -68,7 +70,7 @@ func testRenterHostPairQUIC(tb testing.TB, hostKey types.PrivateKey, cm rhp4.Cha
 	rs := rhp4.NewServer(hostKey, cm, s, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
 	hostAddr := testutil.ServeQUIC(tb, rs, log.Named("quic"))
 
-	transport, err := rhp4.DialQUIC(context.Background(), hostAddr, hostKey.PublicKey(), rhp4.WithTLSConfig(func(tc *tls.Config) {
+	transport, err := quic.Dial(context.Background(), hostAddr, hostKey.PublicKey(), quic.WithTLSConfig(func(tc *tls.Config) {
 		tc.InsecureSkipVerify = true
 	}))
 	if err != nil {

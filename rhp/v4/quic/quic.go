@@ -1,4 +1,4 @@
-package rhp
+package quic
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 	"github.com/quic-go/webtransport-go"
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/chain"
+	rhp4 "go.sia.tech/coreutils/rhp/v4"
 	"go.uber.org/zap"
 	"lukechampine.com/frand"
 )
@@ -26,67 +27,75 @@ const (
 )
 
 type (
-	quicStream struct {
+	stream struct {
 		quic.Stream
 
 		localAddr  net.Addr
 		remoteAddr net.Addr
 	}
 
-	quicClientTransport struct {
+	client struct {
 		conn    quic.Connection
 		peerKey types.PublicKey
 		close   chan struct{}
 	}
 
-	// A QUICTransportOption can be used to configure the QUIC transport client
-	QUICTransportOption func(*quic.Config, *tls.Config)
+	// A CertManager provides a valid TLS certificate based on the given ClientHelloInfo.
+	CertManager interface {
+		// GetCertificate returns a Certificate based on the given ClientHelloInfo. It will only be called if the client supplies SNI information or if Certificates is empty.
+		// If GetCertificate is nil or returns nil, then the certificate is retrieved from NameToCertificate. If NameToCertificate is nil, the best element of Certificates will be used.
+		// Once a Certificate is returned it should not be modified.
+		GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error)
+	}
+
+	// A ClientOption can be used to configure the QUIC transport client
+	ClientOption func(*quic.Config, *tls.Config)
 )
 
 // WithTLSConfig is a QUICTransportOption that sets the TLSConfig
 // for the QUIC connection.
-func WithTLSConfig(fn func(*tls.Config)) QUICTransportOption {
+func WithTLSConfig(fn func(*tls.Config)) ClientOption {
 	return func(qc *quic.Config, tc *tls.Config) {
 		fn(tc)
 	}
 }
 
 // LocalAddr implements net.Conn
-func (qs *quicStream) LocalAddr() net.Addr {
-	return qs.localAddr
+func (s *stream) LocalAddr() net.Addr {
+	return s.localAddr
 }
 
 // RemoteAddr implements net.Conn
-func (qs *quicStream) RemoteAddr() net.Addr {
-	return qs.remoteAddr
+func (s *stream) RemoteAddr() net.Addr {
+	return s.remoteAddr
 }
 
 // Close implements [TransportClient]
-func (qt *quicClientTransport) Close() error {
-	return qt.conn.CloseWithError(0, "")
+func (c *client) Close() error {
+	return c.conn.CloseWithError(0, "")
 }
 
 // FrameSize implements [TransportClient]
-func (qt *quicClientTransport) FrameSize() int {
+func (c *client) FrameSize() int {
 	return 1440 * 3
 }
 
 // PeerKey implements [TransportClient]
-func (qt *quicClientTransport) PeerKey() types.PublicKey {
-	return qt.peerKey
+func (c *client) PeerKey() types.PublicKey {
+	return c.peerKey
 }
 
 // DialStream implements [TransportClient]
-func (qt *quicClientTransport) DialStream() (net.Conn, error) {
-	s, err := qt.conn.OpenStream()
+func (c *client) DialStream() (net.Conn, error) {
+	s, err := c.conn.OpenStream()
 	if err != nil {
 		return nil, err
 	}
-	return &quicStream{Stream: s, localAddr: qt.conn.LocalAddr(), remoteAddr: qt.conn.RemoteAddr()}, nil
+	return &stream{Stream: s, localAddr: c.conn.LocalAddr(), remoteAddr: c.conn.RemoteAddr()}, nil
 }
 
-// DialQUIC creates a new TransportClient using the QUIC transport.
-func DialQUIC(ctx context.Context, addr string, peerKey types.PublicKey, opts ...QUICTransportOption) (TransportClient, error) {
+// Dial creates a new TransportClient using the QUIC transport.
+func Dial(ctx context.Context, addr string, peerKey types.PublicKey, opts ...ClientOption) (rhp4.TransportClient, error) {
 	tc := &tls.Config{
 		Rand:       frand.Reader,
 		NextProtos: []string{TLSNextProtoRHP4},
@@ -102,7 +111,7 @@ func DialQUIC(ctx context.Context, addr string, peerKey types.PublicKey, opts ..
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %q: %w", addr, err)
 	}
-	return &quicClientTransport{
+	return &client{
 		conn:    conn,
 		peerKey: peerKey,
 		close:   make(chan struct{}),
@@ -110,68 +119,80 @@ func DialQUIC(ctx context.Context, addr string, peerKey types.PublicKey, opts ..
 }
 
 type (
-	qtTransport struct {
+	transport struct {
 		qc quic.Connection
 	}
 )
 
 // AcceptStream implements [TransportServer]
-func (qt *qtTransport) AcceptStream() (net.Conn, error) {
-	s, err := qt.qc.AcceptStream(context.Background())
+func (t *transport) AcceptStream() (net.Conn, error) {
+	s, err := t.qc.AcceptStream(context.Background())
 	if err != nil {
 		return nil, err
 	}
-	return &quicStream{
+	return &stream{
 		Stream:     s,
-		localAddr:  qt.qc.LocalAddr(),
-		remoteAddr: qt.qc.RemoteAddr(),
+		localAddr:  t.qc.LocalAddr(),
+		remoteAddr: t.qc.RemoteAddr(),
 	}, nil
 }
 
 // Close implements [TransportServer]
-func (qt *qtTransport) Close() error {
-	return qt.qc.CloseWithError(0, "")
+func (t *transport) Close() error {
+	return t.qc.CloseWithError(0, "")
 }
 
-// wtTranposrt is a rhp4.Transport that wraps a WebTransport Session
-type wtTransport struct {
+// webTransport is a rhp4.Transport that wraps a WebTransport Session
+type webTransport struct {
 	sess *webtransport.Session
 }
 
-type wtStream struct {
+type webStream struct {
 	webtransport.Stream
 
 	localAddr, remoteAddr net.Addr
 }
 
-func (wts *wtStream) LocalAddr() net.Addr {
-	return wts.localAddr
+func (ws *webStream) LocalAddr() net.Addr {
+	return ws.localAddr
 }
 
-func (wts *wtStream) RemoteAddr() net.Addr {
-	return wts.remoteAddr
+func (ws *webStream) RemoteAddr() net.Addr {
+	return ws.remoteAddr
 }
 
 // Close implements the rhp4.Transport interface.
-func (wt *wtTransport) Close() error {
+func (wt *webTransport) Close() error {
 	return wt.sess.CloseWithError(0, "")
 }
 
 // AcceptStream implements the rhp4.Transport interface.
-func (wt *wtTransport) AcceptStream() (net.Conn, error) {
+func (wt *webTransport) AcceptStream() (net.Conn, error) {
 	conn, err := wt.sess.AcceptStream(context.Background())
 	if err != nil {
 		return nil, err
 	}
-	return &wtStream{
+	return &webStream{
 		Stream:     conn,
 		localAddr:  wt.sess.LocalAddr(),
 		remoteAddr: wt.sess.RemoteAddr(),
 	}, nil
 }
 
-// ServeQUIC serves RHP4 connections on l using the provided server and logger.
-func ServeQUIC(l *quic.Listener, s *Server, log *zap.Logger) {
+// Listen listens for QUIC connections on conn using the provided certificate.
+// It is a wrapper around quic.Listen that sets the appropriate ALPN protocol
+// for RHP4 and WebTransport.
+func Listen(conn net.PacketConn, certs CertManager) (*quic.Listener, error) {
+	return quic.Listen(conn, &tls.Config{
+		GetCertificate: certs.GetCertificate,
+		NextProtos:     []string{TLSNextProtoRHP4, http3.NextProtoH3},
+	}, &quic.Config{
+		EnableDatagrams: true,
+	})
+}
+
+// Serve serves RHP4 connections on the listener l using the QUIC transport.
+func Serve(l *quic.Listener, s *rhp4.Server, log *zap.Logger) {
 	wts := &webtransport.Server{
 		// no need for TLS config since it will already be negotiated
 	}
@@ -186,7 +207,7 @@ func ServeQUIC(l *quic.Listener, s *Server, log *zap.Logger) {
 		}
 		defer sess.CloseWithError(0, "")
 
-		err = s.Serve(&wtTransport{
+		err = s.Serve(&webTransport{
 			sess: sess,
 		}, log)
 		if err != nil {
@@ -215,7 +236,7 @@ func ServeQUIC(l *quic.Listener, s *Server, log *zap.Logger) {
 		case TLSNextProtoRHP4: // quic
 			go func() {
 				defer conn.CloseWithError(0, "")
-				if err := s.Serve(&qtTransport{qc: conn}, log); err != nil {
+				if err := s.Serve(&transport{qc: conn}, log); err != nil {
 					log.Debug("failed to serve connection", zap.Error(err))
 				}
 			}()
