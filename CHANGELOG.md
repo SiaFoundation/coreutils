@@ -1,3 +1,25 @@
+## 0.12.0 (2025-02-28)
+
+### Breaking Changes
+
+#### Separate RHP4 Transports
+
+The SiaMux and QUIC transports are now separated into `go.sia.tech/rhp/v4/siamux` and `go.sia.tech/rhp/v4/quic` packages. Both packages define a `Dial` and `Serve` helper that can be used to either start a transport server or connect to a host using the transport.
+
+### Features
+
+#### Add RPCReplenishAccounts Implementation
+
+Implements RPCReplenishAccounts in the RHP4 client and server enabling clients managing a large number of accounts to fund them quicker
+
+### Fixes
+
+- Fixes an issue where wallet redistributing would fail if the number of outputs created were less than requested
+- Fix data race in EphemeralWalletStore.
+- Fixed an issue with event confirmations not being correctly unmarshalled
+- Increase default max streams from 100 to 1000 for QUIC transport
+- Update core to v0.10.2 and mux to v1.4.0
+
 ## 0.11.1 (2025-02-10)
 
 ### Fixes
