@@ -219,7 +219,7 @@ func Serve(l *quic.Listener, s *rhp4.Server, log *zap.Logger) {
 		conn, err := l.Accept(context.Background())
 		if err != nil {
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, quic.ErrServerClosed) {
-				log.Fatal("failed to accept connection", zap.Error(err))
+				log.Debug("failed to accept connection", zap.Error(err))
 			}
 			return
 		}

@@ -110,7 +110,7 @@ func Serve(l net.Listener, s *rhp4.Server, log *zap.Logger) {
 			m, err := mux.Accept(conn, ed25519.PrivateKey(s.HostKey()))
 			if err != nil {
 				if !errors.Is(err, net.ErrClosed) {
-					log.Fatal("failed to upgrade connection", zap.Error(err))
+					log.Debug("failed to upgrade connection", zap.Error(err))
 				}
 				return
 			}
