@@ -37,7 +37,6 @@ type (
 	client struct {
 		conn    quic.Connection
 		peerKey types.PublicKey
-		close   chan struct{}
 	}
 
 	// A CertManager provides a valid TLS certificate based on the given ClientHelloInfo.
@@ -72,11 +71,6 @@ func (s *stream) RemoteAddr() net.Addr {
 
 // Close implements [TransportClient]
 func (c *client) Close() error {
-	select {
-	case <-c.close:
-	default:
-		close(c.close)
-	}
 	return c.conn.CloseWithError(0, "")
 }
 
@@ -91,27 +85,10 @@ func (c *client) PeerKey() types.PublicKey {
 }
 
 // DialStream implements [TransportClient]
-func (c *client) DialStream(ctx context.Context) (net.Conn, error) {
-	select {
-	case <-c.close:
-		return nil, fmt.Errorf("transport closed")
-	default:
-	}
+func (c *client) DialStream() (net.Conn, error) {
 	s, err := c.conn.OpenStream()
 	if err != nil {
 		return nil, err
-	}
-	go func() {
-		select {
-		case <-ctx.Done():
-		case <-c.close:
-		}
-		s.Close()
-	}()
-	if deadline, ok := ctx.Deadline(); ok {
-		if err := s.SetDeadline(deadline); err != nil {
-			return nil, fmt.Errorf("failed to set deadline: %w", err)
-		}
 	}
 	return &stream{Stream: s, localAddr: c.conn.LocalAddr(), remoteAddr: c.conn.RemoteAddr()}, nil
 }
@@ -136,7 +113,6 @@ func Dial(ctx context.Context, addr string, peerKey types.PublicKey, opts ...Cli
 	return &client{
 		conn:    conn,
 		peerKey: peerKey,
-		close:   make(chan struct{}),
 	}, nil
 }
 

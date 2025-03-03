@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"time"
 
 	"go.sia.tech/core/consensus"
 	rhp4 "go.sia.tech/core/rhp/v4"
 	"go.sia.tech/core/types"
 	"lukechampine.com/frand"
 )
+
+const defaultStreamTimeout = 2 * time.Minute
 
 var (
 	// ErrInvalidRoot is returned when RPCWrite returns a sector root that does
@@ -31,10 +34,53 @@ func (r zeroReader) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
+type timeoutConn struct {
+	net.Conn
+	close chan struct{}
+}
+
+func (c *timeoutConn) Close() error {
+	select {
+	case <-c.close:
+	default:
+		close(c.close)
+	}
+	return c.Conn.Close()
+}
+
+// openStream dials a stream setting the default timeout. The context deadline will
+// override the default timeout. The stream lifetime is tied to the context.
+func openStream(ctx context.Context, t TransportClient, defaultTimeout time.Duration) (net.Conn, error) {
+	s, err := t.DialStream()
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial stream: %w", err)
+	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := s.SetDeadline(deadline); err != nil {
+			return nil, fmt.Errorf("failed to set deadline: %w", err)
+		}
+	} else if defaultTimeout != 0 {
+		if err := s.SetDeadline(time.Now().Add(defaultTimeout)); err != nil {
+			return nil, fmt.Errorf("failed to set default timeout %q: %w", defaultTimeout, err)
+		}
+	}
+
+	closeChan := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-closeChan:
+		}
+		s.Close()
+	}()
+	return &timeoutConn{Conn: s, close: closeChan}, nil
+}
+
 type (
 	// A TransportClient is a generic multiplexer for outgoing streams.
 	TransportClient interface {
-		DialStream(context.Context) (net.Conn, error)
+		DialStream() (net.Conn, error)
 
 		FrameSize() int
 		PeerKey() types.PublicKey
@@ -192,7 +238,7 @@ type (
 )
 
 func callSingleRoundtripRPC(ctx context.Context, t TransportClient, rpcID types.Specifier, req, resp rhp4.Object) error {
-	s, err := t.DialStream(ctx)
+	s, err := openStream(ctx, t, defaultStreamTimeout)
 	if err != nil {
 		return fmt.Errorf("failed to dial stream: %w", err)
 	}
@@ -226,7 +272,7 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 		return RPCReadSectorResult{}, fmt.Errorf("invalid request: %w", err)
 	}
 
-	s, err := t.DialStream(ctx)
+	s, err := openStream(ctx, t, defaultStreamTimeout)
 	if err != nil {
 		return RPCReadSectorResult{}, fmt.Errorf("failed to dial stream: %w", err)
 	}
@@ -273,7 +319,7 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 		return RPCWriteSectorResult{}, fmt.Errorf("invalid request: %w", err)
 	}
 
-	s, err := t.DialStream(ctx)
+	s, err := openStream(ctx, t, defaultStreamTimeout)
 	if err != nil {
 		return RPCWriteSectorResult{}, fmt.Errorf("failed to dial stream: %w", err)
 	}
@@ -343,7 +389,7 @@ func RPCFreeSectors(ctx context.Context, t TransportClient, cs consensus.State, 
 	}
 	req.ChallengeSignature = sk.SignHash(req.ChallengeSigHash(contract.Revision.RevisionNumber + 1))
 
-	s, err := t.DialStream(ctx)
+	s, err := openStream(ctx, t, defaultStreamTimeout)
 	if err != nil {
 		return RPCFreeSectorsResult{}, fmt.Errorf("failed to dial stream: %w", err)
 	}
@@ -401,7 +447,7 @@ func RPCAppendSectors(ctx context.Context, t TransportClient, cs consensus.State
 	}
 	req.ChallengeSignature = sk.SignHash(req.ChallengeSigHash(contract.Revision.RevisionNumber + 1))
 
-	s, err := t.DialStream(ctx)
+	s, err := openStream(ctx, t, defaultStreamTimeout)
 	if err != nil {
 		return RPCAppendSectorsResult{}, fmt.Errorf("failed to dial stream: %w", err)
 	}
@@ -517,7 +563,7 @@ func RPCReplenishAccounts(ctx context.Context, t TransportClient, p RPCReplenish
 		return RPCReplenishAccountsResult{}, fmt.Errorf("invalid request: %w", err)
 	}
 
-	s, err := t.DialStream(ctx)
+	s, err := openStream(ctx, t, defaultStreamTimeout)
 	if err != nil {
 		return RPCReplenishAccountsResult{}, fmt.Errorf("failed to dial stream: %w", err)
 	}
@@ -663,7 +709,7 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 		renterSiacoinElements = append(renterSiacoinElements, i.Parent)
 	}
 
-	s, err := t.DialStream(ctx)
+	s, err := openStream(ctx, t, defaultStreamTimeout)
 	if err != nil {
 		signer.ReleaseInputs([]types.V2Transaction{formationTxn})
 		return RPCFormContractResult{}, fmt.Errorf("failed to dial stream: %w", err)
@@ -812,7 +858,7 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 	sigHash := req.ChallengeSigHash(existing.RevisionNumber)
 	req.ChallengeSignature = signer.SignHash(sigHash)
 
-	s, err := t.DialStream(ctx)
+	s, err := openStream(ctx, t, defaultStreamTimeout)
 	if err != nil {
 		return RPCRenewContractResult{}, fmt.Errorf("failed to dial stream: %w", err)
 	}
@@ -957,7 +1003,7 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 	sigHash := req.ChallengeSigHash(existing.RevisionNumber)
 	req.ChallengeSignature = signer.SignHash(sigHash)
 
-	s, err := t.DialStream(ctx)
+	s, err := openStream(ctx, t, defaultStreamTimeout)
 	if err != nil {
 		return RPCRefreshContractResult{}, fmt.Errorf("failed to dial stream: %w", err)
 	}
