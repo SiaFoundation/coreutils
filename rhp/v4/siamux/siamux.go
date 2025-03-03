@@ -46,9 +46,17 @@ func (c *client) PeerKey() types.PublicKey {
 
 // DialStream implements the [TransportClient] interface.
 func (c *client) DialStream(ctx context.Context) (net.Conn, error) {
+	select {
+	case <-c.close:
+		return nil, fmt.Errorf("transport closed")
+	default:
+	}
 	s := c.m.DialStream()
 	go func() {
-		<-ctx.Done()
+		select {
+		case <-ctx.Done():
+		case <-c.close:
+		}
 		s.Close()
 	}()
 	if deadline, ok := ctx.Deadline(); ok {
