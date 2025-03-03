@@ -11,7 +11,7 @@ require (
 	go.sia.tech/core v0.10.3
 	go.sia.tech/mux v1.4.0
 	go.uber.org/zap v1.27.0
-	golang.org/x/crypto v0.34.0
+	golang.org/x/crypto v0.35.0
 	lukechampine.com/frand v1.5.1
 )
 
