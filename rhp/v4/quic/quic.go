@@ -85,10 +85,15 @@ func (c *client) PeerKey() types.PublicKey {
 }
 
 // DialStream implements [TransportClient]
-func (c *client) DialStream() (net.Conn, error) {
+func (c *client) DialStream(ctx context.Context) (net.Conn, error) {
 	s, err := c.conn.OpenStream()
 	if err != nil {
 		return nil, err
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := s.SetDeadline(deadline); err != nil {
+			return nil, fmt.Errorf("failed to set deadline: %w", err)
+		}
 	}
 	return &stream{Stream: s, localAddr: c.conn.LocalAddr(), remoteAddr: c.conn.RemoteAddr()}, nil
 }

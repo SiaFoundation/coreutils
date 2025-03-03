@@ -28,6 +28,19 @@ import (
 	"lukechampine.com/frand"
 )
 
+type blockingSettingsReporter struct {
+	blockChan chan struct{}
+}
+
+func (b *blockingSettingsReporter) RHP4Settings() proto4.HostSettings {
+	<-b.blockChan
+	return proto4.HostSettings{}
+}
+
+func (b *blockingSettingsReporter) Unblock() {
+	close(b.blockChan)
+}
+
 type fundAndSign struct {
 	w  *wallet.SingleAddressWallet
 	pk types.PrivateKey
@@ -786,6 +799,48 @@ func TestRPCRenew(t *testing.T) {
 		} else if rs.Revisable {
 			t.Fatal("expected contract to not be revisable")
 		}
+	})
+}
+
+func TestRPCTimeout(t *testing.T) {
+	n, genesis := testutil.V2Network()
+	cm, s, w := startTestNode(t, n, genesis)
+
+	ss := testutil.NewEphemeralSectorStore()
+	c := testutil.NewEphemeralContractor(cm)
+
+	isTimeoutErr := func(err error) bool {
+		t.Helper()
+		return err != nil && (strings.Contains(err.Error(), "deadline exceeded") || strings.Contains(err.Error(), "i/o timeout"))
+	}
+
+	assertRPCTimeout := func(transport rhp4.TransportClient, timeout bool) {
+		t.Helper()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		_, err := rhp4.RPCSettings(ctx, transport)
+		if timeout && !isTimeoutErr(err) {
+			t.Fatal("expected timeout", err)
+		} else if !timeout && err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("siamux", func(t *testing.T) {
+		sr := &blockingSettingsReporter{blockChan: make(chan struct{})}
+		transport := testRenterHostPairSiaMux(t, types.GeneratePrivateKey(), cm, s, w, c, sr, ss, zap.NewNop())
+		assertRPCTimeout(transport, true)
+		sr.Unblock()
+		assertRPCTimeout(transport, false)
+	})
+
+	t.Run("quic", func(t *testing.T) {
+		sr := &blockingSettingsReporter{blockChan: make(chan struct{})}
+		transport := testRenterHostPairQUIC(t, types.GeneratePrivateKey(), cm, s, w, c, sr, ss, zap.NewNop())
+		assertRPCTimeout(transport, true)
+		sr.Unblock()
+		assertRPCTimeout(transport, false)
 	})
 }
 
