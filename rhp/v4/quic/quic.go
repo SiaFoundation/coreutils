@@ -90,6 +90,10 @@ func (c *client) DialStream(ctx context.Context) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	go func() {
+		<-ctx.Done()
+		s.Close()
+	}()
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := s.SetDeadline(deadline); err != nil {
 			return nil, fmt.Errorf("failed to set deadline: %w", err)
