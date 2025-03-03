@@ -54,7 +54,7 @@ type (
 // WithTLSConfig is a QUICTransportOption that sets the TLSConfig
 // for the QUIC connection.
 func WithTLSConfig(fn func(*tls.Config)) ClientOption {
-	return func(qc *quic.Config, tc *tls.Config) {
+	return func(_ *quic.Config, tc *tls.Config) {
 		fn(tc)
 	}
 }

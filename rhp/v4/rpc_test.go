@@ -140,7 +140,7 @@ func startTestNode(tb testing.TB, n *consensus.Network, genesis types.Block) (*c
 		}
 	}()
 
-	stop := cm.OnReorg(func(index types.ChainIndex) {
+	stop := cm.OnReorg(func(_ types.ChainIndex) {
 		select {
 		case reorgCh <- struct{}{}:
 		default:

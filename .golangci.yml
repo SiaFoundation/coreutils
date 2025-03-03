@@ -38,7 +38,6 @@ linters-settings:
         json: goCamel
         yaml: goCamel
 
-
   gocritic:
     # Which checks should be enabled; can't be combined with 'disabled-checks';
     # See https://go-critic.github.io/overview#checks-overview
@@ -111,6 +110,8 @@ linters-settings:
       - name: unexported-return
         disabled: false
       - name: unnecessary-stmt
+        disabled: false
+      - name: unused-parameter
         disabled: false
       - name: unreachable-code
         disabled: false
