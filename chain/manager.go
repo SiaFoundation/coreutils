@@ -1104,14 +1104,11 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		return nil, fmt.Errorf("reorg path from %v to %v is too long (-%v +%v)", from, to, len(revert), len(apply))
 	}
 	for _, index := range revert {
-		b, _, cs, ok := blockAndParent(m.store, index.ID)
+		b, bs, cs, ok := blockAndParent(m.store, index.ID)
 		if !ok {
 			return nil, fmt.Errorf("missing reverted block at index %v", index)
-		} else if b.V2 == nil {
-			return nil, fmt.Errorf("reorg path from %v to %v contains a non-v2 block (%v)", from, to, index)
 		}
-		// NOTE: since we are post-hardfork, we don't need a v1 supplement
-		cru := consensus.RevertBlock(cs, b, consensus.V1BlockSupplement{})
+		cru := consensus.RevertBlock(cs, b, *bs)
 		for i := range txns {
 			if !updateTxnProofs(&txns[i], cru.UpdateElementProof, cs.Elements.NumLeaves) {
 				return nil, fmt.Errorf("transaction %v references element that does not exist in our chain", txns[i].ID())
@@ -1120,14 +1117,11 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 	}
 
 	for _, index := range apply {
-		b, _, cs, ok := blockAndParent(m.store, index.ID)
+		b, bs, cs, ok := blockAndParent(m.store, index.ID)
 		if !ok {
 			return nil, fmt.Errorf("missing applied block at index %v", index)
-		} else if b.V2 == nil {
-			return nil, fmt.Errorf("reorg path from %v to %v contains a non-v2 block (%v)", from, to, index)
 		}
-		// NOTE: since we are post-hardfork, we don't need a v1 supplement or ancestorTimestamp
-		cs, cau := consensus.ApplyBlock(cs, b, consensus.V1BlockSupplement{}, time.Time{})
+		cs, cau := consensus.ApplyBlock(cs, b, *bs, time.Time{})
 
 		// get the transactions that were confirmed in this block
 		confirmedTxns := make(map[types.TransactionID]bool)
