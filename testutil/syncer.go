@@ -61,12 +61,12 @@ func (ps *EphemeralPeerStore) UpdatePeerInfo(addr string, fn func(*syncer.PeerIn
 
 // Ban temporarily bans one or more IPs. The addr should either be a single
 // IP with port (e.g. 1.2.3.4:5678) or a CIDR subnet (e.g. 1.2.3.4/16).
-func (ps *EphemeralPeerStore) Ban(addr string, duration time.Duration, reason string) error {
+func (ps *EphemeralPeerStore) Ban(_ string, _ time.Duration, _ string) error {
 	return nil
 }
 
 // Banned returns false
-func (ps *EphemeralPeerStore) Banned(addr string) (bool, error) { return false, nil }
+func (ps *EphemeralPeerStore) Banned(_ string) (bool, error) { return false, nil }
 
 var _ syncer.PeerStore = (*EphemeralPeerStore)(nil)
 
