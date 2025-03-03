@@ -665,6 +665,7 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 
 	s, err := t.DialStream()
 	if err != nil {
+		signer.ReleaseInputs([]types.V2Transaction{formationTxn})
 		return RPCFormContractResult{}, fmt.Errorf("failed to dial stream: %w", err)
 	}
 	defer s.Close()
@@ -726,15 +727,17 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 	// read the finalized transaction set
 	var hostTransactionSetResp rhp4.RPCFormContractThirdResponse
 	if err := rhp4.ReadResponse(s, &hostTransactionSetResp); err != nil {
-		// at this point the formation txn must already have been broadcast, so no need to release inputs
+		signer.ReleaseInputs([]types.V2Transaction{formationTxn})
 		return RPCFormContractResult{}, fmt.Errorf("failed to read final response: %w", err)
 	}
 
 	if len(hostTransactionSetResp.TransactionSet) == 0 {
+		signer.ReleaseInputs([]types.V2Transaction{formationTxn})
 		return RPCFormContractResult{}, fmt.Errorf("expected at least one host transaction")
 	}
 	hostFormationTxn := hostTransactionSetResp.TransactionSet[len(hostTransactionSetResp.TransactionSet)-1]
 	if len(hostFormationTxn.FileContracts) != 1 {
+		signer.ReleaseInputs([]types.V2Transaction{formationTxn})
 		return RPCFormContractResult{}, fmt.Errorf("expected exactly one contract")
 	}
 
@@ -742,12 +745,14 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 	formationTxnID := formationTxn.ID()
 	hostFormationTxnID := hostFormationTxn.ID()
 	if formationTxnID != hostFormationTxnID {
+		signer.ReleaseInputs([]types.V2Transaction{formationTxn})
 		return RPCFormContractResult{}, errors.New("transaction ID mismatch")
 	}
 
 	// validate the host signature
 	fc.HostSignature = hostFormationTxn.FileContracts[0].HostSignature
 	if !fc.HostPublicKey.VerifyHash(formationSigHash, fc.HostSignature) {
+		signer.ReleaseInputs([]types.V2Transaction{formationTxn})
 		return RPCFormContractResult{}, errors.New("invalid host signature")
 	}
 
@@ -868,27 +873,32 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 	// read the finalized transaction set
 	var hostTransactionSetResp rhp4.RPCRenewContractThirdResponse
 	if err := rhp4.ReadResponse(s, &hostTransactionSetResp); err != nil {
-		// at this point the renewal txn must already have been broadcast, so no need to release inputs
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRenewContractResult{}, fmt.Errorf("failed to read final response: %w", err)
 	}
 
 	if len(hostTransactionSetResp.TransactionSet) == 0 {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRenewContractResult{}, fmt.Errorf("expected at least one host transaction")
 	}
 	hostRenewalTxn := hostTransactionSetResp.TransactionSet[len(hostTransactionSetResp.TransactionSet)-1]
 	if len(hostRenewalTxn.FileContractResolutions) != 1 {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRenewContractResult{}, fmt.Errorf("expected exactly one resolution")
 	}
 
 	hostRenewal, ok := hostRenewalTxn.FileContractResolutions[0].Resolution.(*types.V2FileContractRenewal)
 	if !ok {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRenewContractResult{}, fmt.Errorf("expected renewal resolution")
 	}
 
 	// validate the host signature
 	if !existing.HostPublicKey.VerifyHash(renewalSigHash, hostRenewal.HostSignature) {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRenewContractResult{}, errors.New("invalid host renewal signature")
 	} else if !existing.HostPublicKey.VerifyHash(contractSigHash, hostRenewal.NewContract.HostSignature) {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRenewContractResult{}, errors.New("invalid host contract signature")
 	}
 	return RPCRenewContractResult{
@@ -1008,27 +1018,32 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 	// read the finalized transaction set
 	var hostTransactionSetResp rhp4.RPCRefreshContractThirdResponse
 	if err := rhp4.ReadResponse(s, &hostTransactionSetResp); err != nil {
-		// at this point the renewal txn must already have been broadcast, so no need to release inputs
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRefreshContractResult{}, fmt.Errorf("failed to read final response: %w", err)
 	}
 
 	if len(hostTransactionSetResp.TransactionSet) == 0 {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRefreshContractResult{}, fmt.Errorf("expected at least one host transaction")
 	}
 	hostRenewalTxn := hostTransactionSetResp.TransactionSet[len(hostTransactionSetResp.TransactionSet)-1]
 	if len(hostRenewalTxn.FileContractResolutions) != 1 {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRefreshContractResult{}, fmt.Errorf("expected exactly one resolution")
 	}
 
 	hostRenewal, ok := hostRenewalTxn.FileContractResolutions[0].Resolution.(*types.V2FileContractRenewal)
 	if !ok {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRefreshContractResult{}, fmt.Errorf("expected renewal resolution")
 	}
 
 	// validate the host signature
 	if !existing.HostPublicKey.VerifyHash(renewalSigHash, hostRenewal.HostSignature) {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRefreshContractResult{}, errors.New("invalid host renewal signature")
 	} else if !existing.HostPublicKey.VerifyHash(contractSigHash, hostRenewal.NewContract.HostSignature) {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRefreshContractResult{}, errors.New("invalid host contract signature")
 	}
 	return RPCRefreshContractResult{
