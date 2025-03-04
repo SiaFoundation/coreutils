@@ -56,16 +56,20 @@ func Dial(ctx context.Context, addr string, peerKey types.PublicKey) (rhp4.Trans
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %q: %w", addr, err)
 	}
-	if deadline, ok := ctx.Deadline(); ok {
-		if err := conn.SetDeadline(deadline); err != nil {
-			return nil, fmt.Errorf("failed to set deadline: %w", err)
-		}
-	}
-	return Upgrade(conn, peerKey)
+	return Upgrade(ctx, conn, peerKey)
 }
 
 // Upgrade upgrades an existing connection to use the SiaMux transport.
-func Upgrade(conn net.Conn, peerKey types.PublicKey) (rhp4.TransportClient, error) {
+func Upgrade(ctx context.Context, conn net.Conn, peerKey types.PublicKey) (rhp4.TransportClient, error) {
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
 	m, err := mux.Dial(conn, peerKey[:])
 	if err != nil {
 		return nil, fmt.Errorf("failed to establish siamux connection: %w", err)
