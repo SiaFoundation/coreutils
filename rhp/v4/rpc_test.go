@@ -844,6 +844,48 @@ func TestRPCTimeout(t *testing.T) {
 	})
 }
 
+func TestSiamuxDialUpgradeTimeout(t *testing.T) {
+	n, genesis := testutil.V2Network()
+	cm, s, w := startTestNode(t, n, genesis)
+
+	ss := testutil.NewEphemeralSectorStore()
+	c := testutil.NewEphemeralContractor(cm)
+
+	isTimeoutErr := func(err error) bool {
+		t.Helper()
+		return err != nil && (strings.Contains(err.Error(), "use of closed network connection") || strings.Contains(err.Error(), "operation was canceled"))
+	}
+
+	sr := &blockingSettingsReporter{blockChan: make(chan struct{})}
+	hk := types.GeneratePrivateKey()
+	rs := rhp4.NewServer(hk, cm, s, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
+	hostAddr := testutil.ServeSiaMux(t, rs, zap.NewNop())
+
+	t.Run("dial", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := siamux.Dial(ctx, hostAddr, hk.PublicKey())
+		if !isTimeoutErr(err) {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("upgrade", func(t *testing.T) {
+		conn, err := net.Dial("tcp", hostAddr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { conn.Close() })
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err = siamux.Upgrade(ctx, conn, hk.PublicKey())
+		if !isTimeoutErr(err) {
+			t.Fatal(err)
+		}
+	})
+}
+
 func TestReplenishAccounts(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
