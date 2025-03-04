@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"time"
 
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/chain"
@@ -15,6 +16,10 @@ import (
 )
 
 const (
+	// defaultMuxTimeout is the default timeout applied when upgrading a
+	// connection to a siamux connection
+	defaultMuxTimeout = 10 * time.Second
+
 	// Protocol is the identifier for the SiaMux transport protocol.
 	Protocol chain.Protocol = "siamux"
 )
@@ -70,9 +75,19 @@ func Upgrade(ctx context.Context, conn net.Conn, peerKey types.PublicKey) (rhp4.
 		case <-done:
 		}
 	}()
+	deadline := time.Now().Add(defaultMuxTimeout)
+	if dl, ok := ctx.Deadline(); ok && !dl.IsZero() {
+		deadline = dl
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		return nil, fmt.Errorf("failed to set deadline: %w", err)
+	}
 	m, err := mux.Dial(conn, peerKey[:])
 	if err != nil {
 		return nil, fmt.Errorf("failed to establish siamux connection: %w", err)
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return nil, fmt.Errorf("failed to clear deadline: %w", err)
 	}
 	return &client{
 		m:       m,
@@ -110,11 +125,21 @@ func Serve(l net.Listener, s *rhp4.Server, log *zap.Logger) {
 
 		go func() {
 			defer conn.Close()
+
+			if err := conn.SetDeadline(time.Now().Add(defaultMuxTimeout)); err != nil {
+				log.Error("failed to set deadline", zap.Error(err))
+				return
+			}
+
 			m, err := mux.Accept(conn, ed25519.PrivateKey(s.HostKey()))
 			if err != nil {
 				if !errors.Is(err, net.ErrClosed) {
 					log.Debug("failed to upgrade connection", zap.Error(err))
 				}
+				return
+			}
+			if err := conn.SetDeadline(time.Time{}); err != nil {
+				log.Error("failed to clear deadline", zap.Error(err))
 				return
 			}
 			s.Serve(&transport{m}, log)
