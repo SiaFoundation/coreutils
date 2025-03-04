@@ -856,7 +856,7 @@ func TestSiamuxDialUpgradeTimeout(t *testing.T) {
 		return err != nil && (strings.Contains(err.Error(), "use of closed network connection") || strings.Contains(err.Error(), "operation was canceled"))
 	}
 
-	sr := &blockingSettingsReporter{blockChan: make(chan struct{})}
+	sr := testutil.NewEphemeralSettingsReporter()
 	hk := types.GeneratePrivateKey()
 	rs := rhp4.NewServer(hk, cm, s, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
 	hostAddr := testutil.ServeSiaMux(t, rs, zap.NewNop())
