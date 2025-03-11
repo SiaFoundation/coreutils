@@ -1,3 +1,9 @@
+## 0.12.1 (2025-03-11)
+
+### Fixes
+
+- Fix RHP4 client not respecting timeouts
+
 ## 0.12.0 (2025-02-28)
 
 ### Breaking Changes
