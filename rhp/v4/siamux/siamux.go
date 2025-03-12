@@ -16,9 +16,13 @@ import (
 )
 
 const (
+	// defaultDialTimeout is the default timeout applied when dialing a
+	// TCP connection. An earlier timeout may be enforced by passing
+	// a context to the Dial func.
+	defaultDialTimeout = time.Minute
 	// defaultMuxTimeout is the default timeout applied when upgrading a
 	// connection to a siamux connection
-	defaultMuxTimeout = 10 * time.Second
+	defaultMuxHandshakeTimeout = 10 * time.Second
 
 	// Protocol is the identifier for the SiaMux transport protocol.
 	Protocol chain.Protocol = "siamux"
@@ -57,7 +61,14 @@ func (c *client) DialStream() (net.Conn, error) {
 
 // Dial creates a new TransportClient using the SiaMux transport.
 func Dial(ctx context.Context, addr string, peerKey types.PublicKey) (rhp4.TransportClient, error) {
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	deadline, ok := ctx.Deadline()
+	if !ok || deadline.IsZero() {
+		deadline = time.Now().Add(defaultDialTimeout)
+	}
+
+	conn, err := (&net.Dialer{
+		Deadline: deadline,
+	}).DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %q: %w", addr, err)
 	}
@@ -75,9 +86,9 @@ func Upgrade(ctx context.Context, conn net.Conn, peerKey types.PublicKey) (rhp4.
 		case <-done:
 		}
 	}()
-	deadline := time.Now().Add(defaultMuxTimeout)
-	if dl, ok := ctx.Deadline(); ok && !dl.IsZero() {
-		deadline = dl
+	deadline, ok := ctx.Deadline()
+	if !ok || deadline.IsZero() {
+		deadline = time.Now().Add(defaultMuxHandshakeTimeout)
 	}
 	if err := conn.SetDeadline(deadline); err != nil {
 		return nil, fmt.Errorf("failed to set deadline: %w", err)
@@ -126,7 +137,7 @@ func Serve(l net.Listener, s *rhp4.Server, log *zap.Logger) {
 		go func() {
 			defer conn.Close()
 
-			if err := conn.SetDeadline(time.Now().Add(defaultMuxTimeout)); err != nil {
+			if err := conn.SetDeadline(time.Now().Add(defaultMuxHandshakeTimeout)); err != nil {
 				log.Error("failed to set deadline", zap.Error(err))
 				return
 			}
