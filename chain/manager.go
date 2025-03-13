@@ -1107,6 +1107,8 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		b, bs, cs, ok := blockAndParent(m.store, index.ID)
 		if !ok {
 			return nil, fmt.Errorf("missing reverted block at index %v", index)
+		} else if bs == nil {
+			bs = new(consensus.V1BlockSupplement)
 		}
 		cru := consensus.RevertBlock(cs, b, *bs)
 		for i := range txns {
@@ -1120,8 +1122,11 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		b, bs, cs, ok := blockAndParent(m.store, index.ID)
 		if !ok {
 			return nil, fmt.Errorf("missing applied block at index %v", index)
+		} else if bs == nil {
+			bs = new(consensus.V1BlockSupplement)
 		}
-		cs, cau := consensus.ApplyBlock(cs, b, *bs, time.Time{})
+		ancestorTimestamp, _ := m.store.AncestorTimestamp(b.ParentID)
+		cs, cau := consensus.ApplyBlock(cs, b, *bs, ancestorTimestamp)
 
 		// get the transactions that were confirmed in this block
 		confirmedTxns := make(map[types.TransactionID]bool)
