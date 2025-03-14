@@ -20,7 +20,7 @@ const (
 	// TCP connection. An earlier timeout may be enforced by passing
 	// a context to the Dial func.
 	defaultDialTimeout = time.Minute
-	// defaultMuxTimeout is the default timeout applied when upgrading a
+	// defaultMuxHandshakeTimeout is the default timeout applied when upgrading a
 	// connection to a siamux connection
 	defaultMuxHandshakeTimeout = 10 * time.Second
 
