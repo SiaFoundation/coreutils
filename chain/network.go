@@ -186,3 +186,27 @@ func TestnetAnagami() (*consensus.Network, types.Block) {
 	}}
 	return n, genesis
 }
+
+func TestnetEravimus() (*consensus.Network, types.Block) {
+	// use a modified version of Zen
+	n, genesis := TestnetZen()
+
+	n.Name = "erravimus"
+	n.HardforkOak.GenesisTimestamp = time.Date(2025, time.March, 18, 0, 0, 0, 0, time.UTC)
+	n.HardforkV2.AllowHeight = 2016                              // ~2 weeks in
+	n.HardforkV2.RequireHeight = n.HardforkV2.AllowHeight + 1440 // ~10 days later
+
+	n.HardforkFoundation.PrimaryAddress = parseAddr("241352c83da002e61f57e96b14f3a5f8b5de22156ce83b753ea495e64f1affebae88736b2347")
+	n.HardforkFoundation.FailsafeAddress = types.VoidAddress
+
+	// move the genesis airdrops for easier testing
+	genesis.Transactions[0].SiacoinOutputs = []types.SiacoinOutput{{
+		Address: parseAddr("241352c83da002e61f57e96b14f3a5f8b5de22156ce83b753ea495e64f1affebae88736b2347"),
+		Value:   types.Siacoins(1).Mul64(1e12),
+	}}
+	genesis.Transactions[0].SiafundOutputs = []types.SiafundOutput{{
+		Address: parseAddr("241352c83da002e61f57e96b14f3a5f8b5de22156ce83b753ea495e64f1affebae88736b2347"),
+		Value:   10000,
+	}}
+	return n, genesis
+}
