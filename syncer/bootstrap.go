@@ -1,6 +1,15 @@
 package syncer
 
 var (
+	// ErravimusBootstrapPeers is a list of peers for the Erravimus testnet.
+	ErravimusBootstrapPeers = []string{
+		"15.204.160.10:9681",
+		"141.95.66.81:9681",
+		"51.81.242.140:9681",
+		"15.204.101.216:9681",
+		"40.160.12.62:9681",
+	}
+
 	// AnagamiBootstrapPeers is a list of peers for the Anagami network.
 	AnagamiBootstrapPeers = []string{
 		"15.204.160.10:9781",
