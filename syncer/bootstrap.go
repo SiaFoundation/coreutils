@@ -1,7 +1,7 @@
 package syncer
 
 var (
-	// ErravimusBootstrapPeers is a list of peers for the Erravimus network.
+	// ErravimusBootstrapPeers is a list of peers for the Erravimus testnet.
 	ErravimusBootstrapPeers = []string{
 		"15.204.160.10:9681",
 		"141.95.66.81:9681",

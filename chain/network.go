@@ -187,9 +187,9 @@ func TestnetAnagami() (*consensus.Network, types.Block) {
 	return n, genesis
 }
 
-// TestnetEravimus returns the chain parameters and genesis block for the "Erravimus"
+// TestnetErravimus returns the chain parameters and genesis block for the "Erravimus"
 // testnet chain.
-func TestnetEravimus() (*consensus.Network, types.Block) {
+func TestnetErravimus() (*consensus.Network, types.Block) {
 	// use a modified version of Zen
 	n, genesis := TestnetZen()
 
