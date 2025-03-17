@@ -1,3 +1,9 @@
+## 0.12.2 (2025-03-17)
+
+### Fixes
+
+- Added a default deadline of 1m to the SiaMux dialer. If the context has a deadline, it will override the default.
+
 ## 0.12.1 (2025-03-11)
 
 ### Fixes
