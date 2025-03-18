@@ -93,7 +93,7 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 	// cache the value of siacoin elements to use when calculating v1 outflow
 	for _, sced := range cau.SiacoinElementDiffs() {
 		sced.SiacoinElement.StateElement.MerkleProof = nil // clear the proof to save space
-		siacoinElements[sced.SiacoinElement.ID] = sced.SiacoinElement
+		siacoinElements[sced.SiacoinElement.ID] = sced.SiacoinElement.Move()
 	}
 
 	addEvent := func(id types.Hash256, eventType string, data EventData, maturityHeight uint64) {
@@ -127,7 +127,7 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 				}
 
 				addEvent(types.Hash256(outputID), EventTypeSiafundClaim, EventPayout{
-					SiacoinElement: sce,
+					SiacoinElement: sce.Copy(),
 				}, sce.MaturityHeight)
 			}
 		}
@@ -143,7 +143,7 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 			} else if se.SiacoinOutput.Address != walletAddress {
 				continue
 			}
-			event.SpentSiacoinElements = append(event.SpentSiacoinElements, se)
+			event.SpentSiacoinElements = append(event.SpentSiacoinElements, se.Copy())
 		}
 		addEvent(types.Hash256(txn.ID()), EventTypeV1Transaction, event, index.Height)
 	}
@@ -161,7 +161,7 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 				}
 
 				addEvent(types.Hash256(outputID), EventTypeSiafundClaim, EventPayout{
-					SiacoinElement: sce,
+					SiacoinElement: sce.Copy(),
 				}, sce.MaturityHeight)
 			}
 		}
@@ -174,8 +174,8 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 		if !fced.Resolved {
 			continue
 		}
-		fce := fced.FileContractElement
-		fce.StateElement.MerkleProof = nil // clear the proof to save space
+		fced.FileContractElement.StateElement.MerkleProof = nil // clear the proof to save space
+		fce := fced.FileContractElement.Move()
 
 		if fced.Valid {
 			for i, so := range fce.FileContract.ValidProofOutputs {
@@ -190,8 +190,8 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 				}
 
 				addEvent(types.Hash256(outputID), EventTypeV1ContractResolution, EventV1ContractResolution{
-					Parent:         fce,
-					SiacoinElement: sce,
+					Parent:         fce.Copy(),
+					SiacoinElement: sce.Copy(),
 					Missed:         false,
 				}, sce.MaturityHeight)
 			}
@@ -208,8 +208,8 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 				}
 
 				addEvent(types.Hash256(outputID), EventTypeV1ContractResolution, EventV1ContractResolution{
-					Parent:         fce,
-					SiacoinElement: sce,
+					Parent:         fce.Copy(),
+					SiacoinElement: sce.Copy(),
 					Missed:         true,
 				}, sce.MaturityHeight)
 			}
@@ -220,9 +220,8 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 		if fced.Resolution == nil {
 			continue
 		}
-
-		fce := fced.V2FileContractElement
-		fce.StateElement.MerkleProof = nil // clear the proof to save space
+		fced.V2FileContractElement.StateElement.MerkleProof = nil // clear the proof to save space
+		fce := fced.V2FileContractElement.Move()
 
 		_, missed := fced.Resolution.(*types.V2FileContractExpiration)
 		if fce.V2FileContract.HostOutput.Address == walletAddress {
@@ -234,10 +233,10 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 
 			addEvent(types.Hash256(outputID), EventTypeV2ContractResolution, EventV2ContractResolution{
 				Resolution: types.V2FileContractResolution{
-					Parent:     fce,
+					Parent:     fce.Copy(),
 					Resolution: fced.Resolution,
 				},
-				SiacoinElement: sce,
+				SiacoinElement: sce.Copy(),
 				Missed:         missed,
 			}, sce.MaturityHeight)
 		}
@@ -251,10 +250,10 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 
 			addEvent(types.Hash256(outputID), EventTypeV2ContractResolution, EventV2ContractResolution{
 				Resolution: types.V2FileContractResolution{
-					Parent:     fce,
+					Parent:     fce.Copy(),
 					Resolution: fced.Resolution,
 				},
-				SiacoinElement: sce,
+				SiacoinElement: sce.Copy(),
 				Missed:         missed,
 			}, sce.MaturityHeight)
 		}
@@ -272,14 +271,14 @@ func appliedEvents(cau chain.ApplyUpdate, walletAddress types.Address) (events [
 			panic("missing siacoin element")
 		}
 		addEvent(types.Hash256(outputID), EventTypeMinerPayout, EventPayout{
-			SiacoinElement: sce,
+			SiacoinElement: sce.Copy(),
 		}, sce.MaturityHeight)
 	}
 
 	outputID := blockID.FoundationOutputID()
 	if sce, ok := siacoinElements[outputID]; ok && sce.SiacoinOutput.Address == walletAddress {
 		addEvent(types.Hash256(outputID), EventTypeFoundationSubsidy, EventPayout{
-			SiacoinElement: sce,
+			SiacoinElement: sce.Copy(),
 		}, sce.MaturityHeight)
 	}
 	return
@@ -300,9 +299,9 @@ func (sw *SingleAddressWallet) applyChainUpdate(tx UpdateTx, address types.Addre
 		case sced.SiacoinElement.SiacoinOutput.Address != address:
 			continue // ignore elements that are not related to the wallet
 		case sced.Created:
-			createdUTXOs = append(createdUTXOs, sced.SiacoinElement)
+			createdUTXOs = append(createdUTXOs, sced.SiacoinElement.Share())
 		case sced.Spent:
-			spentUTXOs = append(spentUTXOs, sced.SiacoinElement)
+			spentUTXOs = append(spentUTXOs, sced.SiacoinElement.Share())
 		default:
 			panic("unexpected siacoin element") // developer error
 		}
@@ -327,9 +326,9 @@ func (sw *SingleAddressWallet) revertChainUpdate(tx UpdateTx, revertedIndex type
 		case sced.SiacoinElement.SiacoinOutput.Address != address:
 			continue // ignore elements that are not related to the wallet
 		case sced.Spent:
-			unspentUTXOs = append(unspentUTXOs, sced.SiacoinElement)
+			unspentUTXOs = append(unspentUTXOs, sced.SiacoinElement.Share())
 		case sced.Created:
-			removedUTXOs = append(removedUTXOs, sced.SiacoinElement)
+			removedUTXOs = append(removedUTXOs, sced.SiacoinElement.Share())
 		default:
 			panic("unexpected siacoin element") // developer error
 		}

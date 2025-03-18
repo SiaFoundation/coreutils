@@ -626,7 +626,7 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	var renterInputs types.Currency
 	for _, sce := range req.RenterInputs {
 		formationTxn.SiacoinInputs = append(formationTxn.SiacoinInputs, types.V2SiacoinInput{
-			Parent: sce,
+			Parent: sce.Move(),
 		})
 		renterInputs = renterInputs.Add(sce.SiacoinOutput.Value)
 	}
@@ -782,7 +782,7 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 	var renterInputSum types.Currency
 	for _, si := range req.RenterInputs {
 		renewalTxn.SiacoinInputs = append(renewalTxn.SiacoinInputs, types.V2SiacoinInput{
-			Parent: si,
+			Parent: si.Move(),
 		})
 		renterInputSum = renterInputSum.Add(si.SiacoinOutput.Value)
 	}
@@ -832,17 +832,17 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 	if elementBasis != basis {
 		tempTxn := types.V2Transaction{
 			FileContractResolutions: []types.V2FileContractResolution{
-				{Parent: fce, Resolution: &renewal},
+				{Parent: fce.Move(), Resolution: &renewal},
 			},
 		}
 		updated, err := s.chain.UpdateV2TransactionSet([]types.V2Transaction{tempTxn}, elementBasis, basis)
 		if err != nil {
 			return fmt.Errorf("failed to update contract element: %w", err)
 		}
-		fce = updated[0].FileContractResolutions[0].Parent
+		fce = updated[0].FileContractResolutions[0].Parent.Move()
 	}
 	renewalTxn.FileContractResolutions = []types.V2FileContractResolution{
-		{Parent: fce, Resolution: &renewal},
+		{Parent: fce.Move(), Resolution: &renewal},
 	}
 	s.wallet.SignV2Inputs(&renewalTxn, toSign)
 	// send the host inputs to the renter
@@ -960,7 +960,7 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	var renterInputSum types.Currency
 	for _, si := range req.RenterInputs {
 		renewalTxn.SiacoinInputs = append(renewalTxn.SiacoinInputs, types.V2SiacoinInput{
-			Parent: si,
+			Parent: si.Move(),
 		})
 		renterInputSum = renterInputSum.Add(si.SiacoinOutput.Value)
 	}
@@ -1010,17 +1010,17 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	if elementBasis != basis {
 		tempTxn := types.V2Transaction{
 			FileContractResolutions: []types.V2FileContractResolution{
-				{Parent: fce, Resolution: &renewal},
+				{Parent: fce.Move(), Resolution: &renewal},
 			},
 		}
 		updated, err := s.chain.UpdateV2TransactionSet([]types.V2Transaction{tempTxn}, elementBasis, basis)
 		if err != nil {
 			return fmt.Errorf("failed to update contract element: %w", err)
 		}
-		fce = updated[0].FileContractResolutions[0].Parent
+		fce = updated[0].FileContractResolutions[0].Parent.Move()
 	}
 	renewalTxn.FileContractResolutions = []types.V2FileContractResolution{
-		{Parent: fce, Resolution: &renewal},
+		{Parent: fce.Move(), Resolution: &renewal},
 	}
 	s.wallet.SignV2Inputs(&renewalTxn, toSign)
 	// send the host inputs to the renter

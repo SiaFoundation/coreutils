@@ -330,16 +330,16 @@ func (ec *EphemeralContractor) UpdateChainState(reverted []chain.RevertUpdate, a
 			case fced.Created:
 				delete(ec.contractElements, fced.V2FileContractElement.ID)
 			case fced.Resolution != nil:
-				ec.contractElements[fced.V2FileContractElement.ID] = fced.V2FileContractElement
+				ec.contractElements[fced.V2FileContractElement.ID] = fced.V2FileContractElement.Copy()
 			case fced.Revision != nil:
 				fced.V2FileContractElement.V2FileContract = *fced.Revision
-				ec.contractElements[fced.V2FileContractElement.ID] = fced.V2FileContractElement
+				ec.contractElements[fced.V2FileContractElement.ID] = fced.V2FileContractElement.Copy()
 			}
 		}
 
 		for id, fce := range ec.contractElements {
 			cru.UpdateElementProof(&fce.StateElement)
-			ec.contractElements[id] = fce
+			ec.contractElements[id] = fce.Move()
 		}
 		ec.tip = cru.State.Index
 	}
@@ -350,18 +350,18 @@ func (ec *EphemeralContractor) UpdateChainState(reverted []chain.RevertUpdate, a
 			}
 			switch {
 			case fced.Created:
-				ec.contractElements[fced.V2FileContractElement.ID] = fced.V2FileContractElement
+				ec.contractElements[fced.V2FileContractElement.ID] = fced.V2FileContractElement.Copy()
 			case fced.Resolution != nil:
 				delete(ec.contractElements, fced.V2FileContractElement.ID)
 			case fced.Revision != nil:
 				fced.V2FileContractElement.V2FileContract = *fced.Revision
-				ec.contractElements[fced.V2FileContractElement.ID] = fced.V2FileContractElement
+				ec.contractElements[fced.V2FileContractElement.ID] = fced.V2FileContractElement.Copy()
 			}
 		}
 
 		for id, fce := range ec.contractElements {
 			cau.UpdateElementProof(&fce.StateElement)
-			ec.contractElements[id] = fce
+			ec.contractElements[id] = fce.Move()
 		}
 		ec.tip = cau.State.Index
 	}

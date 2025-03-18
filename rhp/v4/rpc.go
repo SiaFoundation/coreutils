@@ -706,7 +706,7 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 
 	renterSiacoinElements := make([]types.SiacoinElement, 0, len(formationTxn.SiacoinInputs))
 	for _, i := range formationTxn.SiacoinInputs {
-		renterSiacoinElements = append(renterSiacoinElements, i.Parent)
+		renterSiacoinElements = append(renterSiacoinElements, i.Parent.Move())
 	}
 
 	s, err := openStream(ctx, t, defaultStreamTimeout)
@@ -851,7 +851,7 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 		return RPCRenewContractResult{}, fmt.Errorf("failed to get transaction set: %w", err)
 	}
 	for _, si := range renewalTxn.SiacoinInputs {
-		req.RenterInputs = append(req.RenterInputs, si.Parent)
+		req.RenterInputs = append(req.RenterInputs, si.Parent.Move())
 	}
 	req.RenterParents = req.RenterParents[:len(req.RenterParents)-1] // last transaction is the renewal
 
@@ -996,7 +996,7 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 		return RPCRefreshContractResult{}, fmt.Errorf("failed to get transaction set: %w", err)
 	}
 	for _, si := range renewalTxn.SiacoinInputs {
-		req.RenterInputs = append(req.RenterInputs, si.Parent)
+		req.RenterInputs = append(req.RenterInputs, si.Parent.Move())
 	}
 	req.RenterParents = req.RenterParents[:len(req.RenterParents)-1] // last transaction is the renewal
 

@@ -113,7 +113,7 @@ func transactionValues(t *testing.T, wm *wallet.SingleAddressWallet, txn types.T
 
 	elements := make(map[types.SiacoinOutputID]types.SiacoinElement)
 	for _, se := range utxos {
-		elements[types.SiacoinOutputID(se.ID)] = se
+		elements[se.ID] = se.Share()
 	}
 
 	for _, si := range txn.SiacoinInputs {
@@ -1582,7 +1582,7 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		}
 
 		// get the confirmed file contract element
-		fce := applied[0].V2FileContractElementDiffs()[0].V2FileContractElement
+		fce := applied[0].V2FileContractElementDiffs()[0].V2FileContractElement.Copy()
 		for _, cau := range applied[1:] {
 			cau.UpdateElementProof(&fce.StateElement)
 		}
@@ -1590,7 +1590,7 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		resolutionTxn := types.V2Transaction{
 			FileContractResolutions: []types.V2FileContractResolution{
 				{
-					Parent:     fce,
+					Parent:     fce.Copy(),
 					Resolution: &types.V2FileContractExpiration{},
 				},
 			},
@@ -1655,7 +1655,7 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		}
 
 		// get the confirmed file contract element
-		fce := applied[0].V2FileContractElementDiffs()[0].V2FileContractElement
+		fce := applied[0].V2FileContractElementDiffs()[0].V2FileContractElement.Copy()
 		for _, cau := range applied[1:] {
 			cau.UpdateElementProof(&fce.StateElement)
 		}
@@ -1665,9 +1665,9 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		resolutionTxn := types.V2Transaction{
 			FileContractResolutions: []types.V2FileContractResolution{
 				{
-					Parent: fce,
+					Parent: fce.Copy(),
 					Resolution: &types.V2StorageProof{
-						ProofIndex: indexElement,
+						ProofIndex: indexElement.Copy(),
 						// proof is nil since there's no data
 					},
 				},
@@ -1734,7 +1734,7 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		}
 
 		// get the confirmed file contract element
-		fce := applied[0].V2FileContractElementDiffs()[0].V2FileContractElement
+		fce := applied[0].V2FileContractElementDiffs()[0].V2FileContractElement.Copy()
 		for _, cau := range applied[1:] {
 			cau.UpdateElementProof(&fce.StateElement)
 		}
@@ -1788,7 +1788,7 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 			},
 			FileContractResolutions: []types.V2FileContractResolution{
 				{
-					Parent:     fce,
+					Parent:     fce.Copy(),
 					Resolution: &renewal,
 				},
 			},
@@ -1801,7 +1801,7 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		}
 		// mine a block to confirm the renewal
 		mineAndSync(t, cm, ws, wm, types.VoidAddress, 1)
-		assertEvent(t, wm, types.Hash256(types.FileContractID(fce.ID).V2RenterOutputID()), wallet.EventTypeV2ContractResolution, renterPayout, types.ZeroCurrency, cm.Tip().Height+network.MaturityDelay)
+		assertEvent(t, wm, types.Hash256(fce.ID.V2RenterOutputID()), wallet.EventTypeV2ContractResolution, renterPayout, types.ZeroCurrency, cm.Tip().Height+network.MaturityDelay)
 	})
 }
 

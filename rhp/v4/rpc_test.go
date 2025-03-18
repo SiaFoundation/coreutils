@@ -182,7 +182,7 @@ func assertValidRevision(t *testing.T, cm rhp4.ChainManager, c rhp4.Contractor, 
 	revisionTxn := types.V2Transaction{
 		FileContractRevisions: []types.V2FileContractRevision{
 			{
-				Parent:   fce,
+				Parent:   fce.Copy(),
 				Revision: revision.Revision,
 			},
 		},
