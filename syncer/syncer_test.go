@@ -97,3 +97,42 @@ func TestSyncerConnectAfterClose(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func hashEq(a, b types.EncoderTo) bool {
+	h := types.NewHasher()
+	a.EncodeTo(h.E)
+	h1 := h.Sum()
+	h.Reset()
+	b.EncodeTo(h.E)
+	h2 := h.Sum()
+	return h1 == h2
+}
+
+func TestSendCheckpoint(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	s1, cm1 := newTestSyncer(t, "syncer1", log)
+	defer s1.Close()
+
+	s2, _ := newTestSyncer(t, "syncer2", log)
+	defer s2.Close()
+
+	// mine above v2 hardfork height
+	genesis, _ := cm1.BestIndex(0)
+	genesisState, _ := cm1.State(genesis.ID)
+	testutil.MineBlocks(t, cm1, types.VoidAddress, int(genesisState.Network.HardforkV2.AllowHeight)+1)
+
+	// request a checkpoint
+	p, err := s2.Connect(context.Background(), s1.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, cs, err := p.SendCheckpoint(cm1.Tip(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	} else if b1, _ := cm1.Block(cm1.Tip().ID); !hashEq(types.V2Block(b), types.V2Block(b1)) {
+		t.Fatalf("expected block %v, got %v", b1, b)
+	} else if cs1, _ := cm1.State(cs.Index.ID); !hashEq(cs, cs1) {
+		t.Fatalf("expected checkpoint %v, got %v", cs1, cs)
+	}
+}
