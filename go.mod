@@ -5,7 +5,7 @@ go 1.23.1
 toolchain go1.23.2
 
 require (
-	github.com/quic-go/quic-go v0.50.0
+	github.com/quic-go/quic-go v0.50.1
 	github.com/quic-go/webtransport-go v0.8.1-0.20241018022711-4ac2c9250e66
 	go.etcd.io/bbolt v1.4.0
 	go.sia.tech/core v0.10.5-0.20250317164759-1a1e10e046f0
