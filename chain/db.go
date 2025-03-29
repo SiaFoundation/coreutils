@@ -431,10 +431,19 @@ func (db *DBStore) deleteFileContractElement(id types.FileContractID) {
 	db.bucket(bFileContractElements).delete(id[:])
 }
 
-func (db *DBStore) putFileContractExpiration(id types.FileContractID, windowEnd uint64) {
+func (db *DBStore) putFileContractExpiration(id types.FileContractID, windowEnd uint64, apply bool) {
 	b := db.bucket(bFileContractElements)
 	key := db.encHeight(windowEnd)
-	b.putRaw(key, append(b.getRaw(key), id[:]...))
+	// When applying, we append; when reverting, we prepend. This ensures that
+	// the order of the IDs -- and consequently, the ExpiringFileContracts in a
+	// V1BlockSupplement -- remain stable across reorgs. Without this adjustment,
+	// a reorg could change the order in which missed proof outputs are added to
+	// the element tree, giving them different leaf indices.
+	if apply {
+		b.putRaw(key, append(b.getRaw(key), id[:]...))
+	} else {
+		b.putRaw(key, append(id[:], b.getRaw(key)...))
+	}
 }
 
 func (db *DBStore) deleteFileContractExpiration(id types.FileContractID, windowEnd uint64) {
@@ -499,11 +508,11 @@ func (db *DBStore) applyElements(cau consensus.ApplyUpdate) {
 			db.putFileContractElement(rev.Share())
 			if rev.FileContract.WindowEnd != fce.FileContract.WindowEnd {
 				db.deleteFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
-				db.putFileContractExpiration(fce.ID, rev.FileContract.WindowEnd)
+				db.putFileContractExpiration(fce.ID, rev.FileContract.WindowEnd, true)
 			}
 		} else {
 			db.putFileContractElement(fce.Share())
-			db.putFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
+			db.putFileContractExpiration(fce.ID, fce.FileContract.WindowEnd, true)
 		}
 	}
 }
@@ -516,7 +525,7 @@ func (db *DBStore) revertElements(cru consensus.RevertUpdate) {
 		} else if fced.Resolved {
 			// contract no longer resolved; restore it
 			db.putFileContractElement(fce.Share())
-			db.putFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
+			db.putFileContractExpiration(fce.ID, fce.FileContract.WindowEnd, false)
 		} else if fced.Revision != nil {
 			// contract no longer revised; restore prior revision
 			rev := fce.Share()
@@ -524,7 +533,7 @@ func (db *DBStore) revertElements(cru consensus.RevertUpdate) {
 			db.putFileContractElement(fce.Share())
 			if rev.FileContract.WindowEnd != fce.FileContract.WindowEnd {
 				db.deleteFileContractExpiration(fce.ID, rev.FileContract.WindowEnd)
-				db.putFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
+				db.putFileContractExpiration(fce.ID, fce.FileContract.WindowEnd, false)
 			}
 		} else {
 			// contract no longer exists; delete it
@@ -588,17 +597,17 @@ func (db *DBStore) SupplementTipTransaction(txn types.Transaction) (ts consensus
 
 	for _, sci := range txn.SiacoinInputs {
 		if sce, ok := db.getSiacoinElement(sci.ParentID, numLeaves); ok {
-			ts.SiacoinInputs = append(ts.SiacoinInputs, sce.Copy())
+			ts.SiacoinInputs = append(ts.SiacoinInputs, sce.Move())
 		}
 	}
 	for _, sfi := range txn.SiafundInputs {
 		if sfe, ok := db.getSiafundElement(sfi.ParentID, numLeaves); ok {
-			ts.SiafundInputs = append(ts.SiafundInputs, sfe.Copy())
+			ts.SiafundInputs = append(ts.SiafundInputs, sfe.Move())
 		}
 	}
 	for _, fcr := range txn.FileContractRevisions {
 		if fce, ok := db.getFileContractElement(fcr.ParentID, numLeaves); ok {
-			ts.RevisedFileContracts = append(ts.RevisedFileContracts, fce.Copy())
+			ts.RevisedFileContracts = append(ts.RevisedFileContracts, fce.Move())
 		}
 	}
 	for _, sp := range txn.StorageProofs {
@@ -638,7 +647,7 @@ func (db *DBStore) SupplementTipBlock(b types.Block) (bs consensus.V1BlockSupple
 		if !ok {
 			panic("missing FileContractElement")
 		}
-		bs.ExpiringFileContracts = append(bs.ExpiringFileContracts, fce.Copy())
+		bs.ExpiringFileContracts = append(bs.ExpiringFileContracts, fce.Move())
 	}
 	return bs
 }
