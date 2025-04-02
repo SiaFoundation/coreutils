@@ -147,7 +147,7 @@ func (sw *SingleAddressWallet) Balance() (balance Balance, err error) {
 				continue
 			}
 			sce := txn.EphemeralSiacoinOutput(i)
-			tpoolUtxos[sce.ID] = sce
+			tpoolUtxos[sce.ID] = sce.Move()
 		}
 	}
 
@@ -213,7 +213,7 @@ func (sw *SingleAddressWallet) SpendableOutputs() ([]types.SiacoinElement, error
 		if sw.isLocked(sce.ID) || inPool[sce.ID] || bh < sce.MaturityHeight {
 			continue
 		}
-		unspent = append(unspent, sce)
+		unspent = append(unspent, sce.Copy())
 	}
 	return unspent, nil
 }
@@ -245,7 +245,7 @@ func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, us
 		}
 		for i := range txn.SiacoinOutputs {
 			sce := txn.EphemeralSiacoinOutput(i)
-			tpoolUtxos[sce.ID] = sce
+			tpoolUtxos[sce.ID] = sce.Move()
 		}
 	}
 
@@ -262,7 +262,7 @@ func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, us
 			immatureSum = immatureSum.Add(sce.SiacoinOutput.Value)
 			continue
 		}
-		utxos = append(utxos, sce)
+		utxos = append(utxos, sce.Share())
 	}
 
 	// sort by value, descending
@@ -277,7 +277,7 @@ func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, us
 			if sce.SiacoinOutput.Address != sw.addr || sw.isLocked(sce.ID) {
 				continue
 			}
-			unconfirmedUTXOs = append(unconfirmedUTXOs, sce)
+			unconfirmedUTXOs = append(unconfirmedUTXOs, sce.Share())
 			unconfirmedSum = unconfirmedSum.Add(sce.SiacoinOutput.Value)
 		}
 	}
@@ -295,14 +295,14 @@ func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, us
 			utxos = utxos[i:]
 			break
 		}
-		selected = append(selected, sce)
+		selected = append(selected, sce.Share())
 		inputSum = inputSum.Add(sce.SiacoinOutput.Value)
 	}
 
 	if inputSum.Cmp(amount) < 0 && useUnconfirmed {
 		// try adding unconfirmed utxos.
 		for _, sce := range unconfirmedUTXOs {
-			selected = append(selected, sce)
+			selected = append(selected, sce.Share())
 			inputSum = inputSum.Add(sce.SiacoinOutput.Value)
 			if inputSum.Cmp(amount) >= 0 {
 				break
@@ -330,8 +330,8 @@ func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, us
 				break
 			}
 
-			sce := defraggable[i]
-			selected = append(selected, sce)
+			sce := &defraggable[i]
+			selected = append(selected, sce.Share())
 			inputSum = inputSum.Add(sce.SiacoinOutput.Value)
 			txnInputs++
 		}
@@ -372,7 +372,7 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 	toSign := make([]types.Hash256, len(selected))
 	for i, sce := range selected {
 		txn.SiacoinInputs = append(txn.SiacoinInputs, types.SiacoinInput{
-			ParentID:         types.SiacoinOutputID(sce.ID),
+			ParentID:         sce.ID,
 			UnlockConditions: types.StandardUnlockConditions(sw.priv.PublicKey()),
 		})
 		toSign[i] = types.Hash256(sce.ID)
@@ -443,7 +443,7 @@ func (sw *SingleAddressWallet) FundV2Transaction(txn *types.V2Transaction, amoun
 	for _, sce := range selected {
 		toSign = append(toSign, len(txn.SiacoinInputs))
 		txn.SiacoinInputs = append(txn.SiacoinInputs, types.V2SiacoinInput{
-			Parent: sce,
+			Parent: sce.Copy(),
 		})
 		sw.locked[sce.ID] = time.Now().Add(sw.cfg.ReservationDuration)
 	}
@@ -497,7 +497,7 @@ func (sw *SingleAddressWallet) UnconfirmedEvents() (annotated []Event, err error
 
 	utxos := make(map[types.SiacoinOutputID]types.SiacoinElement)
 	for _, se := range confirmed {
-		utxos[se.ID] = se
+		utxos[se.ID] = se.Share()
 	}
 
 	index := types.ChainIndex{
@@ -536,21 +536,18 @@ func (sw *SingleAddressWallet) UnconfirmedEvents() (annotated []Event, err error
 				continue
 			}
 			outflow = outflow.Add(sce.SiacoinOutput.Value)
-			event.SpentSiacoinElements = append(event.SpentSiacoinElements, sce)
+			event.SpentSiacoinElements = append(event.SpentSiacoinElements, sce.Share())
 		}
 
 		var inflow types.Currency
 		for i, so := range txn.SiacoinOutputs {
 			if so.Address == sw.addr {
 				inflow = inflow.Add(so.Value)
-				sce := types.SiacoinElement{
-					ID: txn.SiacoinOutputID(i),
-					StateElement: types.StateElement{
-						LeafIndex: types.UnassignedLeafIndex,
-					},
+				utxos[txn.SiacoinOutputID(i)] = types.SiacoinElement{
+					ID:            txn.SiacoinOutputID(i),
+					StateElement:  types.StateElement{LeafIndex: types.UnassignedLeafIndex},
 					SiacoinOutput: so,
 				}
-				utxos[sce.ID] = sce
 			}
 		}
 
@@ -616,7 +613,7 @@ func (sw *SingleAddressWallet) selectRedistributeUTXOs(bh uint64, outputs int, a
 
 		// collect usable outputs for defragging
 		if !inUse && matured && !sameValue {
-			utxos = append(utxos, sce)
+			utxos = append(utxos, sce.Share())
 		}
 	}
 	// desc sort
@@ -685,7 +682,7 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 		var inputs []types.SiacoinElement
 		want := amount.Mul64(uint64(len(txn.SiacoinOutputs)))
 		for _, sce := range utxos {
-			inputs = append(inputs, sce)
+			inputs = append(inputs, sce.Share())
 			fee := feePerInput.Mul64(uint64(len(inputs))).Add(outputFees)
 			if SumOutputs(inputs).Cmp(want.Add(fee)) > 0 {
 				break
@@ -724,7 +721,7 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 		for _, sce := range inputs {
 			toSignTxn = append(toSignTxn, types.Hash256(sce.ID))
 			txn.SiacoinInputs = append(txn.SiacoinInputs, types.SiacoinInput{
-				ParentID:         types.SiacoinOutputID(sce.ID),
+				ParentID:         sce.ID,
 				UnlockConditions: types.StandardUnlockConditions(sw.priv.PublicKey()),
 			})
 			sw.locked[sce.ID] = time.Now().Add(sw.cfg.ReservationDuration)
@@ -790,7 +787,7 @@ func (sw *SingleAddressWallet) RedistributeV2(outputs int, amount, feePerByte ty
 		var inputs []types.SiacoinElement
 		want := amount.Mul64(uint64(len(txn.SiacoinOutputs)))
 		for _, sce := range utxos {
-			inputs = append(inputs, sce)
+			inputs = append(inputs, sce.Copy())
 			fee := feePerInput.Mul64(uint64(len(inputs))).Add(outputFees)
 			if SumOutputs(inputs).Cmp(want.Add(fee)) > 0 {
 				break
@@ -829,7 +826,7 @@ func (sw *SingleAddressWallet) RedistributeV2(outputs int, amount, feePerByte ty
 		for _, sce := range inputs {
 			toSignTxn = append(toSignTxn, len(txn.SiacoinInputs))
 			txn.SiacoinInputs = append(txn.SiacoinInputs, types.V2SiacoinInput{
-				Parent: sce,
+				Parent: sce.Move(),
 			})
 			sw.locked[sce.ID] = time.Now().Add(sw.cfg.ReservationDuration)
 		}

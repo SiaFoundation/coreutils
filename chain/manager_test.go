@@ -244,7 +244,7 @@ func TestUpdateV2TransactionSet(t *testing.T) {
 	cs, cau := consensus.ApplyBlock(n.GenesisState(), genesisBlock, bs, time.Time{})
 	txn := types.V2Transaction{
 		SiacoinInputs: []types.V2SiacoinInput{{
-			Parent: cau.SiacoinElementDiffs()[0].SiacoinElement,
+			Parent: cau.SiacoinElementDiffs()[0].SiacoinElement.Copy(),
 			SatisfiedPolicy: types.SatisfiedPolicy{
 				Policy:     types.PolicyPublicKey(giftPublicKey),
 				Signatures: []types.Signature{},

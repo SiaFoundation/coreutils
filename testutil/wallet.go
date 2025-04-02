@@ -28,7 +28,7 @@ type (
 
 func (et *ephemeralWalletUpdateTxn) WalletStateElements() (elements []types.StateElement, _ error) {
 	for _, se := range et.store.utxos {
-		elements = append(elements, se.StateElement)
+		elements = append(elements, se.StateElement.Copy())
 	}
 	return
 }
@@ -39,24 +39,24 @@ func (et *ephemeralWalletUpdateTxn) WalletStateElements() (elements []types.Stat
 func (et *ephemeralWalletUpdateTxn) UpdateWalletSiacoinElementProofs(pu wallet.ProofUpdater) error {
 	for _, se := range et.store.utxos {
 		pu.UpdateElementProof(&se.StateElement)
-		et.store.utxos[se.ID] = se
+		et.store.utxos[se.ID] = se.Move()
 	}
 	return nil
 }
 
 func (et *ephemeralWalletUpdateTxn) WalletApplyIndex(index types.ChainIndex, created, spent []types.SiacoinElement, events []wallet.Event, _ time.Time) error {
 	for _, se := range spent {
-		if _, ok := et.store.utxos[types.SiacoinOutputID(se.ID)]; !ok {
+		if _, ok := et.store.utxos[se.ID]; !ok {
 			panic(fmt.Sprintf("siacoin element %q does not exist", se.ID))
 		}
-		delete(et.store.utxos, types.SiacoinOutputID(se.ID))
+		delete(et.store.utxos, se.ID)
 	}
 	// add siacoin elements
 	for _, se := range created {
-		if _, ok := et.store.utxos[types.SiacoinOutputID(se.ID)]; ok {
+		if _, ok := et.store.utxos[se.ID]; ok {
 			panic("duplicate element")
 		}
-		et.store.utxos[types.SiacoinOutputID(se.ID)] = se
+		et.store.utxos[se.ID] = se.Copy()
 	}
 
 	// add events
@@ -78,12 +78,12 @@ func (et *ephemeralWalletUpdateTxn) WalletRevertIndex(index types.ChainIndex, re
 
 	// remove any siacoin elements that were added in the reverted block
 	for _, se := range removed {
-		delete(et.store.utxos, types.SiacoinOutputID(se.ID))
+		delete(et.store.utxos, se.ID)
 	}
 
 	// readd any siacoin elements that were spent in the reverted block
 	for _, se := range unspent {
-		et.store.utxos[types.SiacoinOutputID(se.ID)] = se
+		et.store.utxos[se.ID] = se.Copy()
 	}
 	et.store.tip = index
 	return nil
@@ -132,8 +132,7 @@ func (es *EphemeralWalletStore) UnspentSiacoinElements() (utxos []types.SiacoinE
 	defer es.mu.Unlock()
 
 	for _, se := range es.utxos {
-		se.StateElement.MerkleProof = append([]types.Hash256(nil), se.StateElement.MerkleProof...)
-		utxos = append(utxos, se)
+		utxos = append(utxos, se.Copy())
 	}
 	return utxos, nil
 }

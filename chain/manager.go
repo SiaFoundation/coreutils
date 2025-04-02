@@ -681,6 +681,7 @@ func updateTxnProofs(txn *types.V2Transaction, updateElementProof func(*types.St
 		if !valid || e.LeafIndex == types.UnassignedLeafIndex {
 			return
 		}
+		*e = e.Copy()
 		updateElementProof(e)
 	}
 	for i := range txn.SiacoinInputs {
@@ -770,27 +771,27 @@ func (m *Manager) applyPoolUpdate(cau consensus.ApplyUpdate, cs consensus.State)
 
 			for _, sced := range cau.SiacoinElementDiffs() {
 				if sced.Created {
-					newElements[types.Hash256(sced.SiacoinElement.ID)] = sced.SiacoinElement.StateElement
+					newElements[types.Hash256(sced.SiacoinElement.ID)] = sced.SiacoinElement.StateElement.Share()
 				}
 			}
 			for _, sfed := range cau.SiafundElementDiffs() {
 				if sfed.Created {
-					newElements[types.Hash256(sfed.SiafundElement.ID)] = sfed.SiafundElement.StateElement
+					newElements[types.Hash256(sfed.SiafundElement.ID)] = sfed.SiafundElement.StateElement.Share()
 				}
 			}
 			for _, fced := range cau.FileContractElementDiffs() {
 				if fced.Created {
-					newElements[types.Hash256(fced.FileContractElement.ID)] = fced.FileContractElement.StateElement
+					newElements[types.Hash256(fced.FileContractElement.ID)] = fced.FileContractElement.StateElement.Share()
 				}
 			}
 			for _, v2fced := range cau.V2FileContractElementDiffs() {
 				if v2fced.Created {
-					newElements[types.Hash256(v2fced.V2FileContractElement.ID)] = v2fced.V2FileContractElement.StateElement
+					newElements[types.Hash256(v2fced.V2FileContractElement.ID)] = v2fced.V2FileContractElement.StateElement.Share()
 				}
 			}
 		}
 		if se, ok := newElements[id]; ok {
-			*e = se
+			*e = se.Share()
 		}
 	}
 	for _, txn := range m.txpool.v2txns {
@@ -1136,12 +1137,12 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		confirmedStateElements := make(map[types.Hash256]types.StateElement)
 		for _, sced := range cau.SiacoinElementDiffs() {
 			if sced.Created {
-				confirmedStateElements[types.Hash256(sced.SiacoinElement.ID)] = sced.SiacoinElement.StateElement
+				confirmedStateElements[types.Hash256(sced.SiacoinElement.ID)] = sced.SiacoinElement.StateElement.Share()
 			}
 		}
 		for _, sfed := range cau.SiafundElementDiffs() {
 			if sfed.Created {
-				confirmedStateElements[types.Hash256(sfed.SiafundElement.ID)] = sfed.SiafundElement.StateElement
+				confirmedStateElements[types.Hash256(sfed.SiafundElement.ID)] = sfed.SiafundElement.StateElement.Share()
 			}
 		}
 
@@ -1161,7 +1162,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 				if !ok {
 					continue
 				}
-				txns[i].SiacoinInputs[j].Parent.StateElement = se
+				txns[i].SiacoinInputs[j].Parent.StateElement = se.Share()
 			}
 
 			// update the state elements for any confirmed ephemeral elements
@@ -1173,7 +1174,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 				if !ok {
 					continue
 				}
-				txns[i].SiafundInputs[j].Parent.StateElement = se
+				txns[i].SiafundInputs[j].Parent.StateElement = se.Share()
 			}
 
 			// NOTE: all elements guaranteed to exist from here on, so no

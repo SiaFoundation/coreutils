@@ -33,7 +33,7 @@ func (ms *memState) Sync(t *testing.T, cm *chain.Manager) {
 
 			// remove chain index element
 			if len(ms.chainIndexElements) > 0 {
-				last := ms.chainIndexElements[len(ms.chainIndexElements)-1]
+				last := ms.chainIndexElements[len(ms.chainIndexElements)-1].Copy()
 				if last.ChainIndex != revertedIndex {
 					t.Fatalf("expected reverted index %v, got %v", last.ChainIndex, revertedIndex)
 				}
@@ -42,10 +42,10 @@ func (ms *memState) Sync(t *testing.T, cm *chain.Manager) {
 
 			// revert utxos
 			for _, sced := range cru.SiacoinElementDiffs() {
-				sce := sced.SiacoinElement
+				sce := &sced.SiacoinElement
 				if sce.SiacoinOutput.Address == types.AnyoneCanSpend().Address() {
 					if sced.Spent {
-						ms.utxos[sce.ID] = sce
+						ms.utxos[sce.ID] = sce.Copy()
 					}
 					if sced.Created {
 						delete(ms.utxos, sce.ID)
@@ -54,10 +54,9 @@ func (ms *memState) Sync(t *testing.T, cm *chain.Manager) {
 			}
 
 			// update utxos proofs
-			for key := range ms.utxos {
-				se := ms.utxos[key]
+			for key, se := range ms.utxos {
 				cru.UpdateElementProof(&se.StateElement)
-				ms.utxos[key] = se
+				ms.utxos[key] = se.Copy()
 			}
 			ms.index = cru.State.Index
 		}
@@ -72,10 +71,10 @@ func (ms *memState) Sync(t *testing.T, cm *chain.Manager) {
 
 			// apply utxos
 			for _, sced := range cau.SiacoinElementDiffs() {
-				sce := sced.SiacoinElement
+				sce := &sced.SiacoinElement
 				if sce.SiacoinOutput.Address == types.AnyoneCanSpend().Address() {
 					if sced.Created {
-						ms.utxos[sce.ID] = sce
+						ms.utxos[sce.ID] = sce.Copy()
 					}
 					if sced.Spent {
 						delete(ms.utxos, sce.ID)
@@ -84,10 +83,9 @@ func (ms *memState) Sync(t *testing.T, cm *chain.Manager) {
 			}
 
 			// update utxos proofs
-			for key := range ms.utxos {
-				se := ms.utxos[key]
+			for key, se := range ms.utxos {
 				cau.UpdateElementProof(&se.StateElement)
-				ms.utxos[key] = se
+				ms.utxos[key] = se.Move()
 			}
 			ms.index = cau.State.Index
 		}
@@ -184,7 +182,7 @@ func TestV2Attestations(t *testing.T) {
 		se := ms.SpendableElement(t)
 		txn := types.V2Transaction{
 			SiacoinInputs: []types.V2SiacoinInput{
-				{Parent: se, SatisfiedPolicy: types.SatisfiedPolicy{Policy: policy}},
+				{Parent: se.Copy(), SatisfiedPolicy: types.SatisfiedPolicy{Policy: policy}},
 			},
 			MinerFee:      se.SiacoinOutput.Value,
 			ArbitraryData: frand.Bytes(16),
@@ -278,7 +276,7 @@ func TestV2Attestations(t *testing.T) {
 		minerFee := types.Siacoins(1)
 		txn := types.V2Transaction{
 			SiacoinInputs: []types.V2SiacoinInput{
-				{Parent: se, SatisfiedPolicy: types.SatisfiedPolicy{Policy: policy}},
+				{Parent: se.Copy(), SatisfiedPolicy: types.SatisfiedPolicy{Policy: policy}},
 			},
 			SiacoinOutputs: []types.SiacoinOutput{
 				{Address: addr, Value: se.SiacoinOutput.Value.Sub(minerFee)},
