@@ -427,7 +427,7 @@ func (m *Manager) UpdatesSince(index types.ChainIndex, maxBlocks int) (rus []Rev
 		return bi.ID == index.ID || index == types.ChainIndex{}
 	}
 
-	for index != m.tipState.Index && len(rus)+len(aus) <= maxBlocks {
+	for index != m.tipState.Index && len(rus)+len(aus) < maxBlocks {
 		// revert until we are on the best chain, then apply
 		if !onBestChain(index) {
 			b, bs, cs, ok := blockAndParent(m.store, index.ID)
