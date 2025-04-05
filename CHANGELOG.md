@@ -1,3 +1,11 @@
+## 0.12.2 (2025-04-05)
+
+### Fixes
+
+- Added a default deadline of 1m to the SiaMux dialer. If the context has a deadline, it will override the default.
+- Return up to maxBlocks updates, not up to maxBlocks+1
+- Fix ExpiringFileContracts ordering when reverting blocks
+
 ## 0.12.1 (2025-03-11)
 
 ### Fixes
