@@ -17,6 +17,11 @@ type MigrationLogger interface {
 	SetProgress(percentage float64)
 }
 
+type noopLogger struct{}
+
+func (noopLogger) Printf(string, ...any) {}
+func (noopLogger) SetProgress(float64)   {}
+
 // MigrateDB upgrades the database to the latest version.
 func MigrateDB(db DB, n *consensus.Network, l MigrationLogger) error {
 	if db.Bucket(bVersion) == nil {

@@ -757,7 +757,7 @@ func (db *DBStore) Flush() error {
 }
 
 // NewDBStore creates a new DBStore using the provided database. The tip state
-// is also returned.
+// is also returned. The DB will be automatically migrated if necessary.
 func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block) (_ *DBStore, _ consensus.State, err error) {
 	// during initialization, we should return an error instead of panicking
 	defer func() {
@@ -807,7 +807,9 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block) (_ *DBSto
 			return nil, consensus.State{}, err
 		}
 	} else if version[0] != 2 {
-		return nil, consensus.State{}, errors.New("incompatible version; please migrate the database")
+		if err := MigrateDB(db, n, noopLogger{}); err != nil {
+			return nil, consensus.State{}, fmt.Errorf("failed to migrate database: %w", err)
+		}
 	}
 
 	// check that we have the correct genesis block for this network
