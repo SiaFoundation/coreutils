@@ -1,5 +1,5 @@
 ---
-default: CHANGE_TYPE
+default: major
 ---
 
 # DB migration
