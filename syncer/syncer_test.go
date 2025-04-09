@@ -19,7 +19,7 @@ import (
 
 func newTestSyncer(t testing.TB, name string, log *zap.Logger) (*syncer.Syncer, *chain.Manager) {
 	n, genesis := testutil.Network()
-	store, tipState1, err := chain.NewDBStore(chain.NewMemDB(), n, genesis)
+	store, tipState1, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

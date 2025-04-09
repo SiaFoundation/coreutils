@@ -213,7 +213,7 @@ func TestWallet(t *testing.T) {
 
 	// create chain store
 	network, genesis := testutil.Network()
-	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis)
+	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +370,7 @@ func TestWalletUnconfirmed(t *testing.T) {
 
 	// create chain store
 	network, genesis := testutil.Network()
-	cs, tipState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis)
+	cs, tipState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +472,7 @@ func TestWalletRedistribute(t *testing.T) {
 
 	// create chain store
 	network, genesis := testutil.Network()
-	cs, tipState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis)
+	cs, tipState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -578,7 +578,7 @@ func TestWalletRedistributeV2(t *testing.T) {
 	// create chain store
 	network, genesis := testutil.Network()
 	network.HardforkV2.AllowHeight = 1 // allow V2 transactions from the start
-	cs, tipState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis)
+	cs, tipState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -683,7 +683,7 @@ func TestReorg(t *testing.T) {
 
 	// create chain store
 	network, genesis := testutil.Network()
-	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis)
+	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -897,7 +897,7 @@ func TestWalletV2(t *testing.T) {
 
 	// create chain store
 	network, genesis := testutil.Network()
-	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis)
+	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1074,7 +1074,7 @@ func TestReorgV2(t *testing.T) {
 
 	// create chain store
 	network, genesis := testutil.V2Network()
-	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis)
+	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1325,7 +1325,7 @@ func TestFundTransaction(t *testing.T) {
 	network.HardforkV2.RequireHeight = 3
 
 	// create chain store
-	cs, tipState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis)
+	cs, tipState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1425,7 +1425,7 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 	network, genesisBlock := testutil.V2Network()
 	// raise the require height to test v1 events
 	network.HardforkV2.RequireHeight = 100
-	store, genesisState, err := chain.NewDBStore(bdb, network, genesisBlock)
+	store, genesisState, err := chain.NewDBStore(bdb, network, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1812,7 +1812,7 @@ func TestV2TxPoolRace(t *testing.T) {
 
 	// create chain store
 	network, genesis := testutil.V2Network()
-	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis)
+	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

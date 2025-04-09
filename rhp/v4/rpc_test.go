@@ -94,7 +94,7 @@ func testRenterHostPairQUIC(tb testing.TB, hostKey types.PrivateKey, cm rhp4.Cha
 }
 
 func startTestNode(tb testing.TB, n *consensus.Network, genesis types.Block) (*chain.Manager, *syncer.Syncer, *wallet.SingleAddressWallet) {
-	db, tipstate, err := chain.NewDBStore(chain.NewMemDB(), n, genesis)
+	db, tipstate, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
 	if err != nil {
 		tb.Fatal(err)
 	}

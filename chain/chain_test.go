@@ -129,7 +129,7 @@ func TestV2Attestations(t *testing.T) {
 	}
 
 	t.Run("arbitrary data", func(t *testing.T) {
-		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock)
+		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -164,7 +164,7 @@ func TestV2Attestations(t *testing.T) {
 	})
 
 	t.Run("arbitrary data + attestation + no change output", func(t *testing.T) {
-		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock)
+		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -213,7 +213,7 @@ func TestV2Attestations(t *testing.T) {
 	})
 
 	t.Run("arbitrary data + attestation", func(t *testing.T) {
-		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock)
+		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -257,7 +257,7 @@ func TestV2Attestations(t *testing.T) {
 	})
 
 	t.Run("arbitrary data + attestation + change output", func(t *testing.T) {
-		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock)
+		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

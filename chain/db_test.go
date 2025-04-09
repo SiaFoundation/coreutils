@@ -14,7 +14,7 @@ import (
 
 func TestGetEmptyBlockID(t *testing.T) {
 	n, genesisBlock := testutil.V2Network()
-	store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock)
+	store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +24,7 @@ func TestGetEmptyBlockID(t *testing.T) {
 
 func TestExpiringFileContracts(t *testing.T) {
 	n, genesisBlock := chain.TestnetZen()
-	store, cs, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock)
+	store, cs, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

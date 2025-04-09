@@ -22,16 +22,7 @@ type noopLogger struct{}
 func (noopLogger) Printf(string, ...any) {}
 func (noopLogger) SetProgress(float64)   {}
 
-// MigrateDB upgrades the database to the latest version.
-func MigrateDB(db DB, n *consensus.Network, l MigrationLogger) error {
-	if db.Bucket(bVersion) == nil {
-		return nil // nothing to migrate
-	}
-	dbs := &DBStore{
-		db: db,
-		n:  n,
-	}
-
+func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 	version := dbs.bucket(bVersion).getRaw(bVersion)
 	if version == nil {
 		version = []byte{1}
@@ -54,7 +45,7 @@ func MigrateDB(db DB, n *consensus.Network, l MigrationLogger) error {
 			}
 			clear(seen)
 			tree = tree[:0]
-			return db.Flush()
+			return dbs.Flush()
 		}
 		lastPrint := time.Now()
 		for height := range v1Blocks {
