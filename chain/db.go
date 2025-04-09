@@ -474,7 +474,7 @@ func (db *DBStore) revertState(prev consensus.State) {
 
 func (db *DBStore) applyElements(cau consensus.ApplyUpdate) {
 	cau.ForEachTreeNode(func(row, col uint64, h types.Hash256) {
-		db.bucket(bTree).put(db.treeKey(row, col), h)
+		db.bucket(bTree).putRaw(db.treeKey(row, col), h[:])
 	})
 
 	for _, sced := range cau.SiacoinElementDiffs() {
@@ -566,7 +566,7 @@ func (db *DBStore) revertElements(cru consensus.RevertUpdate) {
 	}
 
 	cru.ForEachTreeNode(func(row, col uint64, h types.Hash256) {
-		db.bucket(bTree).put(db.treeKey(row, col), h)
+		db.bucket(bTree).putRaw(db.treeKey(row, col), h[:])
 	})
 
 	// NOTE: Although the element tree has shrunk, we do not need to explicitly
@@ -757,8 +757,9 @@ func (db *DBStore) Flush() error {
 }
 
 // NewDBStore creates a new DBStore using the provided database. The tip state
-// is also returned.
-func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block) (_ *DBStore, _ consensus.State, err error) {
+// is also returned. The DB will be automatically migrated if necessary. The
+// provided logger may be nil.
+func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger MigrationLogger) (_ *DBStore, _ consensus.State, err error) {
 	// during initialization, we should return an error instead of panicking
 	defer func() {
 		if r := recover(); r != nil {
@@ -777,9 +778,8 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block) (_ *DBSto
 		n:  n,
 	}
 
-	// if the db is empty, initialize it; otherwise, check that the genesis
-	// block is correct
-	if dbGenesis, ok := dbs.BestIndex(0); !ok {
+	// if the db is empty, initialize it
+	if version := dbs.bucket(bVersion).getRaw(bVersion); len(version) != 1 {
 		for _, bucket := range [][]byte{
 			bVersion,
 			bMainChain,
@@ -794,7 +794,7 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block) (_ *DBSto
 				panic(err)
 			}
 		}
-		dbs.bucket(bVersion).putRaw(bVersion, []byte{1})
+		dbs.bucket(bVersion).putRaw(bVersion, []byte{2})
 
 		// store genesis state and apply genesis block to it
 		genesisState := n.GenesisState()
@@ -807,7 +807,17 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block) (_ *DBSto
 		if err := dbs.Flush(); err != nil {
 			return nil, consensus.State{}, err
 		}
-	} else if dbGenesis.ID != genesisBlock.ID() {
+	} else if version[0] != 2 {
+		if logger == nil {
+			logger = noopLogger{}
+		}
+		if err := migrateDB(dbs, n, logger); err != nil {
+			return nil, consensus.State{}, fmt.Errorf("failed to migrate database: %w", err)
+		}
+	}
+
+	// check that we have the correct genesis block for this network
+	if dbGenesis, ok := dbs.BestIndex(0); !ok || dbGenesis.ID != genesisBlock.ID() {
 		// try to detect network so we can provide a more helpful error message
 		_, mainnetGenesis := Mainnet()
 		_, zenGenesis := TestnetZen()

@@ -25,7 +25,7 @@ func TestManager(t *testing.T) {
 
 	n.InitialTarget = types.BlockID{0xFF}
 
-	store, tipState, err := NewDBStore(NewMemDB(), n, genesisBlock)
+	store, tipState, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestTxPool(t *testing.T) {
 	}
 	genesisBlock.Transactions = []types.Transaction{giftTxn}
 
-	store, tipState, err := NewDBStore(NewMemDB(), n, genesisBlock)
+	store, tipState, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestUpdateV2TransactionSet(t *testing.T) {
 	}
 
 	// initialize chain manager and mine a mix of v1 and v2 blocks
-	store, genesisState, err := NewDBStore(NewMemDB(), n, genesisBlock)
+	store, genesisState, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

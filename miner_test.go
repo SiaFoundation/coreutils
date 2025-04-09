@@ -23,7 +23,7 @@ func TestMiner(t *testing.T) {
 		},
 	}}
 
-	store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock)
+	store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestV2MineBlocks(t *testing.T) {
 		},
 	}}
 
-	store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock)
+	store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
