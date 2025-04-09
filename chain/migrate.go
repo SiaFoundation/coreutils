@@ -9,6 +9,7 @@ import (
 
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/types"
+	"go.uber.org/zap"
 )
 
 // A MigrationLogger logs the progress of a database migration.
@@ -21,6 +22,31 @@ type noopLogger struct{}
 
 func (noopLogger) Printf(string, ...any) {}
 func (noopLogger) SetProgress(float64)   {}
+
+type zapMigrationLogger struct {
+	lastProgressReport time.Time
+	logger             *zap.Logger
+}
+
+// Printf logs a message with the current progress.
+func (zl *zapMigrationLogger) Printf(format string, v ...any) {
+	zl.logger.Info(fmt.Sprintf(format, v...))
+}
+
+// SetProgress updates the progress percentage and logs it if enough time has passed
+// since the last report.
+func (zl *zapMigrationLogger) SetProgress(percentage float64) {
+	if time.Since(zl.lastProgressReport) < 30*time.Second {
+		return
+	}
+	zl.logger.Info("migration progress", zap.Float64("progress", percentage))
+	zl.lastProgressReport = time.Now()
+}
+
+// NewZapMigrationLogger creates a new MigrationLogger that uses zap for logging progress.
+func NewZapMigrationLogger(log *zap.Logger) MigrationLogger {
+	return &zapMigrationLogger{logger: log.Named("chainMigration")}
+}
 
 func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 	version := dbs.bucket(bVersion).getRaw(bVersion)
