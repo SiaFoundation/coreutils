@@ -794,7 +794,7 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 				panic(err)
 			}
 		}
-		dbs.bucket(bVersion).putRaw(bVersion, []byte{2})
+		dbs.bucket(bVersion).putRaw(bVersion, []byte{3})
 
 		// store genesis state and apply genesis block to it
 		genesisState := n.GenesisState()
@@ -807,7 +807,7 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 		if err := dbs.Flush(); err != nil {
 			return nil, consensus.State{}, err
 		}
-	} else if version[0] != 2 {
+	} else if version[0] != 3 {
 		if logger == nil {
 			logger = noopLogger{}
 		}

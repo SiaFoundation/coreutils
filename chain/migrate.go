@@ -50,9 +50,6 @@ func NewZapMigrationLogger(log *zap.Logger) MigrationLogger {
 
 func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 	version := dbs.bucket(bVersion).getRaw(bVersion)
-	if version == nil {
-		version = []byte{1}
-	}
 	switch version[0] {
 	case 1:
 		l.Printf("Migrating database from version 1 to 2")
@@ -111,6 +108,56 @@ func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 		l.SetProgress(100)
 		fallthrough
 	case 2:
+		l.Printf("Migrating database from version 2 to 3")
+		l.Printf("Recomputing expiring file contracts")
+		cs := n.GenesisState()
+		v1Blocks := min(dbs.getHeight(), n.HardforkV2.RequireHeight)
+		lastPrint := time.Now()
+		seen := make(map[uint64]bool)
+		for height := range v1Blocks {
+			index, ok0 := dbs.BestIndex(height)
+			_, b, bs, ok1 := dbs.getBlock(index.ID)
+			ancestorTimestamp, ok2 := dbs.AncestorTimestamp(b.ParentID)
+			if !ok0 || !ok1 || !ok2 {
+				return errors.New("database is corrupt")
+			} else if b == nil || bs == nil {
+				return errors.New("missing block needed for migration")
+			}
+			var cau consensus.ApplyUpdate
+			cs, cau = consensus.ApplyBlock(cs, *b, *bs, ancestorTimestamp)
+
+			for _, fced := range cau.FileContractElementDiffs() {
+				fce := &fced.FileContractElement
+				// if this is the first time we've seen this expiration height,
+				// clear the existing contents
+				if windowEnd := fce.FileContract.WindowEnd; !seen[windowEnd] {
+					dbs.bucket(bFileContractElements).putRaw(dbs.encHeight(windowEnd), nil)
+					seen[windowEnd] = true
+				}
+				if fced.Created && fced.Resolved {
+					continue
+				} else if fced.Resolved {
+					dbs.deleteFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
+				} else if fced.Revision != nil {
+					if fced.Revision.WindowEnd != fce.FileContract.WindowEnd {
+						dbs.deleteFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
+						dbs.putFileContractExpiration(fce.ID, fced.Revision.WindowEnd, true)
+					}
+				} else {
+					dbs.putFileContractExpiration(fce.ID, fce.FileContract.WindowEnd, true)
+				}
+			}
+
+			if time.Since(lastPrint) > 100*time.Millisecond {
+				l.SetProgress(99.9 * float64(height) / float64(v1Blocks))
+				lastPrint = time.Now()
+			}
+		}
+		dbs.bucket(bVersion).putRaw(bVersion, []byte{3})
+		dbs.Flush()
+		l.SetProgress(100)
+		fallthrough
+	case 3:
 		// up-to-date
 		return nil
 	default:
