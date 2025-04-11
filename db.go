@@ -1,9 +1,26 @@
 package coreutils
 
 import (
+	"iter"
+
 	"go.etcd.io/bbolt"
 	"go.sia.tech/coreutils/chain"
 )
+
+type boltBucket struct {
+	*bbolt.Bucket
+}
+
+func (b boltBucket) Iter() iter.Seq2[[]byte, []byte] {
+	return func(yield func([]byte, []byte) bool) {
+		c := b.Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			if !yield(k, v) {
+				return
+			}
+		}
+	}
+}
 
 // BoltChainDB implements chain.DB with a BoltDB database.
 type BoltChainDB struct {
@@ -23,13 +40,11 @@ func (db *BoltChainDB) Bucket(name []byte) chain.DBBucket {
 	if err := db.newTx(); err != nil {
 		panic(err)
 	}
-	// NOTE: can't simply return db.tx.Bucket here, since it returns a concrete
-	// type and we need a nil interface if the bucket does not exist
 	b := db.tx.Bucket(name)
 	if b == nil {
 		return nil
 	}
-	return b
+	return boltBucket{b}
 }
 
 // CreateBucket implements chain.DB.
@@ -37,9 +52,11 @@ func (db *BoltChainDB) CreateBucket(name []byte) (chain.DBBucket, error) {
 	if err := db.newTx(); err != nil {
 		return nil, err
 	}
-	// NOTE: unlike Bucket, ok to return directly here, because caller should
-	// always check err first
-	return db.tx.CreateBucket(name)
+	b, err := db.tx.CreateBucket(name)
+	if err != nil {
+		return nil, err
+	}
+	return boltBucket{b}, nil
 }
 
 // Flush implements chain.DB.
