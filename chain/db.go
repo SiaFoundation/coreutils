@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"iter"
 	"math/bits"
 	"time"
 
@@ -70,6 +71,7 @@ type DBBucket interface {
 	Get(key []byte) []byte
 	Put(key, value []byte) error
 	Delete(key []byte) error
+	Iter() iter.Seq2[[]byte, []byte]
 }
 
 // MemDB implements DB with an in-memory map.
@@ -171,6 +173,20 @@ type memBucket struct {
 func (b memBucket) Get(key []byte) []byte       { return b.db.get(b.name, key) }
 func (b memBucket) Put(key, value []byte) error { return b.db.put(b.name, key, value) }
 func (b memBucket) Delete(key []byte) error     { return b.db.delete(b.name, key) }
+func (b memBucket) Iter() iter.Seq2[[]byte, []byte] {
+	return func(yield func([]byte, []byte) bool) {
+		for key, val := range b.db.buckets[b.name] {
+			if pval, ok := b.db.puts[b.name][string(key)]; ok {
+				val = pval
+			} else if _, ok := b.db.dels[b.name][string(key)]; ok {
+				continue
+			}
+			if !yield([]byte(key), val) {
+				return
+			}
+		}
+	}
+}
 
 // NewMemDB returns an in-memory DB for use with DBStore.
 func NewMemDB() *MemDB {
@@ -614,7 +630,7 @@ func (db *DBStore) SupplementTipTransaction(txn types.Transaction) (ts consensus
 		if fce, ok := db.getFileContractElement(sp.ParentID, numLeaves); ok {
 			if windowIndex, ok := db.BestIndex(fce.FileContract.WindowStart - 1); ok {
 				ts.StorageProofs = append(ts.StorageProofs, consensus.V1StorageProofSupplement{
-					FileContract: fce.Copy(),
+					FileContract: fce.Move(),
 					WindowID:     windowIndex.ID,
 				})
 			}
@@ -656,8 +672,6 @@ func (db *DBStore) SupplementTipBlock(b types.Block) (bs consensus.V1BlockSupple
 func (db *DBStore) AncestorTimestamp(id types.BlockID) (t time.Time, ok bool) {
 	cs, _ := db.State(id)
 	if cs.Index.Height > db.n.HardforkOak.Height {
-		// the Oak difficulty adjustment algorithm is continuous, so ancestor
-		// timestamps are not needed
 		return time.Time{}, true
 	}
 
@@ -794,7 +808,7 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 				panic(err)
 			}
 		}
-		dbs.bucket(bVersion).putRaw(bVersion, []byte{3})
+		dbs.bucket(bVersion).putRaw(bVersion, []byte{4})
 
 		// store genesis state and apply genesis block to it
 		genesisState := n.GenesisState()
@@ -807,11 +821,11 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 		if err := dbs.Flush(); err != nil {
 			return nil, consensus.State{}, err
 		}
-	} else if version[0] != 3 {
+	} else if version[0] != 4 {
 		if logger == nil {
 			logger = noopLogger{}
 		}
-		if err := migrateDB(dbs, n, logger); err != nil {
+		if err := migrateDB(dbs, n, genesisBlock, logger); err != nil {
 			return nil, consensus.State{}, fmt.Errorf("failed to migrate database: %w", err)
 		}
 	}
