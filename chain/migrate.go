@@ -46,7 +46,7 @@ func NewZapMigrationLogger(log *zap.Logger) MigrationLogger {
 	return &zapMigrationLogger{logger: log.Named("chainMigration")}
 }
 
-func migrateDB(dbs *DBStore, n *consensus.Network, genesisBlock types.Block, l MigrationLogger) error {
+func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 	version := dbs.bucket(bVersion).getRaw(bVersion)
 	switch version[0] {
 	case 1, 2, 3:
@@ -80,26 +80,19 @@ func migrateDB(dbs *DBStore, n *consensus.Network, genesisBlock types.Block, l M
 		}
 
 		l.Printf("Recomputing main chain")
-		v1Blocks := min(dbs.getHeight(), n.HardforkV2.RequireHeight)
-		bs := consensus.V1BlockSupplement{Transactions: make([]consensus.V1TransactionSupplement, len(genesisBlock.Transactions))}
-		cs, cau := consensus.ApplyBlock(n.GenesisState(), genesisBlock, bs, time.Time{})
-		dbs.putBlock(genesisBlock.Header(), &genesisBlock, &bs)
-		dbs.putState(cs)
-		dbs.ApplyBlock(cs, cau)
+		v1Blocks := min(dbs.getHeight(), n.HardforkV2.RequireHeight) + 1
+		cs := n.GenesisState()
 		lastPrint := time.Now()
 		for height := range v1Blocks {
-			index, ok0 := dbs.BestIndex(height)
-			_, b, _, ok1 := dbs.getBlock(index.ID)
-			ancestorTimestamp, ok2 := dbs.AncestorTimestamp(b.ParentID)
-			if !ok0 || !ok1 || !ok2 {
-				return errors.New("database is corrupt")
-			} else if b == nil {
+			index, _ := dbs.BestIndex(height)
+			_, b, _, _ := dbs.getBlock(index.ID)
+			if b == nil {
 				return errors.New("missing block needed for migration")
 			}
 			bs := dbs.SupplementTipBlock(*b)
 			dbs.putBlock(b.Header(), b, &bs)
-			if err := consensus.ValidateBlock(cs, *b, bs); err != nil && cs.Index.Height > 0 {
-				l.Printf("Block %v is invalid, removing it and all subsequent blocks", index)
+			if err := consensus.ValidateBlock(cs, *b, bs); err != nil && index.Height > 0 {
+				l.Printf("Block %v is invalid (%v), removing it and all subsequent blocks", index, err)
 				for ; height < v1Blocks; height++ {
 					if index, ok := dbs.BestIndex(height); ok {
 						dbs.bucket(bBlocks).delete(index.ID[:])
@@ -109,6 +102,7 @@ func migrateDB(dbs *DBStore, n *consensus.Network, genesisBlock types.Block, l M
 				break
 			}
 			var cau consensus.ApplyUpdate
+			ancestorTimestamp, _ := dbs.AncestorTimestamp(b.ParentID)
 			cs, cau = consensus.ApplyBlock(cs, *b, bs, ancestorTimestamp)
 			dbs.putState(cs)
 			dbs.ApplyBlock(cs, cau)
