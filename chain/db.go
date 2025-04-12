@@ -825,7 +825,7 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 		if logger == nil {
 			logger = noopLogger{}
 		}
-		if err := migrateDB(dbs, n, genesisBlock, logger); err != nil {
+		if err := migrateDB(dbs, n, logger); err != nil {
 			return nil, consensus.State{}, fmt.Errorf("failed to migrate database: %w", err)
 		}
 	}
