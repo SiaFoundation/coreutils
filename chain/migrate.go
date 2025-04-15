@@ -41,7 +41,8 @@ func (zl *zapMigrationLogger) SetProgress(percentage float64) {
 	zl.lastProgressReport = time.Now()
 }
 
-// NewZapMigrationLogger creates a new MigrationLogger that uses zap for logging progress.
+// NewZapMigrationLogger creates a new MigrationLogger that uses zap for logging
+// progress.
 func NewZapMigrationLogger(log *zap.Logger) MigrationLogger {
 	return &zapMigrationLogger{logger: log.Named("chainMigration")}
 }
@@ -82,7 +83,6 @@ func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 		l.Printf("Recomputing main chain")
 		v1Blocks := min(dbs.getHeight(), n.HardforkV2.RequireHeight) + 1
 		cs := n.GenesisState()
-		lastPrint := time.Now()
 		for height := range v1Blocks {
 			index, _ := dbs.BestIndex(height)
 			_, b, _, _ := dbs.getBlock(index.ID)
@@ -117,10 +117,7 @@ func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 					return err
 				}
 			}
-			if time.Since(lastPrint) > 100*time.Millisecond {
-				l.SetProgress(99.9 * float64(height) / float64(v1Blocks))
-				lastPrint = time.Now()
-			}
+			l.SetProgress(99.9 * float64(height) / float64(v1Blocks))
 		}
 		dbs.bucket(bVersion).putRaw(bVersion, []byte{4})
 		if err := dbs.Flush(); err != nil {
