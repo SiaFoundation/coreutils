@@ -66,39 +66,17 @@ func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 			dbs.bucket(bStates).delete(id[:])
 		}
 		l.Printf("Removing block supplement data")
-		dels := 0
-		flushDeletes := func() error {
-			if dels++; dels%10000 == 0 {
-				return dbs.Flush()
-			}
-			return nil
-		}
 		for id := range dbs.db.Bucket(bFileContractElements).Iter() {
 			dbs.bucket(bFileContractElements).delete(id)
-			if err := flushDeletes(); err != nil {
-				return err
-			}
 		}
 		for id := range dbs.db.Bucket(bSiacoinElements).Iter() {
 			dbs.bucket(bSiacoinElements).delete(id)
-			if err := flushDeletes(); err != nil {
-				return err
-			}
 		}
 		for id := range dbs.db.Bucket(bSiafundElements).Iter() {
 			dbs.bucket(bSiafundElements).delete(id)
-			if err := flushDeletes(); err != nil {
-				return err
-			}
 		}
-		l.Printf("Removing tree data")
-		for k := range dbs.db.Bucket(bTree).Iter() {
-			dbs.bucket(bTree).delete(k)
-			if dels++; dels%10000 == 0 {
-				if err := dbs.Flush(); err != nil {
-					return err
-				}
-			}
+		if err := dbs.db.Flush(); err != nil {
+			return err
 		}
 
 		l.Printf("Recomputing main chain")
@@ -118,8 +96,10 @@ func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 					if index, ok := dbs.BestIndex(height); ok {
 						dbs.bucket(bBlocks).delete(index.ID[:])
 						dbs.bucket(bStates).delete(index.ID[:])
-						if err := flushDeletes(); err != nil {
-							return err
+						if height%1000 == 0 {
+							if err := dbs.db.Flush(); err != nil {
+								return err
+							}
 						}
 					}
 				}
