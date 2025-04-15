@@ -98,6 +98,12 @@ func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 						dbs.bucket(bBlocks).delete(index.ID[:])
 						dbs.bucket(bStates).delete(index.ID[:])
 					}
+					// deletes need to be flushed too
+					if height%500 == 0 {
+						if err := dbs.Flush(); err != nil {
+							return err
+						}
+					}
 				}
 				break
 			}
