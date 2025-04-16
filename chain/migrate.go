@@ -75,8 +75,10 @@ func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 		for id := range dbs.db.Bucket(bSiafundElements).Iter() {
 			dbs.bucket(bSiafundElements).delete(id)
 		}
-		if err := dbs.db.Flush(); err != nil {
-			return err
+		if dbs.shouldFlush() {
+			if err := dbs.Flush(); err != nil {
+				return err
+			}
 		}
 
 		l.Printf("Recomputing main chain")
@@ -90,20 +92,23 @@ func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 			}
 			bs := dbs.SupplementTipBlock(*b)
 			dbs.putBlock(b.Header(), b, &bs)
-			if err := consensus.ValidateBlock(cs, *b, bs); err != nil && index.Height > 0 {
-				l.Printf("Block %v is invalid (%v), removing it and all subsequent blocks", index, err)
-				for ; height < v1Blocks; height++ {
-					if index, ok := dbs.BestIndex(height); ok {
-						dbs.bucket(bBlocks).delete(index.ID[:])
-						dbs.bucket(bStates).delete(index.ID[:])
-						if height%1000 == 0 {
-							if err := dbs.db.Flush(); err != nil {
-								return err
+			// v2 blocks may be invalid
+			if height >= n.HardforkV2.AllowHeight {
+				if err := consensus.ValidateBlock(cs, *b, bs); err != nil && index.Height > 0 {
+					l.Printf("Block %v is invalid (%v), removing it and all subsequent blocks", index, err)
+					for ; height < v1Blocks; height++ {
+						if index, ok := dbs.BestIndex(height); ok {
+							dbs.bucket(bBlocks).delete(index.ID[:])
+							dbs.bucket(bStates).delete(index.ID[:])
+							if dbs.shouldFlush() {
+								if err := dbs.Flush(); err != nil {
+									return err
+								}
 							}
 						}
 					}
+					break
 				}
-				break
 			}
 			var cau consensus.ApplyUpdate
 			ancestorTimestamp, _ := dbs.AncestorTimestamp(b.ParentID)
