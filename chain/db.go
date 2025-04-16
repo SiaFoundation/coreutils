@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"iter"
 	"math/bits"
+	"sort"
 	"time"
 
 	"go.sia.tech/core/consensus"
@@ -197,6 +198,135 @@ func NewMemDB() *MemDB {
 	}
 }
 
+type cacheBucket struct {
+	mb memBucket
+	db DBBucket
+}
+
+func (b cacheBucket) Get(key []byte) []byte {
+	if val := b.mb.Get(key); val != nil {
+		return val
+	} else if _, ok := b.mb.db.dels[b.mb.name][string(key)]; ok {
+		return nil
+	}
+	return b.db.Get(key)
+}
+
+func (b cacheBucket) Put(key, value []byte) error {
+	err := b.mb.Put(key, value)
+	return err
+}
+
+func (b cacheBucket) Delete(key []byte) error {
+	return b.mb.Delete(key)
+}
+
+func (b cacheBucket) Iter() iter.Seq2[[]byte, []byte] {
+	return b.db.Iter() // NOTE: imperfect
+}
+
+// A CacheDB caches DB writes in memory and sorts them before flushing to the
+// underlying DB. This can greatly improve performance for certain databases.
+type CacheDB struct {
+	mem *MemDB
+	db  DB
+	kvs map[string][][2][]byte
+}
+
+// Bucket implements DB.
+func (db *CacheDB) Bucket(name []byte) DBBucket {
+	b := db.db.Bucket(name)
+	if b == nil {
+		return nil
+	} else if db.mem.Bucket(name) == nil {
+		db.mem.CreateBucket(name)
+	}
+	return cacheBucket{memBucket{string(name), db.mem}, b}
+}
+
+// CreateBucket implements DB.
+func (db *CacheDB) CreateBucket(name []byte) (DBBucket, error) {
+	if _, err := db.db.CreateBucket(name); err != nil {
+		return nil, err
+	}
+	return db.mem.CreateBucket(name)
+}
+
+// Flush implements DB.
+func (db *CacheDB) Flush() error {
+	// puts
+	for name, puts := range db.mem.puts {
+		bucket := db.kvs[name]
+		for key, val := range puts {
+			bucket = append(bucket, [2][]byte{[]byte(key), val})
+		}
+		db.kvs[name] = bucket
+	}
+	for bucket, kvs := range db.kvs {
+		bucket := db.db.Bucket([]byte(bucket))
+		sort.Slice(kvs, func(i, j int) bool {
+			return bytes.Compare(kvs[i][0], kvs[j][0]) < 0
+		})
+		for _, kv := range kvs {
+			bucket.Put(kv[0], kv[1])
+		}
+	}
+	// remove references
+	for name := range db.kvs {
+		clear(db.kvs[name])
+		db.kvs[name] = db.kvs[name][:0]
+	}
+
+	// dels
+	for name, dels := range db.mem.dels {
+		bucket := db.kvs[name]
+		for key := range dels {
+			bucket = append(bucket, [2][]byte{[]byte(key), nil})
+		}
+		db.kvs[name] = bucket
+	}
+	for name, kvs := range db.kvs {
+		bucket := db.db.Bucket([]byte(name))
+		sort.Slice(kvs, func(i, j int) bool {
+			return bytes.Compare(kvs[i][0], kvs[j][0]) < 0
+		})
+		for _, kv := range kvs {
+			bucket.Delete(kv[0])
+		}
+	}
+	for name := range db.kvs {
+		clear(db.kvs[name])
+		db.kvs[name] = db.kvs[name][:0]
+	}
+
+	// clear MemDB
+	for _, bucket := range db.mem.buckets {
+		clear(bucket)
+	}
+	for _, bucket := range db.mem.puts {
+		clear(bucket)
+	}
+	for _, bucket := range db.mem.dels {
+		clear(bucket)
+	}
+	return db.db.Flush()
+}
+
+// Cancel implements DB.
+func (db *CacheDB) Cancel() {
+	db.mem.Cancel()
+	db.db.Cancel()
+}
+
+// NewCacheDB returns a new CacheDB that wraps the given DB.
+func NewCacheDB(db DB) DB {
+	return &CacheDB{
+		mem: NewMemDB(),
+		db:  db,
+		kvs: make(map[string][][2][]byte),
+	}
+}
+
 func check(err error) {
 	if err != nil {
 		panic(err)
@@ -245,6 +375,7 @@ func (b *dbBucket) put(key []byte, v types.EncoderTo) {
 
 func (b *dbBucket) delete(key []byte) {
 	check(b.b.Delete(key))
+	b.db.unflushed += len(key)
 }
 
 var (
@@ -729,8 +860,8 @@ func (db *DBStore) PruneBlock(id types.BlockID) {
 func (db *DBStore) shouldFlush() bool {
 	// NOTE: these values were chosen empirically and should constitute a
 	// sensible default; if necessary, we can make them configurable
-	const flushSizeThreshold = 20e6
-	const flushDurationThreshold = 1000 * time.Millisecond
+	const flushSizeThreshold = 100e6
+	const flushDurationThreshold = 5 * time.Second
 	return db.unflushed >= flushSizeThreshold || time.Since(db.lastFlush) >= flushDurationThreshold
 }
 
@@ -765,9 +896,10 @@ func (db *DBStore) Flush() error {
 	if db.unflushed == 0 {
 		return nil
 	}
+	err := db.db.Flush()
 	db.unflushed = 0
 	db.lastFlush = time.Now()
-	return db.db.Flush()
+	return err
 }
 
 // NewDBStore creates a new DBStore using the provided database. The tip state
