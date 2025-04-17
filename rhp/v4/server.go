@@ -767,7 +767,8 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 
 	// validate the request
 	settings := s.settings.RHP4Settings()
-	if err := req.Validate(s.hostKey.PublicKey(), state.Revision.TotalCollateral, state.Revision.ExpirationHeight, settings.MaxCollateral); err != nil {
+	remainingCollateral := state.Revision.TotalCollateral.Sub(state.Revision.MissedHostValue)
+	if err := req.Validate(s.hostKey.PublicKey(), remainingCollateral, state.Revision.TotalCollateral, state.Revision.RenterOutput.Value, state.Revision.ExpirationHeight, settings.MaxCollateral); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
