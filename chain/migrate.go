@@ -122,6 +122,9 @@ func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 			}
 			l.SetProgress(99.9 * float64(height) / float64(v1Blocks))
 		}
+		if err := dbs.Flush(); err != nil {
+			return err
+		}
 		dbs.bucket(bVersion).putRaw(bVersion, []byte{4})
 		if err := dbs.Flush(); err != nil {
 			return err
