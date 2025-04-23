@@ -1,3 +1,9 @@
+## 0.13.1 (2025-04-23)
+
+### Fixes
+
+- Update core to v0.11.0
+
 ## 0.13.0 (2025-04-23)
 
 ### Breaking Changes
