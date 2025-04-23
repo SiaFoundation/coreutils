@@ -5,7 +5,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"iter"
 	"math/bits"
+	"sort"
 	"time"
 
 	"go.sia.tech/core/consensus"
@@ -70,6 +72,7 @@ type DBBucket interface {
 	Get(key []byte) []byte
 	Put(key, value []byte) error
 	Delete(key []byte) error
+	Iter() iter.Seq2[[]byte, []byte]
 }
 
 // MemDB implements DB with an in-memory map.
@@ -147,7 +150,9 @@ func (db *MemDB) delete(bucket string, key []byte) error {
 
 // Bucket implements DB.
 func (db *MemDB) Bucket(name []byte) DBBucket {
-	if db.buckets[string(name)] == nil && db.puts[string(name)] == nil && db.dels[string(name)] == nil {
+	if db.buckets[string(name)] == nil &&
+		db.puts[string(name)] == nil &&
+		db.dels[string(name)] == nil {
 		return nil
 	}
 	return memBucket{string(name), db}
@@ -171,6 +176,20 @@ type memBucket struct {
 func (b memBucket) Get(key []byte) []byte       { return b.db.get(b.name, key) }
 func (b memBucket) Put(key, value []byte) error { return b.db.put(b.name, key, value) }
 func (b memBucket) Delete(key []byte) error     { return b.db.delete(b.name, key) }
+func (b memBucket) Iter() iter.Seq2[[]byte, []byte] {
+	return func(yield func([]byte, []byte) bool) {
+		for key, val := range b.db.buckets[b.name] {
+			if pval, ok := b.db.puts[b.name][string(key)]; ok {
+				val = pval
+			} else if _, ok := b.db.dels[b.name][string(key)]; ok {
+				continue
+			}
+			if !yield([]byte(key), val) {
+				return
+			}
+		}
+	}
+}
 
 // NewMemDB returns an in-memory DB for use with DBStore.
 func NewMemDB() *MemDB {
@@ -178,6 +197,151 @@ func NewMemDB() *MemDB {
 		buckets: make(map[string]map[string][]byte),
 		puts:    make(map[string]map[string][]byte),
 		dels:    make(map[string]map[string]struct{}),
+	}
+}
+
+type cacheBucket struct {
+	mb memBucket
+	db DBBucket
+}
+
+func (b cacheBucket) Get(key []byte) []byte {
+	if val := b.mb.Get(key); val != nil {
+		return val
+	}
+	return b.db.Get(key)
+}
+
+func (b cacheBucket) Put(key, value []byte) error {
+	err := b.mb.Put(key, value)
+	return err
+}
+
+func (b cacheBucket) Delete(key []byte) error {
+	return b.mb.Delete(key)
+}
+
+func (b cacheBucket) Iter() iter.Seq2[[]byte, []byte] {
+	return func(yield func([]byte, []byte) bool) {
+		for k, v := range b.mb.Iter() {
+			if !yield(k, v) {
+				return
+			}
+		}
+		for k, v := range b.db.Iter() {
+			_, put := b.mb.db.puts[b.mb.name][string(k)]
+			_, deleted := b.mb.db.dels[b.mb.name][string(k)]
+			if put || deleted {
+				continue
+			} else if !yield(k, v) {
+				return
+			}
+		}
+	}
+}
+
+// A CacheDB caches DB writes in memory and sorts them before flushing to the
+// underlying DB. This can greatly improve performance for certain databases.
+type CacheDB struct {
+	mem *MemDB
+	db  DB
+	kvs map[string][][2][]byte
+}
+
+// Bucket implements DB.
+func (db *CacheDB) Bucket(name []byte) DBBucket {
+	b := db.db.Bucket(name)
+	if b == nil {
+		return nil
+	} else if db.mem.Bucket(name) == nil {
+		db.mem.CreateBucket(name)
+	}
+	return cacheBucket{memBucket{string(name), db.mem}, b}
+}
+
+// CreateBucket implements DB.
+func (db *CacheDB) CreateBucket(name []byte) (DBBucket, error) {
+	if _, err := db.db.CreateBucket(name); err != nil {
+		return nil, err
+	}
+	return db.mem.CreateBucket(name)
+}
+
+// Flush implements DB.
+func (db *CacheDB) Flush() error {
+	// puts
+	for name, puts := range db.mem.puts {
+		bucket := db.kvs[name]
+		for key, val := range puts {
+			if _, ok := db.mem.dels[name][key]; ok {
+				continue
+			}
+			bucket = append(bucket, [2][]byte{[]byte(key), val})
+		}
+		db.kvs[name] = bucket
+	}
+	for bucket, kvs := range db.kvs {
+		bucket := db.db.Bucket([]byte(bucket))
+		sort.Slice(kvs, func(i, j int) bool {
+			return bytes.Compare(kvs[i][0], kvs[j][0]) < 0
+		})
+		for _, kv := range kvs {
+			bucket.Put(kv[0], kv[1])
+		}
+	}
+	// remove references
+	for name := range db.kvs {
+		clear(db.kvs[name])
+		db.kvs[name] = db.kvs[name][:0]
+	}
+
+	// dels
+	for name, dels := range db.mem.dels {
+		bucket := db.kvs[name]
+		for key := range dels {
+			bucket = append(bucket, [2][]byte{[]byte(key), nil})
+		}
+		db.kvs[name] = bucket
+	}
+	for name, kvs := range db.kvs {
+		bucket := db.db.Bucket([]byte(name))
+		sort.Slice(kvs, func(i, j int) bool {
+			return bytes.Compare(kvs[i][0], kvs[j][0]) < 0
+		})
+		for _, kv := range kvs {
+			bucket.Delete(kv[0])
+		}
+	}
+	for name := range db.kvs {
+		clear(db.kvs[name])
+		db.kvs[name] = db.kvs[name][:0]
+	}
+
+	// clear MemDB
+	for _, bucket := range db.mem.buckets {
+		clear(bucket)
+	}
+	for _, bucket := range db.mem.puts {
+		clear(bucket)
+	}
+	for _, bucket := range db.mem.dels {
+		clear(bucket)
+	}
+	return db.db.Flush()
+}
+
+// Cancel implements DB.
+func (db *CacheDB) Cancel() {
+	db.mem.Cancel()
+	db.db.Cancel()
+}
+
+// NewCacheDB returns a new CacheDB that wraps the given DB.
+func NewCacheDB(db DB) DB {
+	return &CacheDB{
+		mem: NewMemDB(),
+		db:  db,
+		kvs: make(map[string][][2][]byte),
 	}
 }
 
@@ -229,6 +393,7 @@ func (b *dbBucket) put(key []byte, v types.EncoderTo) {
 
 func (b *dbBucket) delete(key []byte) {
 	check(b.b.Delete(key))
+	b.db.unflushed += len(key)
 }
 
 var (
@@ -614,7 +779,7 @@ func (db *DBStore) SupplementTipTransaction(txn types.Transaction) (ts consensus
 		if fce, ok := db.getFileContractElement(sp.ParentID, numLeaves); ok {
 			if windowIndex, ok := db.BestIndex(fce.FileContract.WindowStart - 1); ok {
 				ts.StorageProofs = append(ts.StorageProofs, consensus.V1StorageProofSupplement{
-					FileContract: fce.Copy(),
+					FileContract: fce.Move(),
 					WindowID:     windowIndex.ID,
 				})
 			}
@@ -656,8 +821,6 @@ func (db *DBStore) SupplementTipBlock(b types.Block) (bs consensus.V1BlockSupple
 func (db *DBStore) AncestorTimestamp(id types.BlockID) (t time.Time, ok bool) {
 	cs, _ := db.State(id)
 	if cs.Index.Height > db.n.HardforkOak.Height {
-		// the Oak difficulty adjustment algorithm is continuous, so ancestor
-		// timestamps are not needed
 		return time.Time{}, true
 	}
 
@@ -715,8 +878,8 @@ func (db *DBStore) PruneBlock(id types.BlockID) {
 func (db *DBStore) shouldFlush() bool {
 	// NOTE: these values were chosen empirically and should constitute a
 	// sensible default; if necessary, we can make them configurable
-	const flushSizeThreshold = 20e6
-	const flushDurationThreshold = 1000 * time.Millisecond
+	const flushSizeThreshold = 100e6
+	const flushDurationThreshold = 5 * time.Second
 	return db.unflushed >= flushSizeThreshold || time.Since(db.lastFlush) >= flushDurationThreshold
 }
 
@@ -751,9 +914,10 @@ func (db *DBStore) Flush() error {
 	if db.unflushed == 0 {
 		return nil
 	}
+	err := db.db.Flush()
 	db.unflushed = 0
 	db.lastFlush = time.Now()
-	return db.db.Flush()
+	return err
 }
 
 // NewDBStore creates a new DBStore using the provided database. The tip state
@@ -794,7 +958,7 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 				panic(err)
 			}
 		}
-		dbs.bucket(bVersion).putRaw(bVersion, []byte{2})
+		dbs.bucket(bVersion).putRaw(bVersion, []byte{4})
 
 		// store genesis state and apply genesis block to it
 		genesisState := n.GenesisState()
@@ -807,7 +971,7 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 		if err := dbs.Flush(); err != nil {
 			return nil, consensus.State{}, err
 		}
-	} else if version[0] != 2 {
+	} else if version[0] != 4 {
 		if logger == nil {
 			logger = noopLogger{}
 		}

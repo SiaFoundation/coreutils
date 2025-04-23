@@ -1,10 +1,8 @@
 package chain
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"sort"
 	"time"
 
 	"go.sia.tech/core/consensus"
@@ -43,74 +41,97 @@ func (zl *zapMigrationLogger) SetProgress(percentage float64) {
 	zl.lastProgressReport = time.Now()
 }
 
-// NewZapMigrationLogger creates a new MigrationLogger that uses zap for logging progress.
+// NewZapMigrationLogger creates a new MigrationLogger that uses zap for logging
+// progress.
 func NewZapMigrationLogger(log *zap.Logger) MigrationLogger {
 	return &zapMigrationLogger{logger: log.Named("chainMigration")}
 }
 
 func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 	version := dbs.bucket(bVersion).getRaw(bVersion)
-	if version == nil {
-		version = []byte{1}
-	}
 	switch version[0] {
-	case 1:
-		l.Printf("Migrating database from version 1 to 2")
-		l.Printf("Computing new element tree")
-		cs := n.GenesisState()
-		v1Blocks := min(dbs.getHeight(), n.HardforkV2.RequireHeight)
-		seen := make(map[[2]uint64]types.Hash256)
-		var tree [][2][]byte
-		flush := func() error {
-			sort.Slice(tree, func(i, j int) bool {
-				return bytes.Compare(tree[i][0], tree[j][0]) < 0
-			})
-			bucket := dbs.bucket(bTree)
-			for _, kv := range tree {
-				bucket.putRaw(kv[0], kv[1])
-			}
-			clear(seen)
-			tree = tree[:0]
-			return dbs.Flush()
+	case 1, 2, 3:
+		l.Printf("Removing sidechain blocks")
+		toDelete := make(map[types.BlockID]bool)
+		for id := range dbs.db.Bucket(bBlocks).Iter() {
+			toDelete[(types.BlockID)(id)] = true
 		}
-		lastPrint := time.Now()
+		for _, id := range dbs.db.Bucket(bMainChain).Iter() {
+			if len(id) == 32 {
+				delete(toDelete, (types.BlockID)(id))
+			}
+		}
+		for id := range toDelete {
+			dbs.bucket(bBlocks).delete(id[:])
+			dbs.bucket(bStates).delete(id[:])
+		}
+		l.Printf("Removing block supplement data")
+		for id := range dbs.db.Bucket(bFileContractElements).Iter() {
+			dbs.bucket(bFileContractElements).delete(id)
+		}
+		for id := range dbs.db.Bucket(bSiacoinElements).Iter() {
+			dbs.bucket(bSiacoinElements).delete(id)
+		}
+		for id := range dbs.db.Bucket(bSiafundElements).Iter() {
+			dbs.bucket(bSiafundElements).delete(id)
+		}
+		if dbs.shouldFlush() {
+			if err := dbs.Flush(); err != nil {
+				return err
+			}
+		}
+
+		l.Printf("Recomputing main chain")
+		v1Blocks := min(dbs.getHeight(), n.HardforkV2.RequireHeight) + 1
+		cs := n.GenesisState()
 		for height := range v1Blocks {
-			index, ok0 := dbs.BestIndex(height)
-			_, b, bs, ok1 := dbs.getBlock(index.ID)
-			ancestorTimestamp, ok2 := dbs.AncestorTimestamp(b.ParentID)
-			if !ok0 || !ok1 || !ok2 {
-				return errors.New("database is corrupt")
-			} else if b == nil || bs == nil {
+			index, _ := dbs.BestIndex(height)
+			_, b, _, _ := dbs.getBlock(index.ID)
+			if b == nil {
 				return errors.New("missing block needed for migration")
 			}
-			var cau consensus.ApplyUpdate
-			cs, cau = consensus.ApplyBlock(cs, *b, *bs, ancestorTimestamp)
-			cau.ForEachTreeNode(func(row, col uint64, h types.Hash256) {
-				if _, ok := seen[[2]uint64{row, col}]; !ok {
-					seen[[2]uint64{row, col}] = h
-					tree = append(tree, [2][]byte{dbs.treeKey(row, col), h[:]})
+			bs := dbs.SupplementTipBlock(*b)
+			dbs.putBlock(b.Header(), b, &bs)
+			// v2 blocks may be invalid
+			if height >= n.HardforkV2.AllowHeight {
+				if err := consensus.ValidateBlock(cs, *b, bs); err != nil && index.Height > 0 {
+					l.Printf("Block %v is invalid (%v), removing it and all subsequent blocks", index, err)
+					for ; height < v1Blocks; height++ {
+						if index, ok := dbs.BestIndex(height); ok {
+							dbs.bucket(bBlocks).delete(index.ID[:])
+							dbs.bucket(bStates).delete(index.ID[:])
+							if dbs.shouldFlush() {
+								if err := dbs.Flush(); err != nil {
+									return err
+								}
+							}
+						}
+					}
+					break
 				}
-			})
-			const maxTreeSize = 100e6 // use up to 100 MB of memory
-			if len(tree)*(16+32) >= maxTreeSize {
-				if err := flush(); err != nil {
+			}
+			var cau consensus.ApplyUpdate
+			ancestorTimestamp, _ := dbs.AncestorTimestamp(b.ParentID)
+			cs, cau = consensus.ApplyBlock(cs, *b, bs, ancestorTimestamp)
+			dbs.putState(cs)
+			dbs.ApplyBlock(cs, cau)
+			if dbs.shouldFlush() {
+				if err := dbs.Flush(); err != nil {
 					return err
 				}
 			}
-			if time.Since(lastPrint) > 100*time.Millisecond {
-				l.SetProgress(99.9 * float64(height) / float64(v1Blocks))
-				lastPrint = time.Now()
-			}
+			l.SetProgress(99.9 * float64(height) / float64(v1Blocks))
 		}
-		// final flush
-		if err := flush(); err != nil {
+		if err := dbs.Flush(); err != nil {
 			return err
 		}
-		dbs.bucket(bVersion).putRaw(bVersion, []byte{2})
-		dbs.Flush()
+		dbs.bucket(bVersion).putRaw(bVersion, []byte{4})
+		if err := dbs.Flush(); err != nil {
+			return err
+		}
 		l.SetProgress(100)
 		fallthrough
-	case 2:
+	case 4:
 		// up-to-date
 		return nil
 	default:
