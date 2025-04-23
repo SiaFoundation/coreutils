@@ -120,6 +120,9 @@ func (sw *SingleAddressWallet) Balance() (balance Balance, err error) {
 	tpoolUtxos := make(map[types.SiacoinOutputID]types.SiacoinElement)
 	for _, txn := range sw.cm.PoolTransactions() {
 		for _, sci := range txn.SiacoinInputs {
+			if sci.UnlockConditions.UnlockHash() != sw.addr {
+				continue
+			}
 			tpoolSpent[sci.ParentID] = true
 			delete(tpoolUtxos, sci.ParentID)
 		}
@@ -139,6 +142,9 @@ func (sw *SingleAddressWallet) Balance() (balance Balance, err error) {
 
 	for _, txn := range sw.cm.V2PoolTransactions() {
 		for _, si := range txn.SiacoinInputs {
+			if si.Parent.SiacoinOutput.Address != sw.addr {
+				continue
+			}
 			tpoolSpent[si.Parent.ID] = true
 			delete(tpoolUtxos, si.Parent.ID)
 		}
