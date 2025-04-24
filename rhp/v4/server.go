@@ -767,11 +767,7 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 
 	// validate the request
 	settings := s.settings.RHP4Settings()
-	existingCollateral, underflow := state.Revision.TotalCollateral.SubWithUnderflow(state.Revision.MissedHostValue)
-	if underflow {
-		return errorBadRequest("contract total collateral less than missed host value")
-	}
-	if err := req.Validate(s.hostKey.PublicKey(), existingCollateral, state.Revision.TotalCollateral, existing.RenterOutput.Value, state.Revision.ExpirationHeight, settings.MaxCollateral); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), state.Revision.MissedHostValue, state.Revision.TotalCollateral, existing.RenterOutput.Value, state.Revision.ExpirationHeight, settings.MaxCollateral); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
