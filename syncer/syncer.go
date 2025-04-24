@@ -17,6 +17,8 @@ import (
 	"lukechampine.com/frand"
 )
 
+// ErrNoPeers is returned when there are no peers available to relay
+// to
 var ErrNoPeers = errors.New("no peers available")
 
 // A ChainManager manages blockchain state.
