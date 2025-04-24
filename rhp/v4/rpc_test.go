@@ -543,14 +543,31 @@ func TestRPCRefresh(t *testing.T) {
 
 	t.Run("valid refresh", func(t *testing.T) {
 		revision := formContractUploadSector(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+
+		// compute the min allowance the host will accept
+		additionalCollateral := types.Siacoins(1000)
+		postRefreshCollateral := revision.Revision.MissedHostValue.Add(additionalCollateral)
+		minAllowance := proto4.MinRenterAllowance(settings.Prices, postRefreshCollateral)
+
+		// add enough allowance to cover the minimum
+		allowance := minAllowance.Sub(revision.Revision.RenterOutput.Value)
+
 		// refresh the contract
 		refreshResult, err := rhp4.RPCRefreshContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRefreshContractParams{
 			ContractID: revision.ID,
-			Allowance:  types.Siacoins(10),
-			Collateral: types.Siacoins(20),
+			Allowance:  allowance,
+			Collateral: additionalCollateral,
 		})
 		if err != nil {
 			t.Fatal(err)
+		}
+
+		// assert the allowance and collateral in the refreshed contract match
+		// our expectations
+		if refreshResult.Contract.Revision.RenterOutput.Value.Cmp(minAllowance) != 0 {
+			t.Fatalf("expected allowance to be %v, got %v", minAllowance, refreshResult.Contract.Revision.RenterOutput.Value)
+		} else if refreshResult.Contract.Revision.MissedHostValue.Cmp(postRefreshCollateral) != 0 {
+			t.Fatalf("expected collateral to be %v, got %v", postRefreshCollateral, refreshResult.Contract.Revision.MissedHostValue)
 		}
 
 		// verify the transaction set is valid
@@ -574,6 +591,28 @@ func TestRPCRefresh(t *testing.T) {
 			t.Fatal("expected contract to be renewed")
 		} else if rs.Revisable {
 			t.Fatal("expected contract to not be revisable")
+		}
+	})
+
+	t.Run("insufficient allowance refresh", func(t *testing.T) {
+		revision := formContractUploadSector(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+
+		// compute the min allowance the host will accept and go below that by 1 hasting
+		additionalCollateral := types.Siacoins(1000)
+		postRefreshCollateral := revision.Revision.MissedHostValue.Add(additionalCollateral)
+		minAllowance := proto4.MinRenterAllowance(settings.Prices, postRefreshCollateral)
+
+		// go below minimum - don't forget to subtract the rollover
+		allowance := minAllowance.Sub(revision.Revision.RenterOutput.Value).Sub(types.NewCurrency64(1))
+
+		// refresh the contract
+		_, err := rhp4.RPCRefreshContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRefreshContractParams{
+			ContractID: revision.ID,
+			Allowance:  allowance,
+			Collateral: additionalCollateral,
+		})
+		if err == nil || !strings.Contains(err.Error(), "is less than minimum allowance") {
+			t.Fatal(err)
 		}
 	})
 }
