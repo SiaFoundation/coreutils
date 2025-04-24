@@ -41,6 +41,12 @@ func (b *blockingSettingsReporter) Unblock() {
 	close(b.blockChan)
 }
 
+type syncerMock struct{}
+
+func (syncerMock) BroadcastV2TransactionSet(types.ChainIndex, []types.V2Transaction) error {
+	return nil
+}
+
 type fundAndSign struct {
 	w  *wallet.SingleAddressWallet
 	pk types.PrivateKey
@@ -66,8 +72,8 @@ func (fs *fundAndSign) Address() types.Address {
 	return fs.w.Address()
 }
 
-func testRenterHostPairSiaMux(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ChainManager, s rhp4.Syncer, w rhp4.Wallet, c rhp4.Contractor, sr rhp4.Settings, ss rhp4.Sectors, log *zap.Logger) rhp4.TransportClient {
-	rs := rhp4.NewServer(hostKey, cm, s, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
+func testRenterHostPairSiaMux(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ChainManager, w rhp4.Wallet, c rhp4.Contractor, sr rhp4.Settings, ss rhp4.Sectors, log *zap.Logger) rhp4.TransportClient {
+	rs := rhp4.NewServer(hostKey, cm, &syncerMock{}, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
 	hostAddr := testutil.ServeSiaMux(tb, rs, log.Named("siamux"))
 
 	transport, err := siamux.Dial(context.Background(), hostAddr, hostKey.PublicKey())
@@ -79,8 +85,8 @@ func testRenterHostPairSiaMux(tb testing.TB, hostKey types.PrivateKey, cm rhp4.C
 	return transport
 }
 
-func testRenterHostPairQUIC(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ChainManager, s rhp4.Syncer, w rhp4.Wallet, c rhp4.Contractor, sr rhp4.Settings, ss rhp4.Sectors, log *zap.Logger) rhp4.TransportClient {
-	rs := rhp4.NewServer(hostKey, cm, s, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
+func testRenterHostPairQUIC(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ChainManager, w rhp4.Wallet, c rhp4.Contractor, sr rhp4.Settings, ss rhp4.Sectors, log *zap.Logger) rhp4.TransportClient {
+	rs := rhp4.NewServer(hostKey, cm, &syncerMock{}, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
 	hostAddr := testutil.ServeQUIC(tb, rs, log.Named("quic"))
 
 	transport, err := quic.Dial(context.Background(), hostAddr, hostKey.PublicKey(), quic.WithTLSConfig(func(tc *tls.Config) {
@@ -196,7 +202,7 @@ func TestFormContract(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(t, n, genesis)
+	cm, _, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -256,12 +262,12 @@ func TestFormContract(t *testing.T) {
 	}
 
 	t.Run("siamux", func(t *testing.T) {
-		transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+		transport := testRenterHostPairSiaMux(t, hostKey, cm, w, c, sr, ss, zap.NewNop())
 		testFormContract(t, transport)
 	})
 
 	t.Run("quic", func(t *testing.T) {
-		transport := testRenterHostPairQUIC(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+		transport := testRenterHostPairQUIC(t, hostKey, cm, w, c, sr, ss, zap.NewNop())
 		testFormContract(t, transport)
 	})
 }
@@ -271,7 +277,7 @@ func TestFormContractBasis(t *testing.T) {
 		n, genesis := testutil.V2Network()
 		hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-		cm1, s1, w1 := startTestNode(t, n, genesis)
+		cm1, _, w1 := startTestNode(t, n, genesis)
 		cm2, _, w2 := startTestNode(t, n, genesis)
 
 		// fund both wallets
@@ -316,7 +322,7 @@ func TestFormContractBasis(t *testing.T) {
 		ss := testutil.NewEphemeralSectorStore()
 		c := testutil.NewEphemeralContractor(cm1)
 
-		transport := testRenterHostPairSiaMux(t, hostKey, cm1, s1, w1, c, sr, ss, zap.NewNop())
+		transport := testRenterHostPairSiaMux(t, hostKey, cm1, w1, c, sr, ss, zap.NewNop())
 
 		settings, err := rhp4.RPCSettings(context.Background(), transport)
 		if err != nil {
@@ -352,7 +358,7 @@ func TestFormContractBasis(t *testing.T) {
 		n, genesis := testutil.V2Network()
 		hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-		cm1, s1, w1 := startTestNode(t, n, genesis)
+		cm1, _, w1 := startTestNode(t, n, genesis)
 		cm2, _, w2 := startTestNode(t, n, genesis)
 
 		// fund both wallets
@@ -397,7 +403,7 @@ func TestFormContractBasis(t *testing.T) {
 		ss := testutil.NewEphemeralSectorStore()
 		c := testutil.NewEphemeralContractor(cm1)
 
-		transport := testRenterHostPairQUIC(t, hostKey, cm1, s1, w1, c, sr, ss, zap.NewNop())
+		transport := testRenterHostPairQUIC(t, hostKey, cm1, w1, c, sr, ss, zap.NewNop())
 
 		settings, err := rhp4.RPCSettings(context.Background(), transport)
 		if err != nil {
@@ -433,7 +439,7 @@ func TestFormContractBasis(t *testing.T) {
 func TestRPCRefresh(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
-	cm, s, w := startTestNode(t, n, genesis)
+	cm, _, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -458,7 +464,7 @@ func TestRPCRefresh(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -581,7 +587,7 @@ func TestRPCRefresh(t *testing.T) {
 func TestRPCRenew(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
-	cm, s, w := startTestNode(t, n, genesis)
+	cm, _, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -606,7 +612,7 @@ func TestRPCRenew(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -804,7 +810,7 @@ func TestRPCRenew(t *testing.T) {
 
 func TestRPCTimeout(t *testing.T) {
 	n, genesis := testutil.V2Network()
-	cm, s, w := startTestNode(t, n, genesis)
+	cm, _, w := startTestNode(t, n, genesis)
 
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
@@ -829,7 +835,7 @@ func TestRPCTimeout(t *testing.T) {
 
 	t.Run("siamux", func(t *testing.T) {
 		sr := &blockingSettingsReporter{blockChan: make(chan struct{})}
-		transport := testRenterHostPairSiaMux(t, types.GeneratePrivateKey(), cm, s, w, c, sr, ss, zap.NewNop())
+		transport := testRenterHostPairSiaMux(t, types.GeneratePrivateKey(), cm, w, c, sr, ss, zap.NewNop())
 		assertRPCTimeout(transport, true)
 		sr.Unblock()
 		assertRPCTimeout(transport, false)
@@ -837,7 +843,7 @@ func TestRPCTimeout(t *testing.T) {
 
 	t.Run("quic", func(t *testing.T) {
 		sr := &blockingSettingsReporter{blockChan: make(chan struct{})}
-		transport := testRenterHostPairQUIC(t, types.GeneratePrivateKey(), cm, s, w, c, sr, ss, zap.NewNop())
+		transport := testRenterHostPairQUIC(t, types.GeneratePrivateKey(), cm, w, c, sr, ss, zap.NewNop())
 		assertRPCTimeout(transport, true)
 		sr.Unblock()
 		assertRPCTimeout(transport, false)
@@ -846,7 +852,7 @@ func TestRPCTimeout(t *testing.T) {
 
 func TestSiamuxDialUpgradeTimeout(t *testing.T) {
 	n, genesis := testutil.V2Network()
-	cm, s, w := startTestNode(t, n, genesis)
+	cm, _, w := startTestNode(t, n, genesis)
 
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
@@ -858,7 +864,7 @@ func TestSiamuxDialUpgradeTimeout(t *testing.T) {
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	hk := types.GeneratePrivateKey()
-	rs := rhp4.NewServer(hk, cm, s, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
+	rs := rhp4.NewServer(hk, cm, &syncerMock{}, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
 	hostAddr := testutil.ServeSiaMux(t, rs, zap.NewNop())
 
 	t.Run("dial", func(t *testing.T) {
@@ -890,7 +896,7 @@ func TestReplenishAccounts(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(t, n, genesis)
+	cm, _, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -915,7 +921,7 @@ func TestReplenishAccounts(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zaptest.NewLogger(t))
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, w, c, sr, ss, zaptest.NewLogger(t))
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -1075,7 +1081,7 @@ func TestAccounts(t *testing.T) {
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 	account := proto4.Account(renterKey.PublicKey())
 
-	cm, s, w := startTestNode(t, n, genesis)
+	cm, _, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -1100,7 +1106,7 @@ func TestAccounts(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -1194,7 +1200,7 @@ func TestReadWriteSector(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(t, n, genesis)
+	cm, _, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -1219,7 +1225,7 @@ func TestReadWriteSector(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -1281,7 +1287,7 @@ func TestAppendSectors(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(t, n, genesis)
+	cm, _, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -1306,7 +1312,7 @@ func TestAppendSectors(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -1424,7 +1430,7 @@ func TestVerifySector(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(t, n, genesis)
+	cm, _, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -1449,7 +1455,7 @@ func TestVerifySector(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -1508,7 +1514,7 @@ func TestRPCFreeSectors(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(t, n, genesis)
+	cm, _, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -1533,7 +1539,7 @@ func TestRPCFreeSectors(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -1632,7 +1638,7 @@ func TestRPCSectorRoots(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(t, n, genesis)
+	cm, _, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -1657,7 +1663,7 @@ func TestRPCSectorRoots(t *testing.T) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPairSiaMux(t, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -1738,7 +1744,7 @@ func BenchmarkWrite(b *testing.B) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(b, n, genesis)
+	cm, _, w := startTestNode(b, n, genesis)
 
 	// fund the wallet
 	mineAndSync(b, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -1763,7 +1769,7 @@ func BenchmarkWrite(b *testing.B) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPairSiaMux(b, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(b, hostKey, cm, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -1821,7 +1827,7 @@ func BenchmarkRead(b *testing.B) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(b, n, genesis)
+	cm, _, w := startTestNode(b, n, genesis)
 
 	// fund the wallet
 	mineAndSync(b, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -1846,7 +1852,7 @@ func BenchmarkRead(b *testing.B) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPairSiaMux(b, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(b, hostKey, cm, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
@@ -1916,7 +1922,7 @@ func BenchmarkContractUpload(b *testing.B) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, s, w := startTestNode(b, n, genesis)
+	cm, _, w := startTestNode(b, n, genesis)
 
 	// fund the wallet
 	mineAndSync(b, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -1941,7 +1947,7 @@ func BenchmarkContractUpload(b *testing.B) {
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
 
-	transport := testRenterHostPairSiaMux(b, hostKey, cm, s, w, c, sr, ss, zap.NewNop())
+	transport := testRenterHostPairSiaMux(b, hostKey, cm, w, c, sr, ss, zap.NewNop())
 
 	settings, err := rhp4.RPCSettings(context.Background(), transport)
 	if err != nil {
