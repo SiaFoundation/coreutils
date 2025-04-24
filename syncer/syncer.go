@@ -17,6 +17,8 @@ import (
 	"lukechampine.com/frand"
 )
 
+var ErrNoPeers = errors.New("no peers available")
+
 // A ChainManager manages blockchain state.
 type ChainManager interface {
 	History() ([32]types.BlockID, error)
@@ -323,59 +325,122 @@ func (s *Syncer) runPeer(p *Peer) error {
 	}
 }
 
-func (s *Syncer) relayHeader(h types.BlockHeader, origin *Peer) {
+func (s *Syncer) relayHeader(h types.BlockHeader, origin *Peer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if len(s.peers) == 0 {
+		return ErrNoPeers
+	}
 	for _, p := range s.peers {
 		if p == origin {
 			continue
 		}
 		go p.RelayHeader(h, s.config.RelayHeaderTimeout)
 	}
+	return nil
 }
 
-func (s *Syncer) relayTransactionSet(txns []types.Transaction, origin *Peer) {
+func (s *Syncer) relayTransactionSet(txns []types.Transaction, origin *Peer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if len(txns) == 0 {
+		return nil
+	}
+
+	var inflight int
+	errCh := make(chan error, len(s.peers))
 	for _, p := range s.peers {
 		if p == origin {
 			continue
 		}
-		go p.RelayTransactionSet(txns, s.config.RelayTransactionSetTimeout)
+		inflight++
+		go func(p *Peer) {
+			err := p.RelayTransactionSet(txns, s.config.RelayTransactionSetTimeout)
+			errCh <- err
+		}(p)
 	}
+	if inflight == 0 {
+		return ErrNoPeers
+	}
+	var err error
+	for ; inflight > 0; inflight-- {
+		// block until at least one relay has succeeded
+		// or all relays have failed
+		peerErr := <-errCh
+		if peerErr == nil {
+			return nil
+		} else if err == nil {
+			err = peerErr // return the first error if all relays fail
+		}
+	}
+	return err
 }
 
-func (s *Syncer) relayV2Header(bh types.BlockHeader, origin *Peer) {
+func (s *Syncer) relayV2Header(bh types.BlockHeader, origin *Peer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if len(s.peers) == 0 {
+		return ErrNoPeers
+	}
 	for _, p := range s.peers {
 		if p == origin || !p.t.SupportsV2() {
 			continue
 		}
 		go p.RelayV2Header(bh, s.config.RelayHeaderTimeout)
 	}
+	return nil
 }
 
-func (s *Syncer) relayV2BlockOutline(pb gateway.V2BlockOutline, origin *Peer) {
+func (s *Syncer) relayV2BlockOutline(pb gateway.V2BlockOutline, origin *Peer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if len(s.peers) == 0 {
+		return ErrNoPeers
+	}
 	for _, p := range s.peers {
 		if p == origin || !p.t.SupportsV2() {
 			continue
 		}
 		go p.RelayV2BlockOutline(pb, s.config.RelayBlockOutlineTimeout)
 	}
+	return nil
 }
 
-func (s *Syncer) relayV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction, origin *Peer) {
+func (s *Syncer) relayV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction, origin *Peer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if len(txns) == 0 {
+		return nil
+	} else if index == (types.ChainIndex{}) {
+		return errors.New("invalid chain index")
+	}
+	errCh := make(chan error, len(s.peers))
+	var inflight int
 	for _, p := range s.peers {
 		if p == origin || !p.t.SupportsV2() {
 			continue
 		}
-		go p.RelayV2TransactionSet(index, txns, s.config.RelayTransactionSetTimeout)
+		inflight++
+		go func(p *Peer) {
+			err := p.RelayV2TransactionSet(index, txns, s.config.RelayTransactionSetTimeout)
+			errCh <- err
+		}(p)
 	}
+	if inflight == 0 {
+		return ErrNoPeers
+	}
+	var err error
+	for ; inflight > 0; inflight-- {
+		// block until at least one relay has succeeded
+		// or all relays have failed
+		peerErr := <-errCh
+		if peerErr == nil {
+			return nil
+		} else if err == nil {
+			err = peerErr // return the first error if all relays fail
+		}
+	}
+	return err
 }
 
 func (s *Syncer) allowConnect(ctx context.Context, peer string, inbound bool) error {
@@ -773,22 +838,26 @@ func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
 }
 
 // BroadcastHeader broadcasts a header to all peers.
-func (s *Syncer) BroadcastHeader(bh types.BlockHeader) { s.relayHeader(bh, nil) }
+func (s *Syncer) BroadcastHeader(bh types.BlockHeader) error { return s.relayHeader(bh, nil) }
 
 // BroadcastV2Header broadcasts a v2 header to all peers.
-func (s *Syncer) BroadcastV2Header(bh types.BlockHeader) {
-	s.relayV2Header(bh, nil)
+func (s *Syncer) BroadcastV2Header(bh types.BlockHeader) error {
+	return s.relayV2Header(bh, nil)
 }
 
 // BroadcastV2BlockOutline broadcasts a v2 block outline to all peers.
-func (s *Syncer) BroadcastV2BlockOutline(b gateway.V2BlockOutline) { s.relayV2BlockOutline(b, nil) }
+func (s *Syncer) BroadcastV2BlockOutline(b gateway.V2BlockOutline) error {
+	return s.relayV2BlockOutline(b, nil)
+}
 
 // BroadcastTransactionSet broadcasts a transaction set to all peers.
-func (s *Syncer) BroadcastTransactionSet(txns []types.Transaction) { s.relayTransactionSet(txns, nil) }
+func (s *Syncer) BroadcastTransactionSet(txns []types.Transaction) error {
+	return s.relayTransactionSet(txns, nil)
+}
 
 // BroadcastV2TransactionSet broadcasts a v2 transaction set to all peers.
-func (s *Syncer) BroadcastV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction) {
-	s.relayV2TransactionSet(index, txns, nil)
+func (s *Syncer) BroadcastV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction) error {
+	return s.relayV2TransactionSet(index, txns, nil)
 }
 
 // Peers returns the set of currently-connected peers.
