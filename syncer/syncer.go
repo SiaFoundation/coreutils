@@ -524,6 +524,8 @@ func (s *Syncer) acceptLoop(ctx context.Context) error {
 			}
 			defer done()
 			defer conn.Close()
+			// set timeout for initial handshake
+			conn.SetDeadline(time.Now().Add(s.config.ConnectTimeout))
 			if err := s.allowConnect(ctx, conn.RemoteAddr().String(), true); err != nil {
 				s.log.Debug("rejected inbound connection", zap.Stringer("remoteAddress", conn.RemoteAddr()), zap.Error(err))
 			} else if t, err := gateway.Accept(conn, s.header); err != nil {
@@ -531,6 +533,7 @@ func (s *Syncer) acceptLoop(ctx context.Context) error {
 			} else if s.alreadyConnected(t.UniqueID) {
 				s.log.Debug("already connected to peer", zap.Stringer("remoteAddress", conn.RemoteAddr()))
 			} else {
+				conn.SetDeadline(time.Time{})
 				s.runPeer(&Peer{
 					t:        t,
 					ConnAddr: conn.RemoteAddr().String(),
@@ -890,7 +893,7 @@ func New(l net.Listener, cm ChainManager, pm PeerStore, header gateway.Header, o
 		MaxInboundPeers:            64,
 		MaxOutboundPeers:           16,
 		MaxInflightRPCs:            3,
-		ConnectTimeout:             5 * time.Second,
+		ConnectTimeout:             10 * time.Second,
 		RPCTimeout:                 2 * time.Minute,
 		ShareNodesTimeout:          5 * time.Second,
 		SendBlockTimeout:           60 * time.Second,
