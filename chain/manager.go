@@ -14,6 +14,9 @@ import (
 )
 
 var (
+	// ErrMissingBlock is returned when we do not have a block at the given
+	// index.
+	ErrMissingBlock = errors.New("missing block at index")
 	// ErrFutureBlock is returned when a block's timestamp is too far in the future.
 	ErrFutureBlock = errors.New("block's timestamp is too far in the future")
 )
@@ -284,7 +287,7 @@ func (m *Manager) markBadBlock(bid types.BlockID, err error) {
 func (m *Manager) revertTip() error {
 	b, bs, cs, ok := blockAndParent(m.store, m.tipState.Index.ID)
 	if !ok {
-		return fmt.Errorf("missing block at index %v", m.tipState.Index)
+		return fmt.Errorf("%w %v", ErrMissingBlock, m.tipState.Index)
 	}
 	cru := consensus.RevertBlock(cs, b, *bs)
 	m.store.RevertBlock(cs, cru)
@@ -298,7 +301,7 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 	var cau consensus.ApplyUpdate
 	b, bs, cs, ok := blockAndChild(m.store, index.ID)
 	if !ok {
-		return fmt.Errorf("missing block at index %v", index)
+		return fmt.Errorf("%w %v", ErrMissingBlock, index)
 	} else if b.ParentID != m.tipState.Index.ID {
 		panic("applyTip called with non-attaching block")
 	} else if bs == nil {
@@ -432,7 +435,7 @@ func (m *Manager) UpdatesSince(index types.ChainIndex, maxBlocks int) (rus []Rev
 		if !onBestChain(index) {
 			b, bs, cs, ok := blockAndParent(m.store, index.ID)
 			if !ok {
-				return nil, nil, fmt.Errorf("missing block at index %v", index)
+				return nil, nil, fmt.Errorf("%w %v", ErrMissingBlock, index)
 			} else if bs == nil {
 				return nil, nil, fmt.Errorf("missing supplement for block %v", index)
 			}
@@ -448,7 +451,7 @@ func (m *Manager) UpdatesSince(index types.ChainIndex, maxBlocks int) (rus []Rev
 			}
 			b, bs, cs, ok := blockAndParent(m.store, index.ID)
 			if !ok {
-				return nil, nil, fmt.Errorf("missing block at index %v", index)
+				return nil, nil, fmt.Errorf("%w %v", ErrMissingBlock, index)
 			} else if bs == nil {
 				return nil, nil, fmt.Errorf("missing supplement for block %v", index)
 			}
