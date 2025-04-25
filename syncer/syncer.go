@@ -403,7 +403,7 @@ func (s *Syncer) withV2Peers(origin *Peer, fn func(p *Peer) error) error {
 }
 
 func (s *Syncer) relayHeader(h types.BlockHeader, origin *Peer) error {
-	return s.withPeers(origin, func(p *Peer) error { p.RelayHeader(h, s.config.RelayHeaderTimeout); return nil })
+	return s.withPeers(origin, func(p *Peer) error { return p.RelayHeader(h, s.config.RelayHeaderTimeout) })
 }
 
 func (s *Syncer) relayTransactionSet(txns []types.Transaction, origin *Peer) error {
@@ -414,11 +414,11 @@ func (s *Syncer) relayTransactionSet(txns []types.Transaction, origin *Peer) err
 }
 
 func (s *Syncer) relayV2Header(bh types.BlockHeader, origin *Peer) error {
-	return s.withV2Peers(origin, func(p *Peer) error { p.RelayV2Header(bh, s.config.RelayHeaderTimeout); return nil })
+	return s.withV2Peers(origin, func(p *Peer) error { return p.RelayV2Header(bh, s.config.RelayHeaderTimeout) })
 }
 
 func (s *Syncer) relayV2BlockOutline(pb gateway.V2BlockOutline, origin *Peer) error {
-	return s.withV2Peers(origin, func(p *Peer) error { p.RelayV2BlockOutline(pb, s.config.RelayBlockOutlineTimeout); return nil })
+	return s.withV2Peers(origin, func(p *Peer) error { return p.RelayV2BlockOutline(pb, s.config.RelayBlockOutlineTimeout) })
 }
 
 func (s *Syncer) relayV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction, origin *Peer) error {
