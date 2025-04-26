@@ -56,7 +56,7 @@ type (
 	// A Syncer broadcasts transactions to its peers.
 	Syncer interface {
 		// BroadcastV2TransactionSet broadcasts a transaction set to the network.
-		BroadcastV2TransactionSet(types.ChainIndex, []types.V2Transaction)
+		BroadcastV2TransactionSet(types.ChainIndex, []types.V2Transaction) error
 	}
 
 	// A Wallet manages Siacoins and funds transactions.
@@ -728,10 +728,10 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	}, usage)
 	if err != nil {
 		return fmt.Errorf("failed to add contract: %w", err)
+	} else if err := s.syncer.BroadcastV2TransactionSet(basis, formationSet); err != nil {
+		return fmt.Errorf("failed to broadcast transaction set: %w", err)
 	}
-	// broadcast the finalized contract formation set
 	broadcast = true // set broadcast so the UTXOs will not be released if the renter happens to disconnect before receiving the last response
-	s.syncer.BroadcastV2TransactionSet(basis, formationSet)
 
 	// send the finalized transaction set to the renter
 	return rhp4.WriteResponse(stream, &rhp4.RPCFormContractThirdResponse{
@@ -908,10 +908,10 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 	}, usage)
 	if err != nil {
 		return fmt.Errorf("failed to add contract: %w", err)
+	} else if err := s.syncer.BroadcastV2TransactionSet(basis, renewalSet); err != nil {
+		return fmt.Errorf("failed to broadcast transaction set: %w", err)
 	}
-
 	broadcast = true // set broadcast so the UTXOs will not be released if the renter happens to disconnect before receiving the last response
-	s.syncer.BroadcastV2TransactionSet(basis, renewalSet)
 
 	// send the finalized transaction set to the renter
 	return rhp4.WriteResponse(stream, &rhp4.RPCRefreshContractThirdResponse{
@@ -1086,10 +1086,10 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	}, usage)
 	if err != nil {
 		return fmt.Errorf("failed to add contract: %w", err)
+	} else if err := s.syncer.BroadcastV2TransactionSet(basis, renewalSet); err != nil {
+		return fmt.Errorf("failed to broadcast transaction set: %w", err)
 	}
-
 	broadcast = true // set broadcast so the UTXOs will not be released if the renter happens to disconnect before receiving the last response
-	s.syncer.BroadcastV2TransactionSet(basis, renewalSet)
 
 	// send the finalized transaction set to the renter
 	return rhp4.WriteResponse(stream, &rhp4.RPCRenewContractThirdResponse{
