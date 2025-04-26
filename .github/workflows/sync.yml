@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix: 
-        network: [mainnet, zen, anagami]
+        network: [zen, anagami]
     steps:
       - name: Checkout
         uses: actions/checkout@v4.2.2
