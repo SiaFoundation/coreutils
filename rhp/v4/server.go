@@ -633,7 +633,7 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 
 	// calculate the required funding
 	cs := s.chain.TipState()
-	renterCost, hostCost := rhp4.ContractCost(cs, prices, formationTxn.FileContracts[0], formationTxn.MinerFee)
+	renterCost, hostCost := rhp4.ContractCost(cs, formationTxn.FileContracts[0], formationTxn.MinerFee)
 	// validate the renter added enough inputs
 	if renterInputs.Cmp(renterCost) < 0 {
 		return errorBadRequest("renter funding %v is less than required funding %v", renterInputs, renterCost)
@@ -766,16 +766,12 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 	}
 
 	// validate the request
+	cs := s.chain.TipState()
 	settings := s.settings.RHP4Settings()
-	existingCollateral, underflow := state.Revision.TotalCollateral.SubWithUnderflow(state.Revision.MissedHostValue)
-	if underflow {
-		return errorBadRequest("contract total collateral less than missed host value")
-	}
-	if err := req.Validate(s.hostKey.PublicKey(), existingCollateral, state.Revision.TotalCollateral, existing.RenterOutput.Value, state.Revision.ExpirationHeight, settings.MaxCollateral); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), cs.Index, state.Revision, settings.MaxCollateral); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
-	cs := s.chain.TipState()
 	renewal, usage := rhp4.RefreshContract(existing, prices, req.Refresh)
 	renterCost, hostCost := rhp4.RefreshCost(cs, prices, renewal, req.MinerFee)
 	renewalTxn := types.V2Transaction{
@@ -943,7 +939,7 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	tip := s.chain.Tip()
 
 	// validate the request
-	if err := req.Validate(s.hostKey.PublicKey(), tip, state.Revision.Filesize, state.Revision.ProofHeight, settings.MaxCollateral, settings.MaxContractDuration); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), tip, state.Revision, settings.MaxCollateral, settings.MaxContractDuration); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
@@ -955,7 +951,7 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 
 	cs := s.chain.TipState()
 	renewal, usage := rhp4.RenewContract(existing, prices, req.Renewal)
-	renterCost, hostCost := rhp4.RenewalCost(cs, prices, renewal, req.MinerFee)
+	renterCost, hostCost := rhp4.RenewalCost(cs, renewal, req.MinerFee)
 	renewalTxn := types.V2Transaction{
 		MinerFee: req.MinerFee,
 	}
