@@ -691,7 +691,7 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 		FileContracts: []types.V2FileContract{fc},
 	}
 
-	renterCost, _ := rhp4.ContractCost(cs, p, fc, formationTxn.MinerFee)
+	renterCost, _ := rhp4.ContractCost(cs, fc, formationTxn.MinerFee)
 	basis, toSign, err := signer.FundV2Transaction(&formationTxn, renterCost)
 	if err != nil {
 		return RPCFormContractResult{}, fmt.Errorf("failed to fund transaction: %w", err)
@@ -833,7 +833,7 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 		},
 	}
 
-	renterCost, hostCost := rhp4.RenewalCost(cs, p, renewal, renewalTxn.MinerFee)
+	renterCost, hostCost := rhp4.RenewalCost(cs, renewal, renewalTxn.MinerFee)
 	req := rhp4.RPCRenewContractRequest{
 		Prices:   p,
 		Renewal:  params,
