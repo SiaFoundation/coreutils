@@ -267,9 +267,24 @@ func (s *Syncer) ban(p *Peer, err error) error {
 	return nil
 }
 
-func (s *Syncer) runPeer(p *Peer) error {
-	// always try and remove the peer from the map when we're done, cause it
-	// might already have been added by Connect()
+// addPeer adds a peer to the Syncer. If it returns without error it must be
+// passed to runPeer to ensure it gets removed.
+func (s *Syncer) addPeer(p *Peer) error {
+	if err := s.pm.AddPeer(p.t.Addr); err != nil {
+		return fmt.Errorf("failed to add peer: %w", err)
+	} else if err := s.pm.UpdatePeerInfo(p.t.Addr, func(info *PeerInfo) {
+		info.LastConnect = time.Now()
+	}); err != nil {
+		return fmt.Errorf("failed to update peer info: %w", err)
+	}
+
+	s.mu.Lock()
+	s.peers[p.t.Addr] = p
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *Syncer) runPeer(p *Peer) {
 	defer func() {
 		s.mu.Lock()
 		delete(s.peers, p.t.Addr)
@@ -279,34 +294,26 @@ func (s *Syncer) runPeer(p *Peer) error {
 		s.peerRemoved.Broadcast()
 	}()
 
-	if err := s.pm.AddPeer(p.t.Addr); err != nil {
-		return fmt.Errorf("failed to add peer: %w", err)
-	}
-	err := s.pm.UpdatePeerInfo(p.t.Addr, func(info *PeerInfo) {
-		info.LastConnect = time.Now()
-	})
+	done, err := s.tg.Add()
 	if err != nil {
-		return fmt.Errorf("failed to update peer info: %w", err)
+		return
 	}
-	s.mu.Lock()
-	s.peers[p.t.Addr] = p
-	s.mu.Unlock()
+	defer done()
 
 	inflight := make(chan struct{}, s.config.MaxInflightRPCs)
-
 	for {
 		if p.Err() != nil {
-			return fmt.Errorf("peer error: %w", p.Err())
+			return
 		}
 		id, stream, err := p.acceptRPC()
 		if err != nil {
 			p.setErr(err)
-			return fmt.Errorf("failed to accept rpc: %w", err)
+			return
 		}
 		select {
 		case inflight <- struct{}{}:
 		case <-s.tg.Done():
-			return threadgroup.ErrClosed
+			return
 		}
 
 		go func() {
@@ -523,11 +530,16 @@ func (s *Syncer) acceptLoop(ctx context.Context) error {
 				s.log.Debug("already connected to peer", zap.Stringer("remoteAddress", conn.RemoteAddr()))
 			} else {
 				conn.SetDeadline(time.Time{})
-				s.runPeer(&Peer{
+				p := &Peer{
 					t:        t,
 					ConnAddr: conn.RemoteAddr().String(),
 					Inbound:  true,
-				})
+				}
+				if err := s.addPeer(p); err != nil {
+					s.log.Debug("failed to add peer", zap.Stringer("remoteAddress", conn.RemoteAddr()), zap.Error(err))
+				} else {
+					s.runPeer(p)
+				}
 			}
 		}()
 	}
@@ -813,21 +825,11 @@ func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
 		ConnAddr: conn.RemoteAddr().String(),
 		Inbound:  false,
 	}
-	go func() {
-		done, err := s.tg.Add()
-		if err != nil {
-			return
-		}
-		s.runPeer(p)
-		done()
-	}()
+	if err := s.addPeer(p); err != nil {
+		return nil, fmt.Errorf("failed to add peer: %w", err)
+	}
 
-	// runPeer does this too, but doing it outside the goroutine prevents a race
-	// where the peer is absent from Peers() despite Connect() having returned
-	// successfully
-	s.mu.Lock()
-	s.peers[p.t.Addr] = p
-	s.mu.Unlock()
+	go s.runPeer(p)
 	return p, nil
 }
 
