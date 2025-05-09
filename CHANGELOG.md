@@ -1,3 +1,9 @@
+## 0.13.3 (2025-05-09)
+
+### Fixes
+
+- Fix deadlock in syncer.Close
+
 ## 0.13.2 (2025-04-28)
 
 ### Features
