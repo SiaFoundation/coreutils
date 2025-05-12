@@ -194,9 +194,10 @@ func TestnetErravimus() (*consensus.Network, types.Block) {
 	n, genesis := TestnetZen()
 
 	n.Name = "erravimus"
-	n.HardforkOak.GenesisTimestamp = time.Date(2025, time.March, 18, 0, 0, 0, 0, time.UTC)
+	n.HardforkOak.GenesisTimestamp = time.Date(2025, time.May, 12, 0, 0, 0, 0, time.UTC)
 	n.HardforkV2.AllowHeight = 2016                              // ~2 weeks in
 	n.HardforkV2.RequireHeight = n.HardforkV2.AllowHeight + 1440 // ~10 days later
+	n.BlockInterval = 5 * time.Minute
 
 	n.HardforkFoundation.PrimaryAddress = parseAddr("241352c83da002e61f57e96b14f3a5f8b5de22156ce83b753ea495e64f1affebae88736b2347")
 	n.HardforkFoundation.FailsafeAddress = types.VoidAddress
