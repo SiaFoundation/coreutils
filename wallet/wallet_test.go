@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/bits"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -360,6 +361,68 @@ func TestWallet(t *testing.T) {
 			t.Fatalf("expected transaction %v, got %v", sent[i].ID(), events[i].ID)
 		}
 		assertEvent(t, w, events[j].ID, wallet.EventTypeV1Transaction, types.ZeroCurrency, sendAmount, cm.Tip().Height)
+	}
+}
+
+func TestWalletLockUnlock(t *testing.T) {
+	// create wallet store
+	pk := types.GeneratePrivateKey()
+	ws := testutil.NewEphemeralWalletStore()
+
+	// create chain store
+	network, genesis := testutil.Network()
+	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// create chain manager and subscribe the wallet
+	cm := chain.NewManager(cs, genesisState)
+	// create wallet
+	l := zaptest.NewLogger(t)
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(l.Named("wallet")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	// mine a block to fund the wallet
+	initialReward := genesisState.BlockReward()
+	mineAndSync(t, cm, ws, w, w.Address(), 1)
+	mineAndSync(t, cm, ws, w, types.VoidAddress, cm.TipState().Network.MaturityDelay)
+
+	txn := types.Transaction{
+		SiacoinOutputs: []types.SiacoinOutput{
+			{Address: types.VoidAddress, Value: initialReward},
+		},
+	}
+	toSign, err := w.FundTransaction(&txn, initialReward, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	locked, err := ws.LockedUTXOs(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	} else if len(locked) != len(toSign) {
+		t.Fatalf("expected %v locked outputs, got %v", len(toSign), len(locked))
+	}
+
+	for _, id := range toSign {
+		if !slices.Contains(locked, types.SiacoinOutputID(id)) {
+			t.Fatalf("expected locked output %v, got %v", id, locked)
+		}
+	}
+
+	if err := w.ReleaseInputs([]types.Transaction{txn}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	locked, err = ws.LockedUTXOs(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	} else if len(locked) != 0 {
+		t.Fatalf("expected 0 locked outputs, got %v", len(locked))
 	}
 }
 

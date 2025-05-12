@@ -73,7 +73,7 @@ type (
 		SignV2Inputs(txn *types.V2Transaction, toSign []int)
 		// ReleaseInputs releases the inputs of a transaction. It should only
 		// be used if the transaction is not going to be broadcast
-		ReleaseInputs(txns []types.Transaction, v2txns []types.V2Transaction)
+		ReleaseInputs(txns []types.Transaction, v2txns []types.V2Transaction) error
 	}
 
 	// A Sectors is an interface for reading and writing sectors.
