@@ -78,6 +78,11 @@ type (
 	}
 )
 
+// MarshalJSON implements the json.Marshaler interface.
+func (ev EventV2Transaction) MarshalJSON() ([]byte, error) {
+	return types.V2Transaction(ev).MarshalJSON()
+}
+
 func (EventPayout) isEvent() bool               { return true }
 func (EventV1Transaction) isEvent() bool        { return true }
 func (EventV1ContractResolution) isEvent() bool { return true }
