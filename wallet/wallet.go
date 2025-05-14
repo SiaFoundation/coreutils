@@ -62,6 +62,15 @@ type (
 		// WalletEventCount returns the total number of events relevant to the
 		// wallet.
 		WalletEventCount() (uint64, error)
+
+		// LockUTXOs locks the given siacoin output IDs for use in a transaction.
+		// The outputs will be unlocked after the given time.
+		LockUTXOs([]types.SiacoinOutputID, time.Time) error
+		// LockedUTXOs returns a list of locked siacoin output IDs. That are locked
+		// as of the given time.
+		LockedUTXOs(time.Time) ([]types.SiacoinOutputID, error)
+		// ReleaseUTXOs unlocks the given siacoin output IDs.
+		ReleaseUTXOs([]types.SiacoinOutputID) error
 	}
 
 	// A SingleAddressWallet is a hot wallet that manages the outputs controlled
@@ -345,6 +354,23 @@ func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, us
 	return selected, inputSum, nil
 }
 
+// lockUTXOs locks the given siacoin output IDs for use in a transaction.
+// The outputs will be unlocked after the given time.
+// It is expected that the caller will hold sw.mu.
+func (sw *SingleAddressWallet) lockUTXOs(ids []types.SiacoinOutputID) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	expirationTimestamp := time.Now().Add(sw.cfg.ReservationDuration)
+	if err := sw.store.LockUTXOs(ids, expirationTimestamp); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		sw.locked[id] = expirationTimestamp
+	}
+	return nil
+}
+
 // FundTransaction adds siacoin inputs worth at least amount to the provided
 // transaction. If necessary, a change output will also be added. The inputs
 // will not be available to future calls to FundTransaction unless ReleaseInputs
@@ -375,16 +401,20 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 		})
 	}
 
-	toSign := make([]types.Hash256, len(selected))
-	for i, sce := range selected {
+	toLock := make([]types.SiacoinOutputID, 0, len(selected))
+	toSign := make([]types.Hash256, 0, len(selected))
+	for _, sce := range selected {
 		txn.SiacoinInputs = append(txn.SiacoinInputs, types.SiacoinInput{
 			ParentID:         sce.ID,
 			UnlockConditions: types.StandardUnlockConditions(sw.priv.PublicKey()),
 		})
-		toSign[i] = types.Hash256(sce.ID)
-		sw.locked[sce.ID] = time.Now().Add(sw.cfg.ReservationDuration)
+		toSign = append(toSign, types.Hash256(sce.ID))
+		toLock = append(toLock, sce.ID)
 	}
 
+	if err := sw.lockUTXOs(toLock); err != nil {
+		return nil, fmt.Errorf("failed to lock UTXOs: %w", err)
+	}
 	return toSign, nil
 }
 
@@ -445,15 +475,19 @@ func (sw *SingleAddressWallet) FundV2Transaction(txn *types.V2Transaction, amoun
 		})
 	}
 
+	toLock := make([]types.SiacoinOutputID, 0, len(selected))
 	toSign := make([]int, 0, len(selected))
 	for _, sce := range selected {
 		toSign = append(toSign, len(txn.SiacoinInputs))
 		txn.SiacoinInputs = append(txn.SiacoinInputs, types.V2SiacoinInput{
 			Parent: sce.Copy(),
 		})
-		sw.locked[sce.ID] = time.Now().Add(sw.cfg.ReservationDuration)
+		toLock = append(toLock, sce.ID)
 	}
 
+	if err := sw.lockUTXOs(toLock); err != nil {
+		return types.ChainIndex{}, nil, fmt.Errorf("failed to lock UTXOs: %w", err)
+	}
 	return sw.tip, toSign, nil
 }
 
@@ -643,6 +677,7 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
+	var toLock []types.SiacoinOutputID
 	utxos, outputs, err := sw.selectRedistributeUTXOs(state.Index.Height, outputs, amount, elements)
 	if err != nil {
 		return nil, nil, err
@@ -730,12 +765,15 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 				ParentID:         sce.ID,
 				UnlockConditions: types.StandardUnlockConditions(sw.priv.PublicKey()),
 			})
-			sw.locked[sce.ID] = time.Now().Add(sw.cfg.ReservationDuration)
+			toLock = append(toLock, sce.ID)
 		}
 		txns = append(txns, txn)
 		toSign = append(toSign, toSignTxn)
 	}
 
+	if err := sw.lockUTXOs(toLock); err != nil {
+		return nil, nil, fmt.Errorf("failed to lock UTXOs: %w", err)
+	}
 	return
 }
 
@@ -753,6 +791,7 @@ func (sw *SingleAddressWallet) RedistributeV2(outputs int, amount, feePerByte ty
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
+	var toLock []types.SiacoinOutputID
 	utxos, outputs, err := sw.selectRedistributeUTXOs(state.Index.Height, outputs, amount, elements)
 	if err != nil {
 		return nil, nil, err
@@ -834,10 +873,14 @@ func (sw *SingleAddressWallet) RedistributeV2(outputs int, amount, feePerByte ty
 			txn.SiacoinInputs = append(txn.SiacoinInputs, types.V2SiacoinInput{
 				Parent: sce.Move(),
 			})
-			sw.locked[sce.ID] = time.Now().Add(sw.cfg.ReservationDuration)
+			toLock = append(toLock, sce.ID)
 		}
 		txns = append(txns, txn)
 		toSign = append(toSign, toSignTxn)
+	}
+
+	if err := sw.lockUTXOs(toLock); err != nil {
+		return nil, nil, fmt.Errorf("failed to lock UTXOs: %w", err)
 	}
 	return
 }
@@ -845,19 +888,27 @@ func (sw *SingleAddressWallet) RedistributeV2(outputs int, amount, feePerByte ty
 // ReleaseInputs is a helper function that releases the inputs of txn for use in
 // other transactions. It should only be called on transactions that are invalid
 // or will never be broadcast.
-func (sw *SingleAddressWallet) ReleaseInputs(txns []types.Transaction, v2txns []types.V2Transaction) {
+func (sw *SingleAddressWallet) ReleaseInputs(txns []types.Transaction, v2txns []types.V2Transaction) error {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
+	var released []types.SiacoinOutputID
 	for _, txn := range txns {
 		for _, in := range txn.SiacoinInputs {
 			delete(sw.locked, in.ParentID)
+			released = append(released, in.ParentID)
 		}
 	}
 	for _, txn := range v2txns {
 		for _, in := range txn.SiacoinInputs {
 			delete(sw.locked, in.Parent.ID)
+			released = append(released, in.Parent.ID)
 		}
 	}
+
+	if err := sw.store.ReleaseUTXOs(released); err != nil {
+		return fmt.Errorf("failed to release locked UTXOs: %w", err)
+	}
+	return nil
 }
 
 // isLocked returns true if the siacoin output with given id is locked, this
@@ -949,7 +1000,6 @@ func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store Single
 		ReservationDuration: 3 * time.Hour,
 		Log:                 zap.NewNop(),
 	}
-
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -971,6 +1021,15 @@ func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store Single
 		addr:   types.StandardUnlockHash(priv.PublicKey()),
 		tip:    tip,
 		locked: make(map[types.SiacoinOutputID]time.Time),
+	}
+
+	// load the wallet's locked UTXOs
+	lockedIDs, err := store.LockedUTXOs(time.Now())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get locked UTXOs: %w", err)
+	}
+	for _, id := range lockedIDs {
+		sw.locked[id] = time.Now().Add(sw.cfg.ReservationDuration)
 	}
 	return sw, nil
 }
