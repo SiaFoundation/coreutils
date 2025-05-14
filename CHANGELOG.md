@@ -1,3 +1,9 @@
+## 0.13.6 (2025-05-14)
+
+### Fixes
+
+- Fixed v2 transaction events not including convenience fields
+
 ## 0.13.5 (2025-05-14)
 
 ### Fixes
