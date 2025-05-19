@@ -414,6 +414,22 @@ func TestWalletLockUnlock(t *testing.T) {
 		}
 	}
 
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// reload the wallet to check that the locked outputs are loaded
+	w, err = wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(l.Named("wallet")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	_, err = w.FundTransaction(&txn, initialReward, false)
+	if !errors.Is(err, wallet.ErrNotEnoughFunds) {
+		t.Fatalf("expected %q, got %q", wallet.ErrNotEnoughFunds, err)
+	}
+
 	if err := w.ReleaseInputs([]types.Transaction{txn}, nil); err != nil {
 		t.Fatal(err)
 	}
