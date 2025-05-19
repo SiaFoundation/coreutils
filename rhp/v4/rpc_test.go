@@ -514,7 +514,7 @@ func TestRPCRefresh(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		aRes, err := rhp4.RPCAppendSectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, []types.Hash256{wRes.Root})
+		aRes, err := rhp4.RPCAppendSectors(context.Background(), transport, fundAndSign, cs, settings.Prices, revision, []types.Hash256{wRes.Root})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -668,7 +668,7 @@ func TestRPCRenew(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		aRes, err := rhp4.RPCAppendSectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, []types.Hash256{wRes.Root})
+		aRes, err := rhp4.RPCAppendSectors(context.Background(), transport, fundAndSign, cs, settings.Prices, revision, []types.Hash256{wRes.Root})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1399,7 +1399,7 @@ func TestAppendSectors(t *testing.T) {
 	roots[excludedIndex] = frand.Entropy256()
 
 	// append the sectors to the contract
-	appendResult, err := rhp4.RPCAppendSectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, roots)
+	appendResult, err := rhp4.RPCAppendSectors(context.Background(), transport, fundAndSign, cs, settings.Prices, revision, roots)
 	if err != nil {
 		t.Fatal(err)
 	} else if len(appendResult.Sectors) != len(roots)-1 {
@@ -1608,7 +1608,7 @@ func TestRPCFreeSectors(t *testing.T) {
 	}
 
 	// append all the sector roots to the contract
-	appendResult, err := rhp4.RPCAppendSectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, roots)
+	appendResult, err := rhp4.RPCAppendSectors(context.Background(), transport, fundAndSign, cs, settings.Prices, revision, roots)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1626,7 +1626,7 @@ func TestRPCFreeSectors(t *testing.T) {
 	}
 	newRoots = newRoots[:len(newRoots)-len(indices)]
 
-	removeResult, err := rhp4.RPCFreeSectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, indices)
+	removeResult, err := rhp4.RPCFreeSectors(context.Background(), transport, fundAndSign, cs, settings.Prices, revision, indices)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1730,7 +1730,7 @@ func TestRPCSectorRoots(t *testing.T) {
 		}
 		roots = append(roots, writeResult.Root)
 
-		appendResult, err := rhp4.RPCAppendSectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, []types.Hash256{writeResult.Root})
+		appendResult, err := rhp4.RPCAppendSectors(context.Background(), transport, fundAndSign, cs, settings.Prices, revision, []types.Hash256{writeResult.Root})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2010,7 +2010,7 @@ func BenchmarkContractUpload(b *testing.B) {
 
 	wg.Wait()
 
-	appendResult, err := rhp4.RPCAppendSectors(context.Background(), transport, cs, settings.Prices, renterKey, revision, roots)
+	appendResult, err := rhp4.RPCAppendSectors(context.Background(), transport, fundAndSign, cs, settings.Prices, revision, roots)
 	if err != nil {
 		b.Fatal(err)
 	} else if appendResult.Revision.Filesize != uint64(b.N)*proto4.SectorSize {
