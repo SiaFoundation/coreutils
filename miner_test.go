@@ -60,13 +60,14 @@ func TestMiner(t *testing.T) {
 	}
 
 	// assert the minerpayout includes the txn fee
+	expectedPayout := types.Siacoins(1).Add(cm.TipState().BlockReward())
 	b, found := coreutils.MineBlock(cm, types.VoidAddress, time.Second)
 	if !found {
 		t.Fatal("PoW failed")
 	} else if len(b.MinerPayouts) != 1 {
 		t.Fatal("expected one miner payout")
-	} else if b.MinerPayouts[0].Value.Cmp(types.Siacoins(1).Add(cm.TipState().BlockReward())) != 0 {
-		t.Fatal("unexpected miner payout", b.MinerPayouts[0].Value.ExactString())
+	} else if b.MinerPayouts[0].Value.Cmp(expectedPayout) != 0 {
+		t.Fatalf("expected miner payout %d, got %d", expectedPayout, b.MinerPayouts[0].Value)
 	}
 }
 
