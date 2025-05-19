@@ -3,6 +3,7 @@ package chain
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -92,7 +93,6 @@ type Manager struct {
 		txns           []types.Transaction
 		v2txns         []types.V2Transaction
 		indices        map[types.TransactionID]int
-		invalidTxnSets map[types.Hash256]error
 		ms             *consensus.MidState
 		weight         uint64
 		medianFee      *types.Currency
@@ -1050,54 +1050,27 @@ func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transacti
 
 func (m *Manager) checkTxnSet(txns []types.Transaction, v2txns []types.V2Transaction) (bool, error) {
 	allInPool := true
-	checkPool := func(txid types.TransactionID) types.TransactionID {
-		if allInPool {
-			if _, ok := m.txpool.indices[txid]; !ok {
-				allInPool = false
-			}
-		}
-		return txid
-	}
-	h := types.NewHasher()
-	for _, txn := range txns {
-		checkPool(txn.ID()).EncodeTo(h.E)
-	}
-	for _, txn := range v2txns {
-		checkPool(txn.ID()).EncodeTo(h.E)
-	}
-	setID := h.Sum()
-	if err := m.txpool.invalidTxnSets[setID]; allInPool || err != nil {
-		return true, err
-	}
-
-	// validate
-	markBadTxnSet := func(err error) error {
-		const maxInvalidTxnSets = 1000
-		if len(m.txpool.invalidTxnSets) >= maxInvalidTxnSets {
-			// forget a random entry
-			for id := range m.txpool.invalidTxnSets {
-				delete(m.txpool.invalidTxnSets, id)
-				break
-			}
-		}
-		m.txpool.invalidTxnSets[setID] = err
-		return err
-	}
 	ms := consensus.NewMidState(m.tipState)
 	for _, txn := range txns {
+		if _, ok := m.txpool.indices[txn.ID()]; !ok {
+			allInPool = false
+		}
 		ts := m.store.SupplementTipTransaction(txn)
 		if err := consensus.ValidateTransaction(ms, txn, ts); err != nil {
-			return false, markBadTxnSet(fmt.Errorf("transaction %v is invalid: %w", txn.ID(), err))
+			return false, fmt.Errorf("transaction %v is invalid: %w", txn.ID(), err)
 		}
 		ms.ApplyTransaction(txn, ts)
 	}
 	for _, txn := range v2txns {
+		if _, ok := m.txpool.indices[txn.ID()]; !ok {
+			allInPool = false
+		}
 		if err := consensus.ValidateV2Transaction(ms, txn); err != nil {
-			return false, markBadTxnSet(fmt.Errorf("v2 transaction %v is invalid: %w", txn.ID(), err))
+			return false, fmt.Errorf("v2 transaction %v is invalid: %w", txn.ID(), err)
 		}
 		ms.ApplyV2Transaction(txn)
 	}
-	return false, nil
+	return allInPool, nil
 }
 
 func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to types.ChainIndex) ([]types.V2Transaction, error) {
@@ -1276,7 +1249,7 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 	m.revalidatePool()
 
 	// take ownership of Merkle proofs, and update them to the current tip
-	txns = append([]types.V2Transaction(nil), txns...)
+	txns = slices.Clone(txns)
 	for i := range txns {
 		txns[i] = txns[i].DeepCopy()
 	}
@@ -1331,10 +1304,9 @@ func NewManager(store Store, cs consensus.State, opts ...ManagerOption) *Manager
 		onPool:        make(map[[16]byte]func()),
 		invalidBlocks: make(map[types.BlockID]error),
 	}
+	m.txpool.indices = make(map[types.TransactionID]int)
 	for _, opt := range opts {
 		opt(m)
 	}
-	m.txpool.indices = make(map[types.TransactionID]int)
-	m.txpool.invalidTxnSets = make(map[types.Hash256]error)
 	return m
 }
