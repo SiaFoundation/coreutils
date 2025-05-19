@@ -381,13 +381,13 @@ func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPri
 }
 
 // RPCFreeSectors removes sectors from a contract.
-func RPCFreeSectors(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, indices []uint64) (RPCFreeSectorsResult, error) {
+func RPCFreeSectors(ctx context.Context, t TransportClient, signer ContractSigner, cs consensus.State, prices rhp4.HostPrices, contract ContractRevision, indices []uint64) (RPCFreeSectorsResult, error) {
 	req := rhp4.RPCFreeSectorsRequest{
 		ContractID: contract.ID,
 		Prices:     prices,
 		Indices:    indices,
 	}
-	req.ChallengeSignature = sk.SignHash(req.ChallengeSigHash(contract.Revision.RevisionNumber + 1))
+	req.ChallengeSignature = signer.SignHash(req.ChallengeSigHash(contract.Revision.RevisionNumber + 1))
 
 	s, err := openStream(ctx, t, defaultStreamTimeout)
 	if err != nil {
@@ -413,7 +413,7 @@ func RPCFreeSectors(ctx context.Context, t TransportClient, cs consensus.State, 
 	}
 
 	sigHash := cs.ContractSigHash(revision)
-	revision.RenterSignature = sk.SignHash(sigHash)
+	revision.RenterSignature = signer.SignHash(sigHash)
 
 	signatureResp := rhp4.RPCFreeSectorsSecondResponse{
 		RenterSignature: revision.RenterSignature,
@@ -439,13 +439,13 @@ func RPCFreeSectors(ctx context.Context, t TransportClient, cs consensus.State, 
 }
 
 // RPCAppendSectors appends sectors a host is storing to a contract.
-func RPCAppendSectors(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, sk types.PrivateKey, contract ContractRevision, roots []types.Hash256) (RPCAppendSectorsResult, error) {
+func RPCAppendSectors(ctx context.Context, t TransportClient, signer ContractSigner, cs consensus.State, prices rhp4.HostPrices, contract ContractRevision, roots []types.Hash256) (RPCAppendSectorsResult, error) {
 	req := rhp4.RPCAppendSectorsRequest{
 		Prices:     prices,
 		Sectors:    roots,
 		ContractID: contract.ID,
 	}
-	req.ChallengeSignature = sk.SignHash(req.ChallengeSigHash(contract.Revision.RevisionNumber + 1))
+	req.ChallengeSignature = signer.SignHash(req.ChallengeSigHash(contract.Revision.RevisionNumber + 1))
 
 	s, err := openStream(ctx, t, defaultStreamTimeout)
 	if err != nil {
@@ -479,7 +479,7 @@ func RPCAppendSectors(ctx context.Context, t TransportClient, cs consensus.State
 		return RPCAppendSectorsResult{}, fmt.Errorf("failed to revise contract: %w", err)
 	}
 	sigHash := cs.ContractSigHash(revision)
-	revision.RenterSignature = sk.SignHash(sigHash)
+	revision.RenterSignature = signer.SignHash(sigHash)
 
 	signatureResp := rhp4.RPCAppendSectorsSecondResponse{
 		RenterSignature: revision.RenterSignature,
