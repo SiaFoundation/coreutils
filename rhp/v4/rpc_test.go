@@ -1771,24 +1771,11 @@ func TestRPCSectorRoots(t *testing.T) {
 		checkRoots(t, roots)
 	}
 
-	// store random sectors on the host
-	data := frand.Bytes(1024)
-	writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(data), uint64(len(data)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	roots = append(roots, writeResult.Root)
-
 	// assert manipulating the signature returns [proto4.ErrInvalidSignature]
 	corrupted := revision
 	corrupted.Revision.RevisionNumber++
-	_, err = rhp4.RPCAppendSectors(context.Background(), transport, fundAndSign, cs, settings.Prices, corrupted, []types.Hash256{writeResult.Root})
+	_, err = rhp4.RPCSectorRoots(context.Background(), transport, cs, settings.Prices, renterKey, corrupted, 0, 1)
 	if err == nil || !strings.Contains(err.Error(), proto4.ErrInvalidSignature.Error()) {
-		t.Fatal(err)
-	}
-
-	_, err = rhp4.RPCAppendSectors(context.Background(), transport, fundAndSign, cs, settings.Prices, revision, []types.Hash256{writeResult.Root})
-	if err != nil {
 		t.Fatal(err)
 	}
 }
