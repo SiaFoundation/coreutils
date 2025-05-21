@@ -18,6 +18,7 @@ type (
 		mu     sync.Mutex
 		tip    types.ChainIndex
 		utxos  map[types.SiacoinOutputID]types.SiacoinElement
+		locked map[types.SiacoinOutputID]time.Time
 		events []wallet.Event
 	}
 
@@ -25,6 +26,8 @@ type (
 		store *EphemeralWalletStore
 	}
 )
+
+var _ wallet.SingleAddressStore = (*EphemeralWalletStore)(nil)
 
 func (et *ephemeralWalletUpdateTxn) WalletStateElements() (elements []types.StateElement, _ error) {
 	for _, se := range et.store.utxos {
@@ -144,9 +147,45 @@ func (es *EphemeralWalletStore) Tip() (types.ChainIndex, error) {
 	return es.tip, nil
 }
 
+// LockUTXOs locks the siacoin outputs with the given ids.
+func (es *EphemeralWalletStore) LockUTXOs(ids []types.SiacoinOutputID, expiration time.Time) error {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	for _, id := range ids {
+		es.locked[id] = expiration
+	}
+	return nil
+}
+
+// ReleaseUTXOs unlocks the siacoin outputs with the given ids.
+func (es *EphemeralWalletStore) ReleaseUTXOs(ids []types.SiacoinOutputID) error {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	for _, id := range ids {
+		delete(es.locked, id)
+	}
+	return nil
+}
+
+// LockedUTXOs returns the wallet's locked siacoin outputs.
+// The returned ids are the ids of the locked siacoin outputs that have
+// not expired.
+func (es *EphemeralWalletStore) LockedUTXOs(ts time.Time) ([]types.SiacoinOutputID, error) {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	ids := make([]types.SiacoinOutputID, 0, len(es.locked))
+	for id, expiration := range es.locked {
+		if expiration.After(ts) {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
 // NewEphemeralWalletStore returns a new EphemeralWalletStore.
 func NewEphemeralWalletStore() *EphemeralWalletStore {
 	return &EphemeralWalletStore{
-		utxos: make(map[types.SiacoinOutputID]types.SiacoinElement),
+		utxos:  make(map[types.SiacoinOutputID]types.SiacoinElement),
+		locked: make(map[types.SiacoinOutputID]time.Time),
 	}
 }
