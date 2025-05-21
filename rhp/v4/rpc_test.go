@@ -892,7 +892,7 @@ func TestSiamuxDialUpgradeTimeout(t *testing.T) {
 	})
 }
 
-func TestReplenishAccounts(t *testing.T) {
+func TestRPCReplenishAccounts(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
@@ -980,8 +980,16 @@ func TestReplenishAccounts(t *testing.T) {
 		})
 	}
 
+	// assert manipulating the signature returns [proto4.ErrInvalidSignature]
+	corrupted := revision
+	corrupted.Revision.RevisionNumber++
+	fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, corrupted, deposits)
+	if err == nil || !strings.Contains(err.Error(), proto4.ErrInvalidSignature.Error()) {
+		t.Fatal(err)
+	}
+
 	// fund the initial set of accounts
-	fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, deposits)
+	fundResult, err = rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, deposits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1010,8 +1018,16 @@ func TestReplenishAccounts(t *testing.T) {
 		}
 	}
 
+	// assert manipulating the signature returns [proto4.ErrInvalidSignature]
+	corruptedParams := replenishParams
+	corruptedParams.Contract.Revision.RevisionNumber++
+	replenishResult, err := rhp4.RPCReplenishAccounts(context.Background(), transport, corruptedParams, cs, fundAndSign)
+	if err == nil || !strings.Contains(err.Error(), proto4.ErrInvalidSignature.Error()) {
+		t.Fatal(err)
+	}
+
 	// replenish the accounts
-	replenishResult, err := rhp4.RPCReplenishAccounts(context.Background(), transport, replenishParams, cs, fundAndSign)
+	replenishResult, err = rhp4.RPCReplenishAccounts(context.Background(), transport, replenishParams, cs, fundAndSign)
 	if err != nil {
 		t.Fatal(err)
 	} else if !replenishResult.Usage.AccountFunding.Equals(expectedCost) {
@@ -1398,8 +1414,16 @@ func TestAppendSectors(t *testing.T) {
 	excludedIndex := frand.Intn(len(roots))
 	roots[excludedIndex] = frand.Entropy256()
 
+	// assert manipulating the signature returns [proto4.ErrInvalidSignature]
+	corrupted := revision
+	corrupted.Revision.RevisionNumber++
+	appendResult, err := rhp4.RPCAppendSectors(context.Background(), transport, fundAndSign, cs, settings.Prices, corrupted, roots)
+	if err == nil || !strings.Contains(err.Error(), proto4.ErrInvalidSignature.Error()) {
+		t.Fatal(err)
+	}
+
 	// append the sectors to the contract
-	appendResult, err := rhp4.RPCAppendSectors(context.Background(), transport, fundAndSign, cs, settings.Prices, revision, roots)
+	appendResult, err = rhp4.RPCAppendSectors(context.Background(), transport, fundAndSign, cs, settings.Prices, revision, roots)
 	if err != nil {
 		t.Fatal(err)
 	} else if len(appendResult.Sectors) != len(roots)-1 {
@@ -1626,7 +1650,15 @@ func TestRPCFreeSectors(t *testing.T) {
 	}
 	newRoots = newRoots[:len(newRoots)-len(indices)]
 
-	removeResult, err := rhp4.RPCFreeSectors(context.Background(), transport, fundAndSign, cs, settings.Prices, revision, indices)
+	// assert manipulating the signature returns [proto4.ErrInvalidSignature]
+	corrupted := revision
+	corrupted.Revision.RevisionNumber++
+	removeResult, err := rhp4.RPCFreeSectors(context.Background(), transport, fundAndSign, cs, settings.Prices, corrupted, indices)
+	if err == nil || !strings.Contains(err.Error(), proto4.ErrInvalidSignature.Error()) {
+		t.Fatal(err)
+	}
+
+	removeResult, err = rhp4.RPCFreeSectors(context.Background(), transport, fundAndSign, cs, settings.Prices, revision, indices)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1737,6 +1769,14 @@ func TestRPCSectorRoots(t *testing.T) {
 		revision.Revision = appendResult.Revision
 		assertValidRevision(t, cm, c, revision)
 		checkRoots(t, roots)
+	}
+
+	// assert manipulating the signature returns [proto4.ErrInvalidSignature]
+	corrupted := revision
+	corrupted.Revision.RevisionNumber++
+	_, err = rhp4.RPCSectorRoots(context.Background(), transport, cs, settings.Prices, renterKey, corrupted, 0, 1)
+	if err == nil || !strings.Contains(err.Error(), proto4.ErrInvalidSignature.Error()) {
+		t.Fatal(err)
 	}
 }
 

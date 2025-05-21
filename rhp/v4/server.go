@@ -268,12 +268,13 @@ func (s *Server) handleRPCFreeSectors(stream net.Conn) error {
 	}
 	defer unlock()
 
-	if !req.ValidChallengeSignature(state.Revision) {
-		return errorBadRequest("invalid challenge signature")
+	// validate challenge signature
+	existing := state.Revision
+	if !req.ValidChallengeSignature(existing) {
+		return errorBadRequest("failed to validate challenge signature: %v", rhp4.ErrInvalidSignature)
 	}
 
-	fc := state.Revision
-	if err := req.Validate(s.hostKey.PublicKey(), fc); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), existing); err != nil {
 		return errorBadRequest("request invalid: %v", err)
 	}
 	prices := req.Prices
@@ -307,14 +308,14 @@ func (s *Server) handleRPCFreeSectors(stream net.Conn) error {
 		return errorDecodingError("failed to read renter signature response: %v", err)
 	}
 
-	revision, usage, err := rhp4.ReviseForFreeSectors(fc, prices, resp.NewMerkleRoot, len(req.Indices))
+	revision, usage, err := rhp4.ReviseForFreeSectors(existing, prices, resp.NewMerkleRoot, len(req.Indices))
 	if err != nil {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}
 	cs := s.chain.TipState()
 	sigHash := cs.ContractSigHash(revision)
 
-	if !fc.RenterPublicKey.VerifyHash(sigHash, renterSigResponse.RenterSignature) {
+	if !existing.RenterPublicKey.VerifyHash(sigHash, renterSigResponse.RenterSignature) {
 		return rhp4.ErrInvalidSignature
 	}
 	revision.RenterSignature = renterSigResponse.RenterSignature
@@ -347,11 +348,12 @@ func (s *Server) handleRPCAppendSectors(stream net.Conn) error {
 	}
 	defer unlock()
 
-	if !req.ValidChallengeSignature(state.Revision) {
-		return errorBadRequest("invalid challenge signature")
+	// validate challenge signature
+	existing := state.Revision
+	if !req.ValidChallengeSignature(existing) {
+		return errorBadRequest("failed to validate challenge signature: %v", rhp4.ErrInvalidSignature)
 	}
 
-	fc := state.Revision
 	roots := state.Roots
 	accepted := make([]bool, len(req.Sectors))
 	var appended uint64
@@ -376,7 +378,7 @@ func (s *Server) handleRPCAppendSectors(stream net.Conn) error {
 		return fmt.Errorf("failed to write response: %w", err)
 	}
 
-	revision, usage, err := rhp4.ReviseForAppendSectors(fc, req.Prices, newRoot, appended)
+	revision, usage, err := rhp4.ReviseForAppendSectors(existing, req.Prices, newRoot, appended)
 	if err != nil {
 		return fmt.Errorf("failed to revise contract: %w", err)
 	}
@@ -385,7 +387,7 @@ func (s *Server) handleRPCAppendSectors(stream net.Conn) error {
 	var renterSigResponse rhp4.RPCAppendSectorsSecondResponse
 	if err := rhp4.ReadResponse(stream, &renterSigResponse); err != nil {
 		return errorDecodingError("failed to read renter signature response: %v", err)
-	} else if !fc.RenterPublicKey.VerifyHash(sigHash, renterSigResponse.RenterSignature) {
+	} else if !existing.RenterPublicKey.VerifyHash(sigHash, renterSigResponse.RenterSignature) {
 		return rhp4.ErrInvalidSignature
 	}
 
@@ -459,7 +461,7 @@ func (s *Server) handleRPCReplenishAccounts(stream net.Conn) error {
 	// validate challenge signature
 	existing := state.Revision
 	if !req.ValidChallengeSignature(existing) {
-		return fmt.Errorf("failed to validate challenge signature: %w", rhp4.ErrInvalidSignature)
+		return errorBadRequest("failed to validate challenge signature: %v", rhp4.ErrInvalidSignature)
 	}
 
 	balances, err := s.contractor.AccountBalances(req.Accounts)
