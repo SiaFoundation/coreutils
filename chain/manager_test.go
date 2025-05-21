@@ -278,7 +278,7 @@ func TestUpdateV2TransactionSet(t *testing.T) {
 		if cs.Index.Height%2 == 0 {
 			b.V2 = &types.V2BlockData{
 				Height:     cs.Index.Height + 1,
-				Commitment: cs.Commitment(cs.TransactionsCommitment(b.Transactions, nil), b.MinerPayouts[0].Address),
+				Commitment: cs.Commitment(b.MinerPayouts[0].Address, b.Transactions, nil),
 			}
 		}
 

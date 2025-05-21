@@ -174,7 +174,7 @@ func (p *Peer) SendCheckpoint(index types.ChainIndex, timeout time.Duration) (ty
 			err = errors.New("checkpoint is not a v2 block")
 		} else if r.Block.ID() != index.ID {
 			err = errors.New("checkpoint has wrong index")
-		} else if r.Block.V2.Commitment != r.State.Commitment(r.State.TransactionsCommitment(r.Block.Transactions, r.Block.V2Transactions()), r.Block.MinerPayouts[0].Address) {
+		} else if r.Block.V2.Commitment != r.State.Commitment(r.Block.MinerPayouts[0].Address, r.Block.Transactions, r.Block.V2Transactions()) {
 			err = errors.New("checkpoint has wrong commitment")
 		}
 	}

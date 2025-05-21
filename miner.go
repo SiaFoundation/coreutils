@@ -67,7 +67,7 @@ retry:
 			b.V2.Transactions = append(b.V2.Transactions, txn)
 			b.MinerPayouts[0].Value = b.MinerPayouts[0].Value.Add(txn.MinerFee)
 		}
-		b.V2.Commitment = cs.Commitment(cs.TransactionsCommitment(b.Transactions, b.V2Transactions()), addr)
+		b.V2.Commitment = cs.Commitment(addr, b.Transactions, b.V2Transactions())
 	}
 	found := FindBlockNonce(cs, &b, timeout)
 	return b, found
