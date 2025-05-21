@@ -1332,7 +1332,7 @@ func TestReorgV2(t *testing.T) {
 			Transactions: []types.V2Transaction{txn2},
 		},
 	}
-	b.V2.Commitment = state.Commitment(state.TransactionsCommitment(b.Transactions, b.V2Transactions()), b.MinerPayouts[0].Address)
+	b.V2.Commitment = state.Commitment(b.MinerPayouts[0].Address, b.Transactions, b.V2Transactions())
 	if !coreutils.FindBlockNonce(state, &b, time.Second) {
 		t.Fatal("failed to find nonce")
 	}
@@ -1348,7 +1348,7 @@ func TestReorgV2(t *testing.T) {
 				Height: state.Index.Height + 1,
 			},
 		}
-		b.V2.Commitment = state.Commitment(state.TransactionsCommitment(b.Transactions, b.V2Transactions()), b.MinerPayouts[0].Address)
+		b.V2.Commitment = state.Commitment(b.MinerPayouts[0].Address, b.Transactions, b.V2Transactions())
 		if !coreutils.FindBlockNonce(state, &b, time.Second) {
 			t.Fatal("failed to find nonce")
 		}
