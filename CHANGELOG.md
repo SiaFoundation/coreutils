@@ -1,3 +1,18 @@
+## 0.14.0 (2025-05-23)
+
+### Breaking Changes
+
+- Changed RPCAppendSectors and RPCFreeSectors methods to use ContractSigner instead of taking a private key directly
+- The SingleAddressWalletStore now persists locked UTXOs.
+
+### Features
+
+- Return rhp4.ErrInvalidSignature consistently when we fail to validate the challenge signature.
+
+### Fixes
+
+- Removed invalid transaction set sticky error
+
 ## 0.13.6 (2025-05-14)
 
 ### Fixes
