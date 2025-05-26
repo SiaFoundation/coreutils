@@ -1,3 +1,9 @@
+## 0.15.0 (2025-05-26)
+
+### Breaking Changes
+
+- Updated core with new miner committment hash
+
 ## 0.14.0 (2025-05-23)
 
 ### Breaking Changes
