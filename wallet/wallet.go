@@ -1009,17 +1009,16 @@ func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store Single
 
 	sw := &SingleAddressWallet{
 		priv: priv,
-		addr: types.StandardUnlockHash(priv.PublicKey()),
 
-		cm:    cm,
 		store: store,
-		log:   cfg.Log,
+		cm:    cm,
 
 		cfg: cfg,
+		log: cfg.Log,
 
+		addr:   types.StandardUnlockHash(priv.PublicKey()),
+		tip:    tip,
 		locked: make(map[types.SiacoinOutputID]time.Time),
-
-		tip: tip,
 	}
 
 	// load the wallet's locked UTXOs
