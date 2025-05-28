@@ -450,7 +450,7 @@ func (sw *SingleAddressWallet) SignTransaction(txn *types.Transaction, toSign []
 // The returned index should be used as the basis for AddV2PoolTransactions.
 func (sw *SingleAddressWallet) FundV2Transaction(txn *types.V2Transaction, amount types.Currency, useUnconfirmed bool) (types.ChainIndex, []int, error) {
 	if amount.IsZero() {
-		return sw.tip, nil, nil
+		return sw.Tip(), nil, nil
 	}
 
 	// fetch outputs from the store
