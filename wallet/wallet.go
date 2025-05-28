@@ -450,7 +450,7 @@ func (sw *SingleAddressWallet) SignTransaction(txn *types.Transaction, toSign []
 // The returned index should be used as the basis for AddV2PoolTransactions.
 func (sw *SingleAddressWallet) FundV2Transaction(txn *types.V2Transaction, amount types.Currency, useUnconfirmed bool) (types.ChainIndex, []int, error) {
 	if amount.IsZero() {
-		return sw.tip, nil, nil
+		return sw.Tip(), nil, nil
 	}
 
 	// fetch outputs from the store
@@ -1011,14 +1011,14 @@ func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store Single
 
 	sw := &SingleAddressWallet{
 		priv: priv,
+		addr: types.StandardUnlockHash(priv.PublicKey()),
 
-		store: store,
 		cm:    cm,
+		store: store,
+		log:   cfg.Log,
 
 		cfg: cfg,
-		log: cfg.Log,
 
-		addr:   types.StandardUnlockHash(priv.PublicKey()),
 		tip:    tip,
 		locked: make(map[types.SiacoinOutputID]time.Time),
 	}
