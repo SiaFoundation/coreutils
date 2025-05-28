@@ -85,12 +85,14 @@ type (
 
 		cfg config
 
-		mu  sync.Mutex // protects the following fields
-		tip types.ChainIndex
 		// locked is a set of siacoin output IDs locked by FundTransaction. They
 		// will be released either by calling Release for unused transactions or
 		// being confirmed in a block.
-		locked map[types.SiacoinOutputID]time.Time
+		lockedMu sync.Mutex
+		locked   map[types.SiacoinOutputID]time.Time
+
+		mu  sync.Mutex
+		tip types.ChainIndex
 	}
 )
 
@@ -166,8 +168,8 @@ func (sw *SingleAddressWallet) Balance() (balance Balance, err error) {
 		}
 	}
 
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
+	sw.lockedMu.Lock()
+	defer sw.lockedMu.Unlock()
 	bh := sw.cm.TipState().Index.Height
 	for _, sco := range outputs {
 		if sco.MaturityHeight > bh {
@@ -219,8 +221,8 @@ func (sw *SingleAddressWallet) SpendableOutputs() ([]types.SiacoinElement, error
 	state := sw.cm.TipState()
 	bh := state.Index.Height
 
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
+	sw.lockedMu.Lock()
+	defer sw.lockedMu.Unlock()
 
 	// filter outputs that are either locked, in the pool or have not yet matured
 	unspent := utxos[:0]
@@ -385,8 +387,8 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 		return nil, err
 	}
 
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
+	sw.lockedMu.Lock()
+	defer sw.lockedMu.Unlock()
 
 	selected, inputSum, err := sw.selectUTXOs(amount, len(txn.SiacoinInputs), useUnconfirmed, elements)
 	if err != nil {
@@ -420,9 +422,6 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 
 // SignTransaction adds a signature to each of the specified inputs.
 func (sw *SingleAddressWallet) SignTransaction(txn *types.Transaction, toSign []types.Hash256, cf types.CoveredFields) {
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
-
 	state := sw.cm.TipState()
 
 	for _, id := range toSign {
@@ -449,8 +448,9 @@ func (sw *SingleAddressWallet) SignTransaction(txn *types.Transaction, toSign []
 //
 // The returned index should be used as the basis for AddV2PoolTransactions.
 func (sw *SingleAddressWallet) FundV2Transaction(txn *types.V2Transaction, amount types.Currency, useUnconfirmed bool) (types.ChainIndex, []int, error) {
+	tip := sw.Tip()
 	if amount.IsZero() {
-		return sw.Tip(), nil, nil
+		return tip, nil, nil
 	}
 
 	// fetch outputs from the store
@@ -459,8 +459,8 @@ func (sw *SingleAddressWallet) FundV2Transaction(txn *types.V2Transaction, amoun
 		return types.ChainIndex{}, nil, err
 	}
 
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
+	sw.lockedMu.Lock()
+	defer sw.lockedMu.Unlock()
 
 	selected, inputSum, err := sw.selectUTXOs(amount, len(txn.SiacoinInputs), useUnconfirmed, elements)
 	if err != nil {
@@ -488,7 +488,7 @@ func (sw *SingleAddressWallet) FundV2Transaction(txn *types.V2Transaction, amoun
 	if err := sw.lockUTXOs(toLock); err != nil {
 		return types.ChainIndex{}, nil, fmt.Errorf("failed to lock UTXOs: %w", err)
 	}
-	return sw.tip, toSign, nil
+	return tip, toSign, nil
 }
 
 // SignV2Inputs adds a signature to each of the specified siacoin inputs.
@@ -496,9 +496,6 @@ func (sw *SingleAddressWallet) SignV2Inputs(txn *types.V2Transaction, toSign []i
 	if len(toSign) == 0 {
 		return
 	}
-
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
 
 	policy := sw.SpendPolicy()
 	sigHash := sw.cm.TipState().InputSigHash(*txn)
@@ -674,8 +671,8 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 		return nil, nil, err
 	}
 
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
+	sw.lockedMu.Lock()
+	defer sw.lockedMu.Unlock()
 
 	var toLock []types.SiacoinOutputID
 	utxos, outputs, err := sw.selectRedistributeUTXOs(state.Index.Height, outputs, amount, elements)
@@ -788,8 +785,8 @@ func (sw *SingleAddressWallet) RedistributeV2(outputs int, amount, feePerByte ty
 		return nil, nil, err
 	}
 
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
+	sw.lockedMu.Lock()
+	defer sw.lockedMu.Unlock()
 
 	var toLock []types.SiacoinOutputID
 	utxos, outputs, err := sw.selectRedistributeUTXOs(state.Index.Height, outputs, amount, elements)
@@ -889,8 +886,9 @@ func (sw *SingleAddressWallet) RedistributeV2(outputs int, amount, feePerByte ty
 // other transactions. It should only be called on transactions that are invalid
 // or will never be broadcast.
 func (sw *SingleAddressWallet) ReleaseInputs(txns []types.Transaction, v2txns []types.V2Transaction) error {
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
+	sw.lockedMu.Lock()
+	defer sw.lockedMu.Unlock()
+
 	var released []types.SiacoinOutputID
 	for _, txn := range txns {
 		for _, in := range txn.SiacoinInputs {
@@ -1011,16 +1009,17 @@ func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store Single
 
 	sw := &SingleAddressWallet{
 		priv: priv,
+		addr: types.StandardUnlockHash(priv.PublicKey()),
 
-		store: store,
 		cm:    cm,
+		store: store,
+		log:   cfg.Log,
 
 		cfg: cfg,
-		log: cfg.Log,
 
-		addr:   types.StandardUnlockHash(priv.PublicKey()),
-		tip:    tip,
 		locked: make(map[types.SiacoinOutputID]time.Time),
+
+		tip: tip,
 	}
 
 	// load the wallet's locked UTXOs
