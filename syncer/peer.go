@@ -344,12 +344,12 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 				want[h] = true
 			}
 			for _, txn := range b.Transactions {
-				if want[txn.FullHash()] {
+				if want[txn.MerkleLeafHash()] {
 					r.Transactions = append(r.Transactions, txn)
 				}
 			}
 			for _, txn := range b.V2Transactions() {
-				if want[txn.FullHash()] {
+				if want[txn.MerkleLeafHash()] {
 					r.V2Transactions = append(r.V2Transactions, txn)
 				}
 			}
