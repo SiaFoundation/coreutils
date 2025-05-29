@@ -1,3 +1,10 @@
+## 0.15.1 (2025-05-29)
+
+### Fixes
+
+- Fix race in FundV2Transaction
+- Fixed an issue sending partial blocks to peers.
+
 ## 0.15.0 (2025-05-26)
 
 ### Breaking Changes
