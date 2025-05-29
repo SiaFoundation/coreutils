@@ -881,7 +881,7 @@ func (m *Manager) TransactionsForPartialBlock(missing []types.Hash256) (txns []t
 	}
 	// TODO: might want to cache these
 	for _, txn := range m.txpool.txns {
-		if h := txn.FullHash(); want[h] {
+		if h := txn.MerkleLeafHash(); want[h] {
 			txns = append(txns, txn)
 			if delete(want, h); len(want) == 0 {
 				return
@@ -889,7 +889,7 @@ func (m *Manager) TransactionsForPartialBlock(missing []types.Hash256) (txns []t
 		}
 	}
 	for _, txn := range m.txpool.v2txns {
-		if h := txn.FullHash(); want[h] {
+		if h := txn.MerkleLeafHash(); want[h] {
 			v2txns = append(v2txns, txn)
 			if delete(want, h); len(want) == 0 {
 				return
