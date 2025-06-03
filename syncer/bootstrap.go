@@ -21,7 +21,7 @@ var (
 
 	// MainnetBootstrapPeers is a list of peers for the Mainnet network.
 	MainnetBootstrapPeers = []string{
-		"40.160.12.62:9881",
+		"40.160.12.62:9981",
 		"108.227.62.195:9981",
 		"139.162.81.190:9991",
 		"144.217.7.188:9981",
