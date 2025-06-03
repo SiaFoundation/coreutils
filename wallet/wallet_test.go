@@ -1971,14 +1971,14 @@ type recommender struct {
 	fee types.Currency
 }
 
-func (r *recommender) AddPoolTransactions(txns []types.Transaction) (known bool, err error) {
+func (r *recommender) AddPoolTransactions(_ []types.Transaction) (known bool, err error) {
 	return false, nil
 }
-func (r *recommender) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2Transaction) (known bool, err error) {
+func (r *recommender) AddV2PoolTransactions(_ types.ChainIndex, _ []types.V2Transaction) (known bool, err error) {
 	return false, nil
 }
 func (r *recommender) TipState() consensus.State { return consensus.State{} }
-func (r *recommender) BestIndex(height uint64) (types.ChainIndex, bool) {
+func (r *recommender) BestIndex(_ uint64) (types.ChainIndex, bool) {
 	return types.ChainIndex{}, false
 }
 func (r *recommender) PoolTransactions() []types.Transaction     { return nil }
