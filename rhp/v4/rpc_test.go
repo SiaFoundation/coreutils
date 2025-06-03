@@ -135,7 +135,11 @@ func startTestNode(tb testing.TB, n *consensus.Network, genesis types.Block) (*c
 
 	go func() {
 		for range reorgCh {
-			reverted, applied, err := cm.UpdatesSince(w.Tip(), 1000)
+			tip, err := ws.Tip()
+			if err != nil {
+				tb.Error(err)
+			}
+			reverted, applied, err := cm.UpdatesSince(tip, 1000)
 			if err != nil {
 				tb.Error(err)
 			}
@@ -160,7 +164,9 @@ func startTestNode(tb testing.TB, n *consensus.Network, genesis types.Block) (*c
 	return cm, s, w
 }
 
-func mineAndSync(tb testing.TB, cm *chain.Manager, addr types.Address, n int, tippers ...interface{ Tip() types.ChainIndex }) {
+func mineAndSync(tb testing.TB, cm *chain.Manager, addr types.Address, n int, tippers ...interface {
+	Tip() (types.ChainIndex, error)
+}) {
 	tb.Helper()
 
 	testutil.MineBlocks(tb, cm, addr, n)
@@ -169,7 +175,11 @@ func mineAndSync(tb testing.TB, cm *chain.Manager, addr types.Address, n int, ti
 		time.Sleep(time.Millisecond)
 		equals := true
 		for _, tipper := range tippers {
-			if tipper.Tip() != cm.Tip() {
+			tip, err := tipper.Tip()
+			if err != nil {
+				tb.Fatal(err)
+			}
+			if tip != cm.Tip() {
 				equals = false
 				tb.Log("waiting for tip to sync")
 				break
@@ -287,8 +297,14 @@ func TestFormContractBasis(t *testing.T) {
 		mineAndSync(t, cm1, w2.Address(), int(n.MaturityDelay+20))
 		mineAndSync(t, cm1, w1.Address(), int(n.MaturityDelay+20))
 
+		// fetch current tip
+		tip, err := w1.Tip()
+		if err != nil {
+			t.Fatal(err)
+		}
+
 		// manually sync the second wallet just before tip
-		_, applied, err := cm1.UpdatesSince(types.ChainIndex{}, int(w1.Tip().Height-5))
+		_, applied, err := cm1.UpdatesSince(types.ChainIndex{}, int(tip.Height-5))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -301,7 +317,14 @@ func TestFormContractBasis(t *testing.T) {
 		}
 
 		// wait for the second wallet to sync
-		for cm2.Tip() != w2.Tip() {
+		for {
+			tip, err = w2.Tip()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cm2.Tip() == tip {
+				break
+			}
 			time.Sleep(time.Millisecond)
 		}
 
@@ -368,8 +391,14 @@ func TestFormContractBasis(t *testing.T) {
 		mineAndSync(t, cm1, w2.Address(), int(n.MaturityDelay+20))
 		mineAndSync(t, cm1, w1.Address(), int(n.MaturityDelay+20))
 
+		// fetch current tip
+		tip, err := w1.Tip()
+		if err != nil {
+			t.Fatal(err)
+		}
+
 		// manually sync the second wallet just before tip
-		_, applied, err := cm1.UpdatesSince(types.ChainIndex{}, int(w1.Tip().Height-5))
+		_, applied, err := cm1.UpdatesSince(types.ChainIndex{}, int(tip.Height-5))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -382,7 +411,14 @@ func TestFormContractBasis(t *testing.T) {
 		}
 
 		// wait for the second wallet to sync
-		for cm2.Tip() != w2.Tip() {
+		for {
+			tip, err = w2.Tip()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cm2.Tip() == tip {
+				break
+			}
 			time.Sleep(time.Millisecond)
 		}
 

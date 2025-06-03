@@ -369,10 +369,10 @@ func (ec *EphemeralContractor) UpdateChainState(reverted []chain.RevertUpdate, a
 }
 
 // Tip returns the current chain tip.
-func (ec *EphemeralContractor) Tip() types.ChainIndex {
+func (ec *EphemeralContractor) Tip() (types.ChainIndex, error) {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
-	return ec.tip
+	return ec.tip, nil
 }
 
 // An EphemeralSettingsReporter is an in-memory minimal rhp4.SettingsReporter

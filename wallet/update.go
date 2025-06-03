@@ -310,9 +310,6 @@ func (sw *SingleAddressWallet) applyChainUpdate(tx UpdateTx, address types.Addre
 	if err := tx.WalletApplyIndex(cau.State.Index, createdUTXOs, spentUTXOs, appliedEvents(cau, address), cau.Block.Timestamp); err != nil {
 		return fmt.Errorf("failed to apply index: %w", err)
 	}
-	sw.mu.Lock()
-	sw.tip = cau.State.Index
-	sw.mu.Unlock()
 	return nil
 }
 
@@ -343,9 +340,6 @@ func (sw *SingleAddressWallet) revertChainUpdate(tx UpdateTx, revertedIndex type
 	if err := tx.UpdateWalletSiacoinElementProofs(cru); err != nil {
 		return fmt.Errorf("failed to update state elements: %w", err)
 	}
-	sw.mu.Lock()
-	sw.tip = revertedIndex
-	sw.mu.Unlock()
 	return nil
 }
 
