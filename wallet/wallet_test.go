@@ -104,10 +104,10 @@ func assertEvent(t *testing.T, wm *wallet.SingleAddressWallet, id types.Hash256,
 	t.Fatalf("event not found")
 }
 
-func transactionValues(t *testing.T, wm *wallet.SingleAddressWallet, txn types.Transaction, addr types.Address) (inflow, outflow types.Currency) {
+func transactionValues(t *testing.T, ws *testutil.EphemeralWalletStore, txn types.Transaction, addr types.Address) (inflow, outflow types.Currency) {
 	t.Helper()
 
-	utxos, err := wm.UnspentSiacoinElements()
+	utxos, _, err := ws.UnspentSiacoinElements()
 	if err != nil {
 		t.Fatal("unspent siacoin elements", err)
 	}
@@ -1539,7 +1539,7 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 		}
 		wm.SignTransaction(&txn, toSign, types.CoveredFields{WholeTransaction: true})
 		// calculate inflow and outflow before broadcasting
-		inflow, outflow := transactionValues(t, wm, txn, wm.Address())
+		inflow, outflow := transactionValues(t, ws, txn, wm.Address())
 		// broadcast the transaction
 		if _, err := cm.AddPoolTransactions([]types.Transaction{txn}); err != nil {
 			t.Fatal(err)
