@@ -221,9 +221,10 @@ func TestWallet(t *testing.T) {
 
 	// create chain manager and subscribe the wallet
 	cm := chain.NewManager(cs, genesisState)
+
 	// create wallet
 	l := zaptest.NewLogger(t)
-	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(l.Named("wallet")))
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +381,7 @@ func TestWalletLockUnlock(t *testing.T) {
 	cm := chain.NewManager(cs, genesisState)
 	// create wallet
 	l := zaptest.NewLogger(t)
-	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(l.Named("wallet")))
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +420,7 @@ func TestWalletLockUnlock(t *testing.T) {
 	}
 
 	// reload the wallet to check that the locked outputs are loaded
-	w, err = wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(l.Named("wallet")))
+	w, err = wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +459,7 @@ func TestWalletUnconfirmed(t *testing.T) {
 	cm := chain.NewManager(cs, tipState)
 	// create wallet
 	l := zaptest.NewLogger(t)
-	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(l.Named("wallet")))
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -560,7 +561,7 @@ func TestWalletRedistribute(t *testing.T) {
 	cm := chain.NewManager(cs, tipState)
 	// create wallet
 	l := zaptest.NewLogger(t)
-	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(l.Named("wallet")))
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,7 +667,7 @@ func TestWalletRedistributeV2(t *testing.T) {
 	cm := chain.NewManager(cs, tipState)
 	// create wallet
 	l := zaptest.NewLogger(t)
-	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(l.Named("wallet")))
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -771,7 +772,7 @@ func TestReorg(t *testing.T) {
 	cm := chain.NewManager(cs, genesisState)
 	// create wallet
 	l := zaptest.NewLogger(t)
-	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(l.Named("wallet")))
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -985,7 +986,7 @@ func TestWalletV2(t *testing.T) {
 	cm := chain.NewManager(cs, genesisState)
 	// create wallet
 	l := zaptest.NewLogger(t)
-	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(l.Named("wallet")))
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1163,7 +1164,7 @@ func TestReorgV2(t *testing.T) {
 
 	// create wallet
 	l := zaptest.NewLogger(t)
-	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(l.Named("wallet")))
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1413,7 +1414,7 @@ func TestFundTransaction(t *testing.T) {
 	cm := chain.NewManager(cs, tipState)
 	// create wallet
 	l := zaptest.NewLogger(t)
-	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(l.Named("wallet")))
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1511,7 +1512,7 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 	cm := chain.NewManager(store, genesisState)
 
 	ws := testutil.NewEphemeralWalletStore()
-	wm, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(log))
+	wm, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(log))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1900,7 +1901,7 @@ func TestV2TxPoolRace(t *testing.T) {
 	cm := chain.NewManager(cs, genesisState)
 	// create wallet
 	l := zaptest.NewLogger(t)
-	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, wallet.WithLogger(l.Named("wallet")))
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1963,5 +1964,47 @@ func TestV2TxPoolRace(t *testing.T) {
 		t.Fatal("expected spend transaction to be in pool")
 	} else if spendTxn.SiacoinInputs[0].Parent.StateElement.LeafIndex == types.UnassignedLeafIndex {
 		t.Fatal("expected ephemeral output to be replaced")
+	}
+}
+
+type recommender struct {
+	fee types.Currency
+}
+
+func (r *recommender) AddPoolTransactions(txns []types.Transaction) (known bool, err error) {
+	return false, nil
+}
+func (r *recommender) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2Transaction) (known bool, err error) {
+	return false, nil
+}
+func (r *recommender) TipState() consensus.State { return consensus.State{} }
+func (r *recommender) BestIndex(height uint64) (types.ChainIndex, bool) {
+	return types.ChainIndex{}, false
+}
+func (r *recommender) PoolTransactions() []types.Transaction     { return nil }
+func (r *recommender) RecommendedFee() types.Currency            { return r.fee }
+func (r *recommender) V2PoolTransactions() []types.V2Transaction { return nil }
+func (r *recommender) OnReorg(func(types.ChainIndex)) func() {
+	return func() {}
+}
+
+func TestRecommendedFee(t *testing.T) {
+	r := &recommender{}
+	w, err := wallet.NewSingleAddressWallet(types.GeneratePrivateKey(), r, testutil.NewEphemeralWalletStore(), &testutil.MockSyncer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// low fee
+	r.fee = types.NewCurrency64(1)
+	if !w.RecommendedFee().Equals(r.fee) {
+		t.Fatalf("expected recommended fee %v, got %v", r.fee, w.RecommendedFee())
+	}
+
+	// high fee
+	r.fee = types.MaxCurrency
+	maxFee := types.Siacoins(1).Div64(2000)
+	if !w.RecommendedFee().Equals(maxFee) {
+		t.Fatalf("expected recommended fee %v, got %v", maxFee, w.RecommendedFee())
 	}
 }

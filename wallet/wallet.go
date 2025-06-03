@@ -26,6 +26,10 @@ var (
 	// ErrNotEnoughFunds is returned when there are not enough unspent outputs
 	// to fund a transaction.
 	ErrNotEnoughFunds = errors.New("not enough funds")
+
+	// maxFee is the maximum fee returned by RecommendedFee. It equals 1SC per
+	// 2000 bytes which equals the size of a large transaction.
+	maxFee = types.Siacoins(1).Div64(2000)
 )
 
 type (
@@ -39,9 +43,12 @@ type (
 
 	// A ChainManager manages the current state of the blockchain.
 	ChainManager interface {
+		AddPoolTransactions(txns []types.Transaction) (known bool, err error)
+		AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2Transaction) (known bool, err error)
 		TipState() consensus.State
 		BestIndex(height uint64) (types.ChainIndex, bool)
 		PoolTransactions() []types.Transaction
+		RecommendedFee() types.Currency
 		V2PoolTransactions() []types.V2Transaction
 		OnReorg(func(types.ChainIndex)) func()
 	}
@@ -79,9 +86,10 @@ type (
 		priv types.PrivateKey
 		addr types.Address
 
-		cm    ChainManager
-		store SingleAddressStore
-		log   *zap.Logger
+		cm     ChainManager
+		store  SingleAddressStore
+		syncer Syncer
+		log    *zap.Logger
 
 		cfg config
 
@@ -91,6 +99,13 @@ type (
 		// will be released either by calling Release for unused transactions or
 		// being confirmed in a block.
 		locked map[types.SiacoinOutputID]time.Time
+	}
+
+	// A Syncer can connect to other peers and broadcast transactions to the
+	// network.
+	Syncer interface {
+		BroadcastTransactionSet(txns []types.Transaction) error
+		BroadcastV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction) error
 	}
 )
 
@@ -917,6 +932,38 @@ func (sw *SingleAddressWallet) isLocked(id types.SiacoinOutputID) bool {
 	return time.Now().Before(sw.locked[id])
 }
 
+// BroadcastTransactionSet broadcasts a set of transactions to the network after
+// adding them to the transaction pool to make sure they are valid.
+func (sw *SingleAddressWallet) BroadcastTransactionSet(txns []types.Transaction) error {
+	if _, err := sw.cm.AddPoolTransactions(txns); err != nil {
+		return fmt.Errorf("failed to broadcast transaction set: %w", err)
+	} else if err := sw.syncer.BroadcastTransactionSet(txns); err != nil {
+		return fmt.Errorf("failed to broadcast transaction set to syncer: %w", err)
+	}
+	return nil
+}
+
+// BroadcastV2TransactionSet broadcasts a set of v2 transactions to the network
+// after adding them to the transaction pool to make sure they are valid.
+func (sw *SingleAddressWallet) BroadcastV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction) error {
+	if _, err := sw.cm.AddV2PoolTransactions(index, txns); err != nil {
+		return fmt.Errorf("failed to broadcast v2 transaction set: %w", err)
+	} else if err := sw.syncer.BroadcastV2TransactionSet(index, txns); err != nil {
+		return fmt.Errorf("failed to broadcast v2 transaction set to syncer: %w", err)
+	}
+	return nil
+}
+
+// RecommendedFee returns the recommended fee for a transaction, capped at
+// 'maxFee'.
+func (sw *SingleAddressWallet) RecommendedFee() types.Currency {
+	fee := sw.cm.RecommendedFee()
+	if fee.Cmp(maxFee) > 0 {
+		fee = maxFee
+	}
+	return fee
+}
+
 // IsRelevantTransaction returns true if the v1 transaction is relevant to the
 // address
 func IsRelevantTransaction(txn types.Transaction, addr types.Address) bool {
@@ -992,7 +1039,7 @@ func SumOutputs(outputs []types.SiacoinElement) (sum types.Currency) {
 
 // NewSingleAddressWallet returns a new SingleAddressWallet using the provided
 // private key and store.
-func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store SingleAddressStore, opts ...Option) (*SingleAddressWallet, error) {
+func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store SingleAddressStore, syncer Syncer, opts ...Option) (*SingleAddressWallet, error) {
 	cfg := config{
 		DefragThreshold:     30,
 		MaxInputsForDefrag:  30,
@@ -1012,8 +1059,9 @@ func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store Single
 	sw := &SingleAddressWallet{
 		priv: priv,
 
-		store: store,
-		cm:    cm,
+		store:  store,
+		cm:     cm,
+		syncer: syncer,
 
 		cfg: cfg,
 		log: cfg.Log,

@@ -55,6 +55,9 @@ type fundAndSign struct {
 func (fs *fundAndSign) FundV2Transaction(txn *types.V2Transaction, amount types.Currency) (types.ChainIndex, []int, error) {
 	return fs.w.FundV2Transaction(txn, amount, true)
 }
+func (fs *fundAndSign) RecommendedFee() types.Currency {
+	return fs.w.RecommendedFee()
+}
 func (fs *fundAndSign) ReleaseInputs(txns []types.V2Transaction) {
 	fs.w.ReleaseInputs(nil, txns)
 }
@@ -121,7 +124,7 @@ func startTestNode(tb testing.TB, n *consensus.Network, genesis types.Block) (*c
 	tb.Cleanup(func() { s.Close() })
 
 	ws := testutil.NewEphemeralWalletStore()
-	w, err := wallet.NewSingleAddressWallet(types.GeneratePrivateKey(), cm, ws)
+	w, err := wallet.NewSingleAddressWallet(types.GeneratePrivateKey(), cm, ws, s)
 	if err != nil {
 		tb.Fatal(err)
 	}

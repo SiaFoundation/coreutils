@@ -10,6 +10,22 @@ import (
 	"go.sia.tech/coreutils/chain"
 )
 
+type (
+	// A MockSyncer is a syncer that does nothing. It is used in tests to avoid
+	// the peer check
+	MockSyncer struct{}
+)
+
+// BroadcastV2TransactionSet implements the syncer.Syncer interface
+func (MockSyncer) BroadcastV2TransactionSet(types.ChainIndex, []types.V2Transaction) error {
+	return nil
+}
+
+// BroadcastTransactionSet implements the syncer.Syncer interface
+func (MockSyncer) BroadcastTransactionSet([]types.Transaction) error {
+	return nil
+}
+
 // Network returns a test network and genesis block.
 func Network() (*consensus.Network, types.Block) {
 	// use a modified version of Zen
