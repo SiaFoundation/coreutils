@@ -127,12 +127,6 @@ func (sw *SingleAddressWallet) UnlockConditions() types.UnlockConditions {
 	return types.StandardUnlockConditions(sw.priv.PublicKey())
 }
 
-// UnspentSiacoinElements returns the wallet's unspent siacoin outputs.
-func (sw *SingleAddressWallet) UnspentSiacoinElements() ([]types.SiacoinElement, error) {
-	unspent, _, err := sw.store.UnspentSiacoinElements()
-	return unspent, err
-}
-
 // Balance returns the balance of the wallet.
 func (sw *SingleAddressWallet) Balance() (balance Balance, err error) {
 	sw.mu.Lock()
