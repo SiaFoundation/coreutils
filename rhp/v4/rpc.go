@@ -102,8 +102,6 @@ type (
 		// includes the parents and the transaction itself in an order valid
 		// for broadcasting.
 		V2TransactionSet(basis types.ChainIndex, txn types.V2Transaction) (types.ChainIndex, []types.V2Transaction, error)
-		// RecommendedFee returns the recommended fee per byte for a transaction.
-		RecommendedFee() types.Currency
 	}
 
 	// A ContractSigner is a minimal interface for contract signing.
@@ -120,6 +118,7 @@ type (
 	// A TransactionFunder is an interface for funding v2 transactions.
 	TransactionFunder interface {
 		FundV2Transaction(txn *types.V2Transaction, amount types.Currency) (types.ChainIndex, []int, error)
+		RecommendedFee() types.Currency
 		ReleaseInputs([]types.V2Transaction)
 	}
 
@@ -687,7 +686,7 @@ func RPCAccountBalance(ctx context.Context, t TransportClient, account rhp4.Acco
 func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, hostKey types.PublicKey, hostAddress types.Address, params rhp4.RPCFormContractParams) (RPCFormContractResult, error) {
 	fc, usage := rhp4.NewContract(p, params, hostKey, hostAddress)
 	formationTxn := types.V2Transaction{
-		MinerFee:      tp.RecommendedFee().Mul64(1000),
+		MinerFee:      signer.RecommendedFee().Mul64(1000),
 		FileContracts: []types.V2FileContract{fc},
 	}
 
@@ -820,7 +819,7 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRenewContractParams) (RPCRenewContractResult, error) {
 	renewal, usage := rhp4.RenewContract(existing, p, params)
 	renewalTxn := types.V2Transaction{
-		MinerFee: tp.RecommendedFee().Mul64(1000),
+		MinerFee: signer.RecommendedFee().Mul64(1000),
 		FileContractResolutions: []types.V2FileContractResolution{
 			{
 				Parent: types.V2FileContractElement{
@@ -965,7 +964,7 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRefreshContractParams) (RPCRefreshContractResult, error) {
 	renewal, usage := rhp4.RefreshContract(existing, p, params)
 	renewalTxn := types.V2Transaction{
-		MinerFee: tp.RecommendedFee().Mul64(1000),
+		MinerFee: signer.RecommendedFee().Mul64(1000),
 		FileContractResolutions: []types.V2FileContractResolution{
 			{
 				Parent: types.V2FileContractElement{
