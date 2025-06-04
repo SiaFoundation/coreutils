@@ -59,8 +59,8 @@ type (
 		// Tip returns the consensus change ID and block height of
 		// the last wallet change.
 		Tip() (types.ChainIndex, error)
-		// UnspentSiacoinElements returns a list of all unspent siacoin outputs
-		// including immature outputs. It also returns the tip of the chain.
+		// UnspentSiacoinElements returns the current chain tip along with a
+		// list of all unspent siacoin outputs, including immature ones.
 		UnspentSiacoinElements() (types.ChainIndex, []types.SiacoinElement, error)
 		// WalletEvents returns a paginated list of transactions ordered by
 		// maturity height, descending. If no more transactions are available,
