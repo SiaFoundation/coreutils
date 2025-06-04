@@ -131,14 +131,14 @@ func (es *EphemeralWalletStore) WalletEventCount() (uint64, error) {
 
 // UnspentSiacoinElements returns the wallet's unspent siacoin outputs as well
 // as the last indexed tip of the wallet.
-func (es *EphemeralWalletStore) UnspentSiacoinElements() (utxos []types.SiacoinElement, tip types.ChainIndex, _ error) {
+func (es *EphemeralWalletStore) UnspentSiacoinElements() (tip types.ChainIndex, utxos []types.SiacoinElement, _ error) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
 
 	for _, se := range es.utxos {
 		utxos = append(utxos, se.Copy())
 	}
-	return utxos, es.tip, nil
+	return es.tip, utxos, nil
 }
 
 // Tip returns the last indexed tip of the wallet.
