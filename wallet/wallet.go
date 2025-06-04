@@ -61,7 +61,7 @@ type (
 		Tip() (types.ChainIndex, error)
 		// UnspentSiacoinElements returns a list of all unspent siacoin outputs
 		// including immature outputs. It also returns the tip of the chain.
-		UnspentSiacoinElements() ([]types.SiacoinElement, types.ChainIndex, error)
+		UnspentSiacoinElements() (types.ChainIndex, []types.SiacoinElement, error)
 		// WalletEvents returns a paginated list of transactions ordered by
 		// maturity height, descending. If no more transactions are available,
 		// (nil, nil) should be returned.
@@ -132,7 +132,7 @@ func (sw *SingleAddressWallet) Balance() (balance Balance, err error) {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
-	outputs, _, err := sw.store.UnspentSiacoinElements()
+	_, outputs, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
 		return Balance{}, fmt.Errorf("failed to get unspent outputs: %w", err)
 	}
@@ -215,7 +215,7 @@ func (sw *SingleAddressWallet) SpendableOutputs() ([]types.SiacoinElement, error
 	defer sw.mu.Unlock()
 
 	// fetch outputs from the store
-	utxos, tip, err := sw.store.UnspentSiacoinElements()
+	tip, utxos, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
 		return nil, err
 	}
@@ -239,9 +239,14 @@ func (sw *SingleAddressWallet) SpendableOutputs() ([]types.SiacoinElement, error
 	return unspent, nil
 }
 
-func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, useUnconfirmed bool, elements []types.SiacoinElement) ([]types.SiacoinElement, types.Currency, error) {
+func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, useUnconfirmed bool) (types.ChainIndex, []types.SiacoinElement, types.Currency, error) {
+	tip, elements, err := sw.store.UnspentSiacoinElements()
+	if err != nil {
+		return types.ChainIndex{}, nil, types.ZeroCurrency, err
+	}
+
 	if amount.IsZero() {
-		return nil, types.ZeroCurrency, nil
+		return tip, nil, types.ZeroCurrency, nil
 	}
 
 	tpoolSpent := make(map[types.SiacoinOutputID]bool)
@@ -271,7 +276,6 @@ func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, us
 	}
 
 	// remove immature, locked and spent outputs
-	cs := sw.cm.TipState()
 	utxos := make([]types.SiacoinElement, 0, len(elements))
 	var usedSum types.Currency
 	var immatureSum types.Currency
@@ -279,7 +283,7 @@ func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, us
 		if used := sw.isLocked(sce.ID) || tpoolSpent[sce.ID]; used {
 			usedSum = usedSum.Add(sce.SiacoinOutput.Value)
 			continue
-		} else if immature := cs.Index.Height < sce.MaturityHeight; immature {
+		} else if immature := tip.Height < sce.MaturityHeight; immature {
 			immatureSum = immatureSum.Add(sce.SiacoinOutput.Value)
 			continue
 		}
@@ -332,10 +336,10 @@ func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, us
 
 		if inputSum.Cmp(amount) < 0 {
 			// still not enough funds
-			return nil, types.ZeroCurrency, fmt.Errorf("%w: inputs %v < needed %v (used: %v immature: %v unconfirmed: %v)", ErrNotEnoughFunds, inputSum.String(), amount.String(), usedSum.String(), immatureSum.String(), unconfirmedSum.String())
+			return types.ChainIndex{}, nil, types.ZeroCurrency, fmt.Errorf("%w: inputs %v < needed %v (used: %v immature: %v unconfirmed: %v)", ErrNotEnoughFunds, inputSum.String(), amount.String(), usedSum.String(), immatureSum.String(), unconfirmedSum.String())
 		}
 	} else if inputSum.Cmp(amount) < 0 {
-		return nil, types.ZeroCurrency, fmt.Errorf("%w: inputs %v < needed %v (used: %v immature: %v", ErrNotEnoughFunds, inputSum.String(), amount.String(), usedSum.String(), immatureSum.String())
+		return types.ChainIndex{}, nil, types.ZeroCurrency, fmt.Errorf("%w: inputs %v < needed %v (used: %v immature: %v", ErrNotEnoughFunds, inputSum.String(), amount.String(), usedSum.String(), immatureSum.String())
 	}
 
 	// check if remaining utxos should be defragged
@@ -357,7 +361,7 @@ func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, us
 			txnInputs++
 		}
 	}
-	return selected, inputSum, nil
+	return tip, selected, inputSum, nil
 }
 
 // lockUTXOs locks the given siacoin output IDs for use in a transaction.
@@ -389,12 +393,7 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
-	elements, _, err := sw.store.UnspentSiacoinElements()
-	if err != nil {
-		return nil, err
-	}
-
-	selected, inputSum, err := sw.selectUTXOs(amount, len(txn.SiacoinInputs), useUnconfirmed, elements)
+	_, selected, inputSum, err := sw.selectUTXOs(amount, len(txn.SiacoinInputs), useUnconfirmed)
 	if err != nil {
 		return nil, err
 	}
@@ -460,13 +459,7 @@ func (sw *SingleAddressWallet) FundV2Transaction(txn *types.V2Transaction, amoun
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
-	// fetch outputs from the store
-	elements, tip, err := sw.store.UnspentSiacoinElements()
-	if err != nil {
-		return types.ChainIndex{}, nil, err
-	}
-
-	selected, inputSum, err := sw.selectUTXOs(amount, len(txn.SiacoinInputs), useUnconfirmed, elements)
+	tip, selected, inputSum, err := sw.selectUTXOs(amount, len(txn.SiacoinInputs), useUnconfirmed)
 	if err != nil {
 		return types.ChainIndex{}, nil, err
 	}
@@ -532,7 +525,7 @@ func (sw *SingleAddressWallet) SignHash(h types.Hash256) types.Signature {
 // UnconfirmedEvents returns all unconfirmed transactions relevant to the
 // wallet.
 func (sw *SingleAddressWallet) UnconfirmedEvents() (annotated []Event, err error) {
-	confirmed, tip, err := sw.store.UnspentSiacoinElements()
+	tip, confirmed, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get unspent outputs: %w", err)
 	}
@@ -670,7 +663,7 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
-	elements, tip, err := sw.store.UnspentSiacoinElements()
+	tip, elements, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -783,7 +776,7 @@ func (sw *SingleAddressWallet) RedistributeV2(outputs int, amount, feePerByte ty
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
-	elements, tip, err := sw.store.UnspentSiacoinElements()
+	tip, elements, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
 		return nil, nil, err
 	}

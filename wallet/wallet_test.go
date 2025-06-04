@@ -107,7 +107,7 @@ func assertEvent(t *testing.T, wm *wallet.SingleAddressWallet, id types.Hash256,
 func transactionValues(t *testing.T, ws *testutil.EphemeralWalletStore, txn types.Transaction, addr types.Address) (inflow, outflow types.Currency) {
 	t.Helper()
 
-	utxos, _, err := ws.UnspentSiacoinElements()
+	_, utxos, err := ws.UnspentSiacoinElements()
 	if err != nil {
 		t.Fatal("unspent siacoin elements", err)
 	}
