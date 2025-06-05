@@ -193,6 +193,9 @@ func Listen(conn net.PacketConn, certs CertManager) (*quic.Listener, error) {
 // Serve serves RHP4 connections on the listener l using the QUIC transport.
 func Serve(l *quic.Listener, s *rhp4.Server, log *zap.Logger) {
 	wts := &webtransport.Server{
+		CheckOrigin: func(r *http.Request) bool {
+			return true // allow all origins
+		},
 		// no need for TLS config since it will already be negotiated
 	}
 	defer wts.Close()
