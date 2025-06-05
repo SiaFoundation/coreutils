@@ -1,3 +1,22 @@
+## 0.16.0 (2025-06-05)
+
+### Breaking Changes
+
+- Add txn broadcast methods to SingleAddressWallet which validate transactions and broadcast them to the network.
+
+#### Improve locking behaviour by removing the tip from memory and returning it alongside the unspent elements from the store.
+
+Changes the store interface for the `SingleAddressWallet` to return the tip. This must be atomic with the current state of the proofs stored in the database.
+
+### Features
+
+- Add a method for getting a fee recommendation from the SingleAddressWallet which caps the fee at a sane value.
+
+### Fixes
+
+- Fixed RHP4 webtransport rejecting cross-origin connections.
+- Updated bootstrap peers.
+
 ## 0.15.2 (2025-05-29)
 
 ### Fixes
