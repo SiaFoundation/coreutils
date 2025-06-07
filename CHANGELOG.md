@@ -1,3 +1,9 @@
+## 0.16.1 (2025-06-07)
+
+### Fixes
+
+- Fixed a panic when attempting to update element proofs.
+
 ## 0.16.0 (2025-06-05)
 
 ### Breaking Changes
