@@ -1,7 +1,6 @@
 package testutil
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -9,6 +8,7 @@ import (
 
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/chain"
+	"golang.org/x/net/context"
 )
 
 // ElementStateStore is a store that holds state elements in memory.
@@ -151,8 +151,12 @@ func (es *ElementStateStore) Sync() error {
 // or the context cancelled.
 func (es *ElementStateStore) Wait(tb testing.TB) {
 	tb.Helper()
-	ctx, cancel := context.WithTimeout(tb.Context(), time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	tb.Cleanup(func() {
+		cancel()
+	})
 
 	t := time.NewTicker(time.Millisecond)
 	defer t.Stop()
@@ -236,10 +240,12 @@ func NewElementStateStore(tb testing.TB, cm *chain.Manager) *ElementStateStore {
 		default:
 		}
 	})
+	ctx, cancel := context.WithCancel(context.Background())
+	tb.Cleanup(func() {
+		cancel()
+	})
 
-	ctx := tb.Context()
 	go func() {
-		defer cancel()
 		for {
 			select {
 			case <-ctx.Done():
