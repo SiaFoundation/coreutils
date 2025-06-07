@@ -1175,7 +1175,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 			}
 
 			if !updateTxnProofs(&updated[i], cau.UpdateElementProof, cs.Elements.NumLeaves) {
-				return nil, fmt.Errorf("transaction %v references element that does not exist in our chain", txns[i].ID())
+				return nil, fmt.Errorf("transaction %v references element that does not exist in our chain", updated[i].ID())
 			}
 			rem = append(rem, updated[i])
 		}
