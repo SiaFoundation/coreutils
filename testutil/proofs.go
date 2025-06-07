@@ -154,11 +154,13 @@ func (es *ElementStateStore) Wait(tb testing.TB) {
 	ctx, cancel := context.WithTimeout(tb.Context(), time.Second)
 	defer cancel()
 
+	t := time.NewTicker(time.Millisecond)
+	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			tb.Fatal("store sync timed out")
-		case <-time.After(time.Millisecond):
+		case <-t.C:
 			es.mu.Lock()
 			synced := es.tip == es.chain.Tip()
 			es.mu.Unlock()
