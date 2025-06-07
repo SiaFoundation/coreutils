@@ -1091,8 +1091,13 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 	var index types.ChainIndex
 	defer func() {
 		if panicErr := recover(); panicErr != nil {
-			log.Error("proof update failed", zap.Stringer("index", index), zap.Any("error", panicErr))
-			err = fmt.Errorf("proof update from %q to %q failed at %q with panic %q: %w", from, to, index, panicErr, ErrInvalidElementProof)
+			log.Error("proof update failed", zap.Stringer("index", index), zap.Any("error", panicErr), zap.Stack("stack"))
+			switch panicErr := panicErr.(type) {
+			case string, fmt.Stringer, error:
+				err = fmt.Errorf("proof update from %q to %q failed at %q with panic %q: %w", from, to, index, panicErr, ErrInvalidElementProof)
+			default:
+				err = fmt.Errorf("proof update from %q to %q failed at %q with panic: %w", from, to, index, ErrInvalidElementProof)
+			}
 		}
 	}()
 	updated = slices.Clone(txns)
