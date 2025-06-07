@@ -1076,16 +1076,18 @@ func (m *Manager) checkTxnSet(txns []types.Transaction, v2txns []types.V2Transac
 	return allInPool, nil
 }
 
-func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to types.ChainIndex) (_ []types.V2Transaction, err error) {
+func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to types.ChainIndex) (updated []types.V2Transaction, err error) {
 	log := m.log.Named("updateV2TransactionProofs").With(
 		zap.Stringer("from", from),
 		zap.Stringer("to", to))
+
 	revert, apply, err := m.reorgPath(from, to)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't determine reorg path from %v to %v: %w", from, to, err)
 	} else if len(revert)+len(apply) > 144 {
 		return nil, fmt.Errorf("reorg path from %v to %v is too long (-%v +%v)", from, to, len(revert), len(apply))
 	}
+
 	var index types.ChainIndex
 	defer func() {
 		if panicErr := recover(); panicErr != nil {
@@ -1093,6 +1095,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 			err = fmt.Errorf("proof update from %q to %q failed at %q with panic %q: %w", from, to, index, panicErr, ErrInvalidElementProof)
 		}
 	}()
+	updated = slices.Clone(txns)
 	for _, index = range revert {
 		b, bs, cs, ok := blockAndParent(m.store, index.ID)
 		if !ok {
@@ -1101,9 +1104,9 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 			bs = new(consensus.V1BlockSupplement)
 		}
 		cru := consensus.RevertBlock(cs, b, *bs)
-		for i := range txns {
-			if !updateTxnProofs(&txns[i], cru.UpdateElementProof, cs.Elements.NumLeaves) {
-				return nil, fmt.Errorf("transaction %v references element that does not exist in our chain", txns[i].ID())
+		for i := range updated {
+			if !updateTxnProofs(&updated[i], cru.UpdateElementProof, cs.Elements.NumLeaves) {
+				return nil, fmt.Errorf("transaction %v references element that does not exist in our chain", updated[i].ID())
 			}
 		}
 	}
@@ -1135,45 +1138,45 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 			}
 		}
 
-		rem := txns[:0]
-		for i := range txns {
-			if confirmedTxns[txns[i].ID()] {
+		rem := updated[:0]
+		for i := range updated {
+			if confirmedTxns[updated[i].ID()] {
 				// remove any transactions that were confirmed in this block
 				continue
 			}
 
 			// update the state elements for any confirmed ephemeral elements
-			for j := range txns[i].SiacoinInputs {
-				if txns[i].SiacoinInputs[j].Parent.StateElement.LeafIndex != types.UnassignedLeafIndex {
+			for j := range updated[i].SiacoinInputs {
+				if updated[i].SiacoinInputs[j].Parent.StateElement.LeafIndex != types.UnassignedLeafIndex {
 					continue
 				}
-				se, ok := confirmedStateElements[types.Hash256(txns[i].SiacoinInputs[j].Parent.ID)]
+				se, ok := confirmedStateElements[types.Hash256(updated[i].SiacoinInputs[j].Parent.ID)]
 				if !ok {
 					continue
 				}
-				txns[i].SiacoinInputs[j].Parent.StateElement = se.Share()
+				updated[i].SiacoinInputs[j].Parent.StateElement = se.Share()
 			}
 
 			// update the state elements for any confirmed ephemeral elements
-			for j := range txns[i].SiafundInputs {
-				if txns[i].SiafundInputs[j].Parent.StateElement.LeafIndex != types.UnassignedLeafIndex {
+			for j := range updated[i].SiafundInputs {
+				if updated[i].SiafundInputs[j].Parent.StateElement.LeafIndex != types.UnassignedLeafIndex {
 					continue
 				}
-				se, ok := confirmedStateElements[types.Hash256(txns[i].SiafundInputs[j].Parent.ID)]
+				se, ok := confirmedStateElements[types.Hash256(updated[i].SiafundInputs[j].Parent.ID)]
 				if !ok {
 					continue
 				}
-				txns[i].SiafundInputs[j].Parent.StateElement = se.Share()
+				updated[i].SiafundInputs[j].Parent.StateElement = se.Share()
 			}
 
-			// NOTE: all elements guaranteed to exist from here on, so no
-			// need to check this return value
-			updateTxnProofs(&txns[i], cau.UpdateElementProof, cs.Elements.NumLeaves)
-			rem = append(rem, txns[i])
+			if !updateTxnProofs(&updated[i], cau.UpdateElementProof, cs.Elements.NumLeaves) {
+				return nil, fmt.Errorf("transaction %v references element that does not exist in our chain", txns[i].ID())
+			}
+			rem = append(rem, updated[i])
 		}
-		txns = rem
+		updated = rem
 	}
-	return txns, nil
+	return
 }
 
 // AddPoolTransactions validates a transaction set and adds it to the txpool. If

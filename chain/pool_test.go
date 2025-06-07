@@ -2,6 +2,7 @@ package chain_test
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"go.sia.tech/core/types"
@@ -44,7 +45,7 @@ func TestAddV2PoolTransactionsRecover(t *testing.T) {
 	if i == -1 {
 		t.Fatal("no valid SiacoinElement found")
 	}
-	sces = append(sces[:i], sces[i+1:]...)
+	sces = slices.Delete(sces, i, i)
 
 	// spend all the other utxos to create a large tree diff
 	for _, sce := range sces {
@@ -98,7 +99,7 @@ func TestAddV2PoolTransactionsRecover(t *testing.T) {
 	sigHash := cs.InputSigHash(txn)
 	txn.SiacoinInputs[0].SatisfiedPolicy.Signatures = []types.Signature{sk.SignHash(sigHash)}
 
-	// mine a block to require an update
+	// mine blocks to require an update
 	testutil.MineBlocks(t, cm, addr, 20)
 	es.Wait(t)
 
