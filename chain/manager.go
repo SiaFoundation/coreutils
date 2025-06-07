@@ -20,6 +20,9 @@ var (
 	ErrMissingBlock = errors.New("missing block at index")
 	// ErrFutureBlock is returned when a block's timestamp is too far in the future.
 	ErrFutureBlock = errors.New("block's timestamp is too far in the future")
+
+	// ErrInvalidElementProof is returned when an element proof update fails
+	ErrInvalidElementProof = errors.New("invalid element proof")
 )
 
 // An ApplyUpdate reflects the changes to the blockchain resulting from the
@@ -1073,14 +1076,24 @@ func (m *Manager) checkTxnSet(txns []types.Transaction, v2txns []types.V2Transac
 	return allInPool, nil
 }
 
-func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to types.ChainIndex) ([]types.V2Transaction, error) {
+func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to types.ChainIndex) (_ []types.V2Transaction, err error) {
+	log := m.log.Named("updateV2TransactionProofs").With(
+		zap.Stringer("from", from),
+		zap.Stringer("to", to))
 	revert, apply, err := m.reorgPath(from, to)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't determine reorg path from %v to %v: %w", from, to, err)
 	} else if len(revert)+len(apply) > 144 {
 		return nil, fmt.Errorf("reorg path from %v to %v is too long (-%v +%v)", from, to, len(revert), len(apply))
 	}
-	for _, index := range revert {
+	var index types.ChainIndex
+	defer func() {
+		if panicErr := recover(); panicErr != nil {
+			log.Error("proof update failed", zap.Stringer("index", index), zap.Any("error", panicErr))
+			err = fmt.Errorf("proof update from %q to %q failed at %q with panic %q: %w", from, to, index, panicErr, ErrInvalidElementProof)
+		}
+	}()
+	for _, index = range revert {
 		b, bs, cs, ok := blockAndParent(m.store, index.ID)
 		if !ok {
 			return nil, fmt.Errorf("missing reverted block at index %v", index)
@@ -1095,7 +1108,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		}
 	}
 
-	for _, index := range apply {
+	for _, index = range apply {
 		b, bs, cs, ok := blockAndParent(m.store, index.ID)
 		if !ok {
 			return nil, fmt.Errorf("missing applied block at index %v", index)
