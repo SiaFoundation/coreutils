@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -100,7 +101,8 @@ func Dial(ctx context.Context, addr string, peerKey types.PublicKey, opts ...Cli
 		NextProtos: []string{TLSNextProtoRHP4},
 	}
 	qc := &quic.Config{
-		EnableDatagrams: true,
+		EnableDatagrams:      true,
+		HandshakeIdleTimeout: 15 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(qc, tc)
