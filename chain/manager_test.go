@@ -306,3 +306,69 @@ func TestUpdateV2TransactionSet(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestFullTxPool(t *testing.T) {
+	n, genesisBlock := TestnetZen()
+
+	n.InitialTarget = types.BlockID{0xFF}
+
+	giftPrivateKey := types.GeneratePrivateKey()
+	giftPublicKey := giftPrivateKey.PublicKey()
+	giftAddress := types.StandardUnlockHash(giftPublicKey)
+	giftTxn := types.Transaction{
+		SiacoinOutputs: make([]types.SiacoinOutput, 99),
+	}
+	for i := range giftTxn.SiacoinOutputs {
+		giftTxn.SiacoinOutputs[i].Address = giftAddress
+		giftTxn.SiacoinOutputs[i].Value = types.Siacoins(100)
+	}
+	genesisBlock.Transactions = []types.Transaction{giftTxn}
+
+	store, tipState, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm := NewManager(store, tipState)
+
+	signTxn := func(txn *types.Transaction) {
+		for _, sci := range txn.SiacoinInputs {
+			sig := giftPrivateKey.SignHash(cm.TipState().WholeSigHash(*txn, types.Hash256(sci.ParentID), 0, 0, nil))
+			txn.Signatures = append(txn.Signatures, types.TransactionSignature{
+				ParentID:       types.Hash256(sci.ParentID),
+				CoveredFields:  types.CoveredFields{WholeTransaction: true},
+				PublicKeyIndex: 0,
+				Signature:      sig[:],
+			})
+		}
+	}
+
+	// add transactions (with decreasing fees) to the pool
+	var ids []types.TransactionID
+	for i := range giftTxn.SiacoinOutputs {
+		txn := types.Transaction{
+			SiacoinInputs: []types.SiacoinInput{{
+				ParentID:         giftTxn.SiacoinOutputID(i),
+				UnlockConditions: types.StandardUnlockConditions(giftPublicKey),
+			}},
+			SiacoinOutputs: []types.SiacoinOutput{{
+				Address: types.VoidAddress,
+				Value:   types.Siacoins(uint32(i + 1)), // can't create zero-valued outputs
+			}},
+			MinerFees:     []types.Currency{types.Siacoins(uint32(100 - (i + 1)))},
+			ArbitraryData: [][]byte{make([]byte, 500e3)},
+		}
+		signTxn(&txn)
+		ids = append(ids, txn.ID())
+		if known, err := cm.AddPoolTransactions([]types.Transaction{txn}); known || err != nil {
+			t.Fatal(err)
+		} else if _, ok := cm.PoolTransaction(txn.ID()); !ok {
+			break
+		}
+	}
+	// the highest-fee transaction should be in the pool, but not the lowest-fee
+	if _, ok := cm.PoolTransaction(ids[0]); !ok {
+		t.Fatal("high-fee transaction should be in the pool")
+	} else if _, ok := cm.PoolTransaction(ids[len(ids)-1]); ok {
+		t.Fatal("low-fee transaction should not be in the pool")
+	}
+}

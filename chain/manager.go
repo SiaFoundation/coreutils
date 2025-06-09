@@ -570,7 +570,7 @@ func (m *Manager) revalidatePool() {
 			continue
 		}
 		m.txpool.ms.ApplyTransaction(txn, ts)
-		m.txpool.indices[txn.ID()] = len(m.txpool.txns)
+		m.txpool.indices[txn.ID()] = len(filtered)
 		m.txpool.weight += m.tipState.TransactionWeight(txn)
 		filtered = append(filtered, txn)
 	}
@@ -584,7 +584,7 @@ func (m *Manager) revalidatePool() {
 			continue
 		}
 		m.txpool.ms.ApplyV2Transaction(txn)
-		m.txpool.indices[txn.ID()] = len(m.txpool.v2txns)
+		m.txpool.indices[txn.ID()] = len(v2filtered)
 		m.txpool.weight += m.tipState.V2TransactionWeight(txn)
 		v2filtered = append(v2filtered, txn)
 	}
