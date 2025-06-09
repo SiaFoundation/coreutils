@@ -99,7 +99,6 @@ type Manager struct {
 		ms             *consensus.MidState
 		weight         uint64
 		medianFee      *types.Currency
-		parentMap      map[types.Hash256]int
 		lastReverted   []types.Transaction
 		lastRevertedV2 []types.V2Transaction
 	}
@@ -414,7 +413,6 @@ func (m *Manager) reorgTo(index types.ChainIndex) error {
 	// invalidate txpool caches
 	m.txpool.ms = nil
 	m.txpool.medianFee = nil
-	m.txpool.parentMap = nil
 	if len(revert) > 0 {
 		b, _, _ := m.store.Block(revert[0].ID)
 		m.txpool.lastReverted = b.Transactions
@@ -644,40 +642,37 @@ func (m *Manager) computeMedianFee() types.Currency {
 }
 
 func (m *Manager) computeParentMap() map[types.Hash256]int {
-	if m.txpool.parentMap != nil {
-		return m.txpool.parentMap
-	}
-	m.txpool.parentMap = make(map[types.Hash256]int)
+	parentMap := make(map[types.Hash256]int)
 	for index, txn := range m.txpool.txns {
 		for i := range txn.SiacoinOutputs {
-			m.txpool.parentMap[types.Hash256(txn.SiacoinOutputID(i))] = index
+			parentMap[types.Hash256(txn.SiacoinOutputID(i))] = index
 		}
 		for i := range txn.SiafundInputs {
-			m.txpool.parentMap[types.Hash256(txn.SiafundClaimOutputID(i))] = index
+			parentMap[types.Hash256(txn.SiafundClaimOutputID(i))] = index
 		}
 		for i := range txn.SiafundOutputs {
-			m.txpool.parentMap[types.Hash256(txn.SiafundOutputID(i))] = index
+			parentMap[types.Hash256(txn.SiafundOutputID(i))] = index
 		}
 		for i := range txn.FileContracts {
-			m.txpool.parentMap[types.Hash256(txn.FileContractID(i))] = index
+			parentMap[types.Hash256(txn.FileContractID(i))] = index
 		}
 	}
 	for index, txn := range m.txpool.v2txns {
 		txid := txn.ID()
 		for i := range txn.SiacoinOutputs {
-			m.txpool.parentMap[types.Hash256(txn.SiacoinOutputID(txid, i))] = index
+			parentMap[types.Hash256(txn.SiacoinOutputID(txid, i))] = index
 		}
 		for _, sfi := range txn.SiafundInputs {
-			m.txpool.parentMap[types.Hash256(types.SiafundOutputID(sfi.Parent.ID).V2ClaimOutputID())] = index
+			parentMap[types.Hash256(types.SiafundOutputID(sfi.Parent.ID).V2ClaimOutputID())] = index
 		}
 		for i := range txn.SiafundOutputs {
-			m.txpool.parentMap[types.Hash256(txn.SiafundOutputID(txid, i))] = index
+			parentMap[types.Hash256(txn.SiafundOutputID(txid, i))] = index
 		}
 		for i := range txn.FileContracts {
-			m.txpool.parentMap[types.Hash256(txn.V2FileContractID(txid, i))] = index
+			parentMap[types.Hash256(txn.V2FileContractID(txid, i))] = index
 		}
 	}
-	return m.txpool.parentMap
+	return parentMap
 }
 
 func updateTxnProofs(txn *types.V2Transaction, updateElementProof func(*types.StateElement), numLeaves uint64) (valid bool) {
@@ -1218,7 +1213,6 @@ func (m *Manager) AddPoolTransactions(txns []types.Transaction) (known bool, err
 	}
 	// invalidate caches
 	m.txpool.medianFee = nil
-	m.txpool.parentMap = nil
 
 	// release lock while notifying listeners
 	fns := make([]func(), 0, len(m.onPool))
@@ -1299,7 +1293,6 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 	}
 	// invalidate caches
 	m.txpool.medianFee = nil
-	m.txpool.parentMap = nil
 
 	// release lock while notifying listeners
 	fns := make([]func(), 0, len(m.onPool))
