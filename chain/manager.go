@@ -1076,6 +1076,20 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		zap.Stringer("from", from),
 		zap.Stringer("to", to))
 
+	// first validate the transaction set against its claimed basis; attempting
+	// to update an invalid proof can cause a panic
+	basisState, ok := m.store.State(from.ID)
+	if !ok {
+		return nil, fmt.Errorf("couldn't find state for basis %v", from)
+	}
+	ms := consensus.NewMidState(basisState)
+	for _, txn := range txns {
+		if err := consensus.ValidateV2Transaction(ms, txn); err != nil {
+			return nil, fmt.Errorf("v2 transaction %v is invalid: %w", txn.ID(), err)
+		}
+		ms.ApplyV2Transaction(txn)
+	}
+
 	revert, apply, err := m.reorgPath(from, to)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't determine reorg path from %v to %v: %w", from, to, err)
