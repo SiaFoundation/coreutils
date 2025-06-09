@@ -993,15 +993,6 @@ func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transacti
 	defer m.mu.Unlock()
 	m.revalidatePool()
 
-	// update the transaction's basis to match tip
-	txns, err := m.updateV2TransactionProofs([]types.V2Transaction{txn}, basis, m.tipState.Index)
-	if err != nil {
-		return types.ChainIndex{}, nil, fmt.Errorf("failed to update transaction set basis: %w", err)
-	} else if len(txns) == 0 {
-		return types.ChainIndex{}, nil, errors.New("no transactions to broadcast")
-	}
-	txn = txns[0]
-
 	// get the transaction's parents
 	parentMap := m.computeParentMap()
 	var parents []types.V2Transaction
@@ -1039,11 +1030,17 @@ func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transacti
 		}
 	}
 	// reverse so that parents always come before children
-	for i := 0; i < len(parents)/2; i++ {
+	for i := range len(parents) / 2 {
 		j := len(parents) - 1 - i
 		parents[i], parents[j] = parents[j], parents[i]
 	}
-	return m.tipState.Index, append(parents, txn), nil
+
+	// update the transaction's basis to match tip
+	txns, err := m.updateV2TransactionProofs(append(parents, txn), basis, m.tipState.Index)
+	if err != nil {
+		return types.ChainIndex{}, nil, fmt.Errorf("failed to update transaction set basis: %w", err)
+	}
+	return m.tipState.Index, txns, nil
 }
 
 func (m *Manager) checkTxnSet(txns []types.Transaction, v2txns []types.V2Transaction) (bool, error) {
@@ -1082,12 +1079,10 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 	if !ok {
 		return nil, fmt.Errorf("couldn't find state for basis %v", from)
 	}
-	ms := consensus.NewMidState(basisState)
 	for _, txn := range txns {
-		if err := consensus.ValidateV2Transaction(ms, txn); err != nil {
-			return nil, fmt.Errorf("v2 transaction %v is invalid: %w", txn.ID(), err)
+		if err := basisState.Elements.ValidateTransactionElements(txn); err != nil {
+			return nil, fmt.Errorf("transaction %v is invalid: %w", txn.ID(), err)
 		}
-		ms.ApplyV2Transaction(txn)
 	}
 
 	revert, apply, err := m.reorgPath(from, to)
