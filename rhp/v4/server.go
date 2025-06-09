@@ -1125,6 +1125,12 @@ func (s *Server) handleRPCVerifySector(stream net.Conn) error {
 func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 	defer stream.Close()
 
+	defer func() {
+		if err := recover(); err != nil {
+			log.Error("panic in RPC handler", zap.Any("panic", err), zap.Stack("stack"))
+		}
+	}()
+
 	stream.SetDeadline(time.Now().Add(30 * time.Second)) // set an initial timeout
 	rpcStart := time.Now()
 	id, err := rhp4.ReadID(stream)
