@@ -103,7 +103,7 @@ func TestAddV2PoolTransactionsRecover(t *testing.T) {
 	testutil.MineBlocks(t, cm, addr, 20)
 	es.Wait(t)
 
-	if _, err := cm.AddV2PoolTransactions(basis, []types.V2Transaction{txn}); err == nil || !strings.Contains(err.Error(), "not present in the accumulator") {
+	if _, err := cm.AddV2PoolTransactions(basis, []types.V2Transaction{txn}); err == nil || !strings.Contains(err.Error(), "invalid Merkle proof") {
 		t.Fatalf("expected invalid transaction, got %v", err)
 	}
 }
