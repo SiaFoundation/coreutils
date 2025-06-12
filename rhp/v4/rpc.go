@@ -820,18 +820,7 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 	renewal, usage := rhp4.RenewContract(existing, p, params)
 	renewalTxn := types.V2Transaction{
 		MinerFee: signer.RecommendedFee().Mul64(1000),
-		FileContractResolutions: []types.V2FileContractResolution{
-			{
-				Parent: types.V2FileContractElement{
-					ID: params.ContractID,
-					// the state element field is not required for signing the
-					// transaction. The host will fill it in.
-				},
-				Resolution: &renewal,
-			},
-		},
 	}
-
 	renterCost, hostCost := rhp4.RenewalCost(cs, renewal, renewalTxn.MinerFee)
 	req := rhp4.RPCRenewContractRequest{
 		Prices:   p,
@@ -894,6 +883,12 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 	}
 
 	// sign the renter inputs after the host inputs have been added
+	renewalTxn.FileContractResolutions = []types.V2FileContractResolution{{
+		// only the ID is needed when signing; the host's response will contain
+		// the full StateElement
+		Parent:     types.V2FileContractElement{ID: params.ContractID},
+		Resolution: &renewal,
+	}}
 	signer.SignV2Inputs(&renewalTxn, toSign)
 	// sign the renewal
 	renewalSigHash := cs.RenewalSigHash(renewal)
@@ -965,16 +960,6 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 	renewal, usage := rhp4.RefreshContract(existing, p, params)
 	renewalTxn := types.V2Transaction{
 		MinerFee: signer.RecommendedFee().Mul64(1000),
-		FileContractResolutions: []types.V2FileContractResolution{
-			{
-				Parent: types.V2FileContractElement{
-					ID: params.ContractID,
-					// the state element field is not required for signing the
-					// transaction. The host will fill it in.
-				},
-				Resolution: &renewal,
-			},
-		},
 	}
 
 	renterCost, hostCost := rhp4.RefreshCost(cs, p, renewal, renewalTxn.MinerFee)
@@ -1039,6 +1024,12 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 	}
 
 	// sign the renter inputs after adding the host inputs
+	renewalTxn.FileContractResolutions = []types.V2FileContractResolution{{
+		// only the ID is needed when signing; the host's response will contain
+		// the full StateElement
+		Parent:     types.V2FileContractElement{ID: params.ContractID},
+		Resolution: &renewal,
+	}}
 	signer.SignV2Inputs(&renewalTxn, toSign)
 	// sign the renewal
 	renewalSigHash := cs.RenewalSigHash(renewal)

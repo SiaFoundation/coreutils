@@ -99,7 +99,6 @@ type Manager struct {
 		ms             *consensus.MidState
 		weight         uint64
 		medianFee      *types.Currency
-		parentMap      map[types.Hash256]int
 		lastReverted   []types.Transaction
 		lastRevertedV2 []types.V2Transaction
 	}
@@ -414,7 +413,6 @@ func (m *Manager) reorgTo(index types.ChainIndex) error {
 	// invalidate txpool caches
 	m.txpool.ms = nil
 	m.txpool.medianFee = nil
-	m.txpool.parentMap = nil
 	if len(revert) > 0 {
 		b, _, _ := m.store.Block(revert[0].ID)
 		m.txpool.lastReverted = b.Transactions
@@ -572,7 +570,7 @@ func (m *Manager) revalidatePool() {
 			continue
 		}
 		m.txpool.ms.ApplyTransaction(txn, ts)
-		m.txpool.indices[txn.ID()] = len(m.txpool.txns)
+		m.txpool.indices[txn.ID()] = len(filtered)
 		m.txpool.weight += m.tipState.TransactionWeight(txn)
 		filtered = append(filtered, txn)
 	}
@@ -586,7 +584,7 @@ func (m *Manager) revalidatePool() {
 			continue
 		}
 		m.txpool.ms.ApplyV2Transaction(txn)
-		m.txpool.indices[txn.ID()] = len(m.txpool.v2txns)
+		m.txpool.indices[txn.ID()] = len(v2filtered)
 		m.txpool.weight += m.tipState.V2TransactionWeight(txn)
 		v2filtered = append(v2filtered, txn)
 	}
@@ -644,40 +642,37 @@ func (m *Manager) computeMedianFee() types.Currency {
 }
 
 func (m *Manager) computeParentMap() map[types.Hash256]int {
-	if m.txpool.parentMap != nil {
-		return m.txpool.parentMap
-	}
-	m.txpool.parentMap = make(map[types.Hash256]int)
+	parentMap := make(map[types.Hash256]int)
 	for index, txn := range m.txpool.txns {
 		for i := range txn.SiacoinOutputs {
-			m.txpool.parentMap[types.Hash256(txn.SiacoinOutputID(i))] = index
+			parentMap[types.Hash256(txn.SiacoinOutputID(i))] = index
 		}
 		for i := range txn.SiafundInputs {
-			m.txpool.parentMap[types.Hash256(txn.SiafundClaimOutputID(i))] = index
+			parentMap[types.Hash256(txn.SiafundClaimOutputID(i))] = index
 		}
 		for i := range txn.SiafundOutputs {
-			m.txpool.parentMap[types.Hash256(txn.SiafundOutputID(i))] = index
+			parentMap[types.Hash256(txn.SiafundOutputID(i))] = index
 		}
 		for i := range txn.FileContracts {
-			m.txpool.parentMap[types.Hash256(txn.FileContractID(i))] = index
+			parentMap[types.Hash256(txn.FileContractID(i))] = index
 		}
 	}
 	for index, txn := range m.txpool.v2txns {
 		txid := txn.ID()
 		for i := range txn.SiacoinOutputs {
-			m.txpool.parentMap[types.Hash256(txn.SiacoinOutputID(txid, i))] = index
+			parentMap[types.Hash256(txn.SiacoinOutputID(txid, i))] = index
 		}
 		for _, sfi := range txn.SiafundInputs {
-			m.txpool.parentMap[types.Hash256(types.SiafundOutputID(sfi.Parent.ID).V2ClaimOutputID())] = index
+			parentMap[types.Hash256(types.SiafundOutputID(sfi.Parent.ID).V2ClaimOutputID())] = index
 		}
 		for i := range txn.SiafundOutputs {
-			m.txpool.parentMap[types.Hash256(txn.SiafundOutputID(txid, i))] = index
+			parentMap[types.Hash256(txn.SiafundOutputID(txid, i))] = index
 		}
 		for i := range txn.FileContracts {
-			m.txpool.parentMap[types.Hash256(txn.V2FileContractID(txid, i))] = index
+			parentMap[types.Hash256(txn.V2FileContractID(txid, i))] = index
 		}
 	}
-	return m.txpool.parentMap
+	return parentMap
 }
 
 func updateTxnProofs(txn *types.V2Transaction, updateElementProof func(*types.StateElement), numLeaves uint64) (valid bool) {
@@ -998,15 +993,6 @@ func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transacti
 	defer m.mu.Unlock()
 	m.revalidatePool()
 
-	// update the transaction's basis to match tip
-	txns, err := m.updateV2TransactionProofs([]types.V2Transaction{txn}, basis, m.tipState.Index)
-	if err != nil {
-		return types.ChainIndex{}, nil, fmt.Errorf("failed to update transaction set basis: %w", err)
-	} else if len(txns) == 0 {
-		return types.ChainIndex{}, nil, errors.New("no transactions to broadcast")
-	}
-	txn = txns[0]
-
 	// get the transaction's parents
 	parentMap := m.computeParentMap()
 	var parents []types.V2Transaction
@@ -1044,11 +1030,17 @@ func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transacti
 		}
 	}
 	// reverse so that parents always come before children
-	for i := 0; i < len(parents)/2; i++ {
+	for i := range len(parents) / 2 {
 		j := len(parents) - 1 - i
 		parents[i], parents[j] = parents[j], parents[i]
 	}
-	return m.tipState.Index, append(parents, txn), nil
+
+	// update the transaction's basis to match tip
+	txns, err := m.updateV2TransactionProofs(append(parents, txn), basis, m.tipState.Index)
+	if err != nil {
+		return types.ChainIndex{}, nil, fmt.Errorf("failed to update transaction set basis: %w", err)
+	}
+	return m.tipState.Index, txns, nil
 }
 
 func (m *Manager) checkTxnSet(txns []types.Transaction, v2txns []types.V2Transaction) (bool, error) {
@@ -1080,6 +1072,18 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 	log := m.log.Named("updateV2TransactionProofs").With(
 		zap.Stringer("from", from),
 		zap.Stringer("to", to))
+
+	// first validate the transaction set against its claimed basis; attempting
+	// to update an invalid proof can cause a panic
+	basisState, ok := m.store.State(from.ID)
+	if !ok {
+		return nil, fmt.Errorf("couldn't find state for basis %v", from)
+	}
+	for _, txn := range txns {
+		if err := basisState.Elements.ValidateTransactionElements(txn); err != nil {
+			return nil, fmt.Errorf("transaction %v is invalid: %w", txn.ID(), err)
+		}
+	}
 
 	revert, apply, err := m.reorgPath(from, to)
 	if err != nil {
@@ -1218,7 +1222,6 @@ func (m *Manager) AddPoolTransactions(txns []types.Transaction) (known bool, err
 	}
 	// invalidate caches
 	m.txpool.medianFee = nil
-	m.txpool.parentMap = nil
 
 	// release lock while notifying listeners
 	fns := make([]func(), 0, len(m.onPool))
@@ -1278,7 +1281,6 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 	if err != nil {
 		return false, fmt.Errorf("failed to update set basis: %w", err)
 	}
-
 	if known, err := m.checkTxnSet(nil, txns); known || err != nil {
 		return known, err
 	}
@@ -1299,7 +1301,6 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 	}
 	// invalidate caches
 	m.txpool.medianFee = nil
-	m.txpool.parentMap = nil
 
 	// release lock while notifying listeners
 	fns := make([]func(), 0, len(m.onPool))
