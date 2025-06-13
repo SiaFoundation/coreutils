@@ -838,7 +838,7 @@ func (m *Manager) PoolTransactions() []types.Transaction {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.revalidatePool()
-	return append([]types.Transaction(nil), m.txpool.txns...)
+	return slices.Clone(m.txpool.txns)
 }
 
 // V2PoolTransaction returns the v2 transaction with the specified ID, if it is
@@ -877,7 +877,6 @@ func (m *Manager) TransactionsForPartialBlock(missing []types.Hash256) (txns []t
 	for _, h := range missing {
 		want[h] = true
 	}
-	// TODO: might want to cache these
 	for _, txn := range m.txpool.txns {
 		if h := txn.MerkleLeafHash(); want[h] {
 			txns = append(txns, txn)
@@ -888,7 +887,7 @@ func (m *Manager) TransactionsForPartialBlock(missing []types.Hash256) (txns []t
 	}
 	for _, txn := range m.txpool.v2txns {
 		if h := txn.MerkleLeafHash(); want[h] {
-			v2txns = append(v2txns, txn)
+			v2txns = append(v2txns, txn.DeepCopy())
 			if delete(want, h); len(want) == 0 {
 				return
 			}
@@ -1000,7 +999,7 @@ func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transacti
 	check := func(id types.Hash256) {
 		if index, ok := parentMap[id]; ok && !seen[index] {
 			seen[index] = true
-			parents = append(parents, m.txpool.v2txns[index])
+			parents = append(parents, m.txpool.v2txns[index].DeepCopy())
 		}
 	}
 	addParents := func(txn types.V2Transaction) {
