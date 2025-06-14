@@ -675,15 +675,12 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 
 	ticker := time.NewTicker(s.config.SyncInterval)
 	defer ticker.Stop()
-	sleep := func() bool {
+	for {
 		select {
-		case <-ticker.C:
-			return true
 		case <-ctx.Done():
-			return false
+			return nil // note: context cancelled is not an error
+		case <-ticker.C:
 		}
-	}
-	for fst := true; fst || sleep(); fst = false {
 		for _, p := range peersForSync() {
 			history, err := s.cm.History()
 			if err != nil {
@@ -721,7 +718,7 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 					// cap the amount of time we will spend syncing
 					// with a single peer. This is so we don't get stuck
 					// syncing with a peer that is also syncing.
-					ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+					ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 					defer cancel()
 					for {
 						select {
@@ -767,7 +764,6 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 			}
 		}
 	}
-	return nil
 }
 
 // Run spawns goroutines for accepting inbound connections, forming outbound
