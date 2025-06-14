@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -341,9 +343,11 @@ func (s *Syncer) runPeer(p *Peer) {
 // The Syncer mutex will be locked while calling fn
 func (s *Syncer) withPeers(origin *Peer, fn func(p *Peer) error, log *zap.Logger) error {
 	s.mu.Lock()
+	peers := slices.Collect(maps.Values(s.peers))
+	s.mu.Unlock()
 	var inflight int
-	errCh := make(chan error, len(s.peers))
-	for _, p := range s.peers {
+	errCh := make(chan error, len(peers))
+	for _, p := range peers {
 		if p == origin {
 			continue
 		}
@@ -356,7 +360,6 @@ func (s *Syncer) withPeers(origin *Peer, fn func(p *Peer) error, log *zap.Logger
 			errCh <- err
 		}(p)
 	}
-	s.mu.Unlock()
 	if inflight == 0 {
 		return ErrNoPeers
 	}
@@ -382,9 +385,11 @@ func (s *Syncer) withPeers(origin *Peer, fn func(p *Peer) error, log *zap.Logger
 // The Syncer mutex will be locked while calling fn
 func (s *Syncer) withV2Peers(origin *Peer, fn func(p *Peer) error, log *zap.Logger) error {
 	s.mu.Lock()
+	peers := slices.Collect(maps.Values(s.peers))
+	s.mu.Unlock()
 	var inflight int
-	errCh := make(chan error, len(s.peers))
-	for _, p := range s.peers {
+	errCh := make(chan error, len(peers))
+	for _, p := range peers {
 		if p == origin || !p.t.SupportsV2() {
 			continue
 		}
@@ -397,7 +402,6 @@ func (s *Syncer) withV2Peers(origin *Peer, fn func(p *Peer) error, log *zap.Logg
 			errCh <- err
 		}(p)
 	}
-	s.mu.Unlock()
 	if inflight == 0 {
 		return ErrNoPeers
 	}
@@ -685,16 +689,6 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 			if err != nil {
 				return err // generally fatal
 			}
-			p.setSynced(true)
-			// as a fallback to ensure we never stop syncing prematurely, reset
-			// the sync status after 60-120 seconds
-			//
-			// NOTE: the AfterFuncs will be garbage collected after syncLoop
-			// returns. If we instead called defer Stop() on each of them, we
-			// would constantly accumulate defers, leaking memory until syncLoop
-			// returns.
-			resyncDelay := time.Duration(60+frand.Intn(60)) * time.Second
-			time.AfterFunc(resyncDelay, func() { p.setSynced(false) })
 			s.log.Debug("syncing with peer", zap.Stringer("peer", p))
 			oldTip := s.cm.Tip()
 			oldTime := time.Now()
@@ -724,7 +718,17 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 			if p.t.SupportsV2() {
 				history := history[:]
 				err = func() error {
+					// cap the amount of time we will spend syncing
+					// with a single peer. This is so we don't get stuck
+					// syncing with a peer that is also syncing.
+					ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+					defer cancel()
 					for {
+						select {
+						case <-ctx.Done():
+							return ctx.Err()
+						default:
+						}
 						blocks, rem, err := p.SendV2Blocks(history, s.config.MaxSendBlocks, s.config.SendBlocksTimeout)
 						if err != nil {
 							return err
@@ -741,8 +745,23 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 			}
 			totalBlocks := s.cm.Tip().Height - oldTip.Height
 			if err != nil {
-				s.log.Debug("syncing with peer failed", zap.Stringer("peer", p), zap.Error(err), zap.Uint64("blocks", totalBlocks))
-			} else if newTip := s.cm.Tip(); newTip != oldTip {
+				if !errors.Is(err, context.DeadlineExceeded) {
+					s.log.Debug("syncing with peer failed", zap.Stringer("peer", p), zap.Error(err), zap.Uint64("blocks", totalBlocks))
+				}
+				continue
+			}
+
+			p.setSynced(true)
+			// as a fallback to ensure we never stop syncing prematurely, reset
+			// the sync status after 60-120 seconds
+			//
+			// NOTE: the AfterFuncs will be garbage collected after syncLoop
+			// returns. If we instead called defer Stop() on each of them, we
+			// would constantly accumulate defers, leaking memory until syncLoop
+			// returns.
+			resyncDelay := time.Duration(60+frand.Intn(60)) * time.Second
+			time.AfterFunc(resyncDelay, func() { p.setSynced(false) })
+			if newTip := s.cm.Tip(); newTip != oldTip {
 				s.log.Debug("finished syncing with peer", zap.Stringer("peer", p), zap.Stringer("newTip", newTip), zap.Uint64("blocks", totalBlocks))
 			} else {
 				s.log.Debug("finished syncing with peer, tip unchanged", zap.Stringer("peer", p), zap.Uint64("blocks", sentBlocks))
