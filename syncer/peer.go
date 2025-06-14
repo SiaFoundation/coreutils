@@ -3,7 +3,9 @@ package syncer
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -439,6 +441,10 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 			if err != nil {
 				// log-worthy, but not ban-worthy
 				log.Debug("couldn't retrieve missing transactions from peer", zap.Stringer("blockID", bid), zap.Stringer("origin", origin), zap.Error(err))
+				if os.IsTimeout(err) || errors.Is(err, io.EOF) {
+					// possibly a temporary network issue, try to retrieve the block
+					s.resync(origin, fmt.Sprintf("failed to retrieve missing v2 transactions for block %v from peer %v: %v", bid, origin, err))
+				}
 				return nil
 			}
 			b, missing = r.Block.Complete(cs, txns, v2txns)
