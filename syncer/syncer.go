@@ -642,11 +642,7 @@ func (s *Syncer) peerLoop(ctx context.Context) error {
 			}
 
 			ctx, cancel := context.WithTimeout(ctx, s.config.ConnectTimeout)
-			if _, err := s.Connect(ctx, p); err != nil {
-				log.Debug("failed to connect to peer", zap.String("peer", p), zap.Error(err))
-			} else {
-				log.Debug("connected to peer", zap.String("peer", p))
-			}
+			s.Connect(ctx, p)
 			cancel()
 			lastTried[p] = time.Now()
 		}
