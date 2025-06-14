@@ -221,6 +221,7 @@ func (p *Peer) acceptRPC() (types.Specifier, *gateway.Stream, error) {
 }
 
 func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *Peer) error {
+	log := s.log.With(zap.Stringer("origin", origin), zap.Stringer("id", id))
 	switch r := gateway.ObjectForID(id).(type) {
 	case *gateway.RPCShareNodes:
 		peers, err := s.pm.Peers()
@@ -270,7 +271,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		// request + validate full block
 		if b, err := origin.SendBlock(r.Header.ID(), s.config.SendBlockTimeout); err != nil {
 			// log-worthy, but not ban-worthy
-			s.log.Warn("couldn't retrieve new block after header relay", zap.Stringer("header", r.Header.ID()), zap.Stringer("origin", origin), zap.Error(err))
+			log.Warn("couldn't retrieve new block after header relay", zap.Stringer("header", r.Header.ID()), zap.Error(err))
 			return nil
 		} else if err := s.cm.AddBlocks([]types.Block{b}); err != nil {
 			return s.ban(origin, err)
@@ -289,7 +290,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 				// too risky to ban here (txns are probably just outdated), but at least
 				// log it if we think we're synced
 				if b, ok := s.cm.Block(s.cm.Tip().ID); ok && time.Since(b.Timestamp) < 2*s.cm.TipState().BlockInterval() {
-					s.log.Debug("invalid transaction set received", zap.Stringer("origin", origin), zap.Error(err))
+					log.Debug("invalid transaction set received", zap.Error(err))
 				}
 			} else {
 				s.relayTransactionSet(r.Transactions, origin) // non-blocking
@@ -426,6 +427,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 			s.resync(origin, "peer relayed a v2 outline that does not attach to our tip")
 			return nil
 		}
+		log.Debug("received v2 block outline", zap.Stringer("blockID", bid), zap.Stringer("origin", origin))
 		// block has sufficient work and attaches to our tip, but may be missing
 		// transactions; first, check for them in our txpool; then, if block is
 		// still incomplete, request remaining transactions from the peer
@@ -436,7 +438,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 			txns, v2txns, err := origin.SendTransactions(index, missing, s.config.SendTransactionsTimeout)
 			if err != nil {
 				// log-worthy, but not ban-worthy
-				s.log.Debug("couldn't retrieve missing transactions from peer", zap.Stringer("blockID", bid), zap.Stringer("origin", origin), zap.Error(err))
+				log.Debug("couldn't retrieve missing transactions from peer", zap.Stringer("blockID", bid), zap.Stringer("origin", origin), zap.Error(err))
 				return nil
 			}
 			b, missing = r.Block.Complete(cs, txns, v2txns)
@@ -448,13 +450,14 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		if err := s.cm.AddBlocks([]types.Block{b}); err != nil {
 			return s.ban(origin, err)
 		}
+		log.Debug("added v2 block", zap.Stringer("blockID", bid), zap.Stringer("origin", origin))
 		// when we forward the block, exclude any txns that were in our txpool,
 		// since they're probably present in our peers' txpools as well
 		//
 		// NOTE: crucially, we do NOT exclude any txns we had to request from the
 		// sending peer, since other peers probably don't have them either
 		r.Block.RemoveTransactions(txns, v2txns)
-		s.relayV2BlockOutline(r.Block, origin) // non-blocking
+		go s.relayV2BlockOutline(r.Block, origin) // non-blocking
 		return nil
 
 	case *gateway.RPCRelayV2TransactionSet:
