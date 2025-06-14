@@ -667,9 +667,6 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 		sort.Slice(peers, func(i, j int) bool {
 			return peers[i].t.SupportsV2() && !peers[j].t.SupportsV2()
 		})
-		if len(peers) > 3 {
-			peers = peers[:3]
-		}
 		return
 	}
 
@@ -718,7 +715,7 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 					// cap the amount of time we will spend syncing
 					// with a single peer. This is so we don't get stuck
 					// syncing with a peer that is also syncing.
-					ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+					ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 					defer cancel()
 					for {
 						select {
