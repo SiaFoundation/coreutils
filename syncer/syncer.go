@@ -686,7 +686,7 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 			s.log.Debug("syncing with peer", zap.Stringer("peer", p))
 			oldTip := s.cm.Tip()
 			oldTime := time.Now()
-			lastPrint := time.Now()
+			var lastPrint time.Time
 			startTime, startHeight := oldTime, oldTip.Height
 			var sentBlocks uint64
 			addBlocks := func(blocks []types.Block) error {
