@@ -744,23 +744,22 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 				err = p.SendBlocks(history, s.config.SendBlocksTimeout, addBlocks)
 			}
 			totalBlocks := s.cm.Tip().Height - oldTip.Height
-			if err != nil {
-				if !errors.Is(err, context.DeadlineExceeded) {
-					s.log.Debug("syncing with peer failed", zap.Stringer("peer", p), zap.Error(err), zap.Uint64("blocks", totalBlocks))
-				}
+			if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+				s.log.Debug("syncing with peer failed", zap.Stringer("peer", p), zap.Error(err), zap.Uint64("blocks", totalBlocks))
 				continue
+			} else if err == nil {
+				p.setSynced(true)
+				// as a fallback to ensure we never stop syncing prematurely, reset
+				// the sync status after 60-120 seconds
+				//
+				// NOTE: the AfterFuncs will be garbage collected after syncLoop
+				// returns. If we instead called defer Stop() on each of them, we
+				// would constantly accumulate defers, leaking memory until syncLoop
+				// returns.
+				resyncDelay := time.Duration(60+frand.Intn(60)) * time.Second
+				time.AfterFunc(resyncDelay, func() { p.setSynced(false) })
 			}
 
-			p.setSynced(true)
-			// as a fallback to ensure we never stop syncing prematurely, reset
-			// the sync status after 60-120 seconds
-			//
-			// NOTE: the AfterFuncs will be garbage collected after syncLoop
-			// returns. If we instead called defer Stop() on each of them, we
-			// would constantly accumulate defers, leaking memory until syncLoop
-			// returns.
-			resyncDelay := time.Duration(60+frand.Intn(60)) * time.Second
-			time.AfterFunc(resyncDelay, func() { p.setSynced(false) })
 			if newTip := s.cm.Tip(); newTip != oldTip {
 				s.log.Debug("finished syncing with peer", zap.Stringer("peer", p), zap.Stringer("newTip", newTip), zap.Uint64("blocks", totalBlocks))
 			} else {
