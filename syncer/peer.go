@@ -224,6 +224,12 @@ func (p *Peer) acceptRPC() (types.Specifier, *gateway.Stream, error) {
 
 func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *Peer) error {
 	log := s.log.With(zap.Stringer("origin", origin), zap.Stringer("id", id))
+	defer func() {
+		if err := recover(); err != nil {
+			s.log.Error("panic in RPC handler", zap.Stringer("id", id), zap.Stringer("origin", origin), zap.Any("error", err), zap.Stack("stack"))
+		}
+	}()
+
 	switch r := gateway.ObjectForID(id).(type) {
 	case *gateway.RPCShareNodes:
 		peers, err := s.pm.Peers()
