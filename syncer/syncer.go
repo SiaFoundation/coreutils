@@ -734,7 +734,7 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 				err = p.SendBlocks(history, s.config.SendBlocksTimeout, addBlocks)
 			}
 			totalBlocks := s.cm.Tip().Height - oldTip.Height
-			if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 				s.log.Debug("syncing with peer failed", zap.Stringer("peer", p), zap.Error(err), zap.Uint64("blocks", totalBlocks))
 				continue
 			} else if err == nil {
