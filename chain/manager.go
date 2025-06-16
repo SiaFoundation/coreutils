@@ -1068,10 +1068,6 @@ func (m *Manager) checkTxnSet(txns []types.Transaction, v2txns []types.V2Transac
 }
 
 func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to types.ChainIndex) (updated []types.V2Transaction, err error) {
-	log := m.log.Named("updateV2TransactionProofs").With(
-		zap.Stringer("from", from),
-		zap.Stringer("to", to))
-
 	// first validate the transaction set against its claimed basis; attempting
 	// to update an invalid proof can cause a panic
 	basisState, ok := m.store.State(from.ID)
@@ -1091,25 +1087,13 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		return nil, fmt.Errorf("reorg path from %v to %v is too long (-%v +%v)", from, to, len(revert), len(apply))
 	}
 
-	var index types.ChainIndex
-	defer func() {
-		if panicErr := recover(); panicErr != nil {
-			log.Error("proof update failed", zap.Stringer("index", index), zap.Any("error", panicErr), zap.Stack("stack"))
-			switch panicErr := panicErr.(type) {
-			case string, fmt.Stringer, error:
-				err = fmt.Errorf("proof update from %q to %q failed at %q with panic %q: %w", from, to, index, panicErr, ErrInvalidElementProof)
-			default:
-				err = fmt.Errorf("proof update from %q to %q failed at %q with panic: %w", from, to, index, ErrInvalidElementProof)
-			}
-		}
-	}()
 	updated = slices.Clone(txns)
-	for _, index = range revert {
+	for _, index := range revert {
 		b, bs, cs, ok := blockAndParent(m.store, index.ID)
 		if !ok {
 			return nil, fmt.Errorf("missing reverted block at index %v", index)
 		} else if bs == nil {
-			bs = new(consensus.V1BlockSupplement)
+			return nil, fmt.Errorf("missing reverted block supplement at index %v", index)
 		}
 		cru := consensus.RevertBlock(cs, b, *bs)
 		for i := range updated {
@@ -1119,12 +1103,12 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		}
 	}
 
-	for _, index = range apply {
+	for _, index := range apply {
 		b, bs, cs, ok := blockAndParent(m.store, index.ID)
 		if !ok {
 			return nil, fmt.Errorf("missing applied block at index %v", index)
 		} else if bs == nil {
-			bs = new(consensus.V1BlockSupplement)
+			return nil, fmt.Errorf("missing applied block supplement at index %v", index)
 		}
 		ancestorTimestamp, _ := m.store.AncestorTimestamp(b.ParentID)
 		cs, cau := consensus.ApplyBlock(cs, b, *bs, ancestorTimestamp)
