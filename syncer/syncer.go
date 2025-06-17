@@ -640,7 +640,7 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 			if err != nil {
 				return err // generally fatal
 			}
-			s.log.Debug("syncing with peer", zap.Stringer("peer", p))
+			log := s.log.Named("syncLoop").With(zap.Stringer("peer", p))
 			oldTip := s.cm.Tip()
 			oldTime := time.Now()
 			var lastPrint time.Time
@@ -661,7 +661,7 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 				}
 				startTime, startHeight = endTime, endHeight
 				if time.Since(lastPrint) > 30*time.Second {
-					s.log.Debug("syncing with peer", zap.Stringer("peer", p), zap.Uint64("blocks", sentBlocks), zap.Duration("elapsed", endTime.Sub(oldTime)))
+					log.Debug("syncing with peer", zap.Stringer("peer", p), zap.Uint64("blocks", sentBlocks), zap.Duration("elapsed", endTime.Sub(oldTime)))
 					lastPrint = time.Now()
 				}
 				return nil
@@ -693,7 +693,7 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 
 			totalBlocks := s.cm.Tip().Height - oldTip.Height
 			if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-				s.log.Debug("syncing with peer failed", zap.Stringer("peer", p), zap.Error(err), zap.Uint64("blocks", totalBlocks))
+				log.Debug("syncing with peer failed", zap.Error(err), zap.Uint64("blocks", totalBlocks))
 				continue
 			} else if err == nil {
 				p.setSynced(true)
@@ -709,9 +709,9 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 			}
 
 			if newTip := s.cm.Tip(); newTip != oldTip {
-				s.log.Debug("finished syncing with peer", zap.Stringer("peer", p), zap.Stringer("newTip", newTip), zap.Uint64("blocks", totalBlocks))
+				log.Debug("finished syncing with peer", zap.Stringer("newTip", newTip), zap.Uint64("blocks", totalBlocks))
 			} else {
-				s.log.Debug("finished syncing with peer, tip unchanged", zap.Stringer("peer", p), zap.Uint64("blocks", sentBlocks))
+				log.Debug("finished syncing with peer, tip unchanged", zap.Uint64("blocks", sentBlocks))
 			}
 		}
 	}
