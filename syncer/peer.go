@@ -299,7 +299,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 					log.Debug("invalid transaction set received", zap.Error(err))
 				}
 			} else {
-				s.relayTransactionSet(r.Transactions, origin) // non-blocking
+				go s.relayTransactionSet(r.Transactions, origin) // non-blocking
 			}
 		}
 		return nil
@@ -410,7 +410,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		// quickly as possible that a new block has been found. A proper
 		// BlockOutline should follow soon after, allowing peers to obtain the
 		// actual block. As such, we take no action here other than relaying.
-		s.relayV2Header(r.Header, origin) // non-blocking
+		go s.relayV2Header(r.Header, origin) // non-blocking
 		return nil
 
 	case *gateway.RPCRelayV2BlockOutline:
@@ -480,7 +480,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 			if err != nil {
 				s.log.Debug("received invalid transaction set", zap.Stringer("origin", origin), zap.Error(err))
 			} else {
-				s.relayV2TransactionSet(r.Index, r.Transactions, origin) // non-blocking
+				go s.relayV2TransactionSet(r.Index, r.Transactions, origin) // non-blocking
 			}
 		}
 		return nil
