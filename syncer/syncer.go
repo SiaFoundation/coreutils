@@ -486,23 +486,26 @@ func (s *Syncer) acceptLoop(ctx context.Context) error {
 			conn.SetDeadline(time.Now().Add(s.config.ConnectTimeout))
 			if err := s.allowConnect(ctx, conn.RemoteAddr().String(), true); err != nil {
 				s.log.Debug("rejected inbound connection", zap.Stringer("remoteAddress", conn.RemoteAddr()), zap.Error(err))
-			} else if t, err := gateway.Accept(conn, s.header); err != nil {
-				s.log.Debug("failed to accept inbound connection", zap.Stringer("remoteAddress", conn.RemoteAddr()), zap.Error(err))
-			} else if s.alreadyConnected(t.UniqueID) {
-				s.log.Debug("already connected to peer", zap.Stringer("remoteAddress", conn.RemoteAddr()))
-			} else {
-				conn.SetDeadline(time.Time{})
-				p := &Peer{
-					t:        t,
-					ConnAddr: conn.RemoteAddr().String(),
-					Inbound:  true,
-				}
-				if err := s.addPeer(p); err != nil {
-					s.log.Debug("failed to add peer", zap.Stringer("remoteAddress", conn.RemoteAddr()), zap.Error(err))
-				} else {
-					s.runPeer(p)
-				}
+				return
 			}
+
+			t, err := gateway.Accept(conn, s.header)
+			if err != nil || s.alreadyConnected(t.UniqueID) {
+				// note: most likely a timeout or other temp network error.
+				// logging is very noisy
+				return
+			}
+			conn.SetDeadline(time.Time{})
+			p := &Peer{
+				t:        t,
+				ConnAddr: conn.RemoteAddr().String(),
+				Inbound:  true,
+			}
+			if err := s.addPeer(p); err != nil {
+				s.log.Debug("failed to add peer", zap.Stringer("remoteAddress", conn.RemoteAddr()), zap.Error(err))
+				return
+			}
+			s.runPeer(p)
 		}()
 	}
 }
