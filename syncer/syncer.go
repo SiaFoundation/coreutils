@@ -377,48 +377,6 @@ func (s *Syncer) withPeers(origin *Peer, fn func(p *Peer) error, log *zap.Logger
 	return err
 }
 
-// withV2Peers is a helper function that calls fn concurrently for all connected peers
-// that support V2 except the origin peer. It returns nil if at least one call returns
-// nil. If all calls fail, it returns the first error encountered. If there are no
-// peers, it returns [ErrNoPeers].
-//
-// The Syncer mutex will be locked while calling fn
-func (s *Syncer) withV2Peers(origin *Peer, fn func(p *Peer) error, log *zap.Logger) error {
-	s.mu.Lock()
-	peers := slices.Collect(maps.Values(s.peers))
-	s.mu.Unlock()
-	var inflight int
-	errCh := make(chan error, len(peers))
-	for _, p := range peers {
-		if p == origin || !p.t.SupportsV2() {
-			continue
-		}
-		inflight++
-		go func(p *Peer) {
-			err := fn(p)
-			if err != nil {
-				log.Debug("relay failed", zap.String("peer", p.Addr()), zap.Error(err))
-			}
-			errCh <- err
-		}(p)
-	}
-	if inflight == 0 {
-		return ErrNoPeers
-	}
-	var err error
-	for ; inflight > 0; inflight-- {
-		// block until at least one relay has succeeded
-		// or all relays have failed
-		peerErr := <-errCh
-		if peerErr == nil {
-			return nil
-		} else if err == nil {
-			err = peerErr // return the first error if all relays fail
-		}
-	}
-	return err
-}
-
 func (s *Syncer) relayHeader(h types.BlockHeader, origin *Peer) error {
 	return s.withPeers(origin, func(p *Peer) error { return p.RelayHeader(h, s.config.RelayHeaderTimeout) }, s.log.Named("relayHeader"))
 }
@@ -431,18 +389,18 @@ func (s *Syncer) relayTransactionSet(txns []types.Transaction, origin *Peer) err
 }
 
 func (s *Syncer) relayV2Header(bh types.BlockHeader, origin *Peer) error {
-	return s.withV2Peers(origin, func(p *Peer) error { return p.RelayV2Header(bh, s.config.RelayHeaderTimeout) }, s.log.Named("relayV2Header"))
+	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2Header(bh, s.config.RelayHeaderTimeout) }, s.log.Named("relayV2Header"))
 }
 
 func (s *Syncer) relayV2BlockOutline(pb gateway.V2BlockOutline, origin *Peer) error {
-	return s.withV2Peers(origin, func(p *Peer) error { return p.RelayV2BlockOutline(pb, s.config.RelayBlockOutlineTimeout) }, s.log.Named("relayV2BlockOutline"))
+	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2BlockOutline(pb, s.config.RelayBlockOutlineTimeout) }, s.log.Named("relayV2BlockOutline"))
 }
 
 func (s *Syncer) relayV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction, origin *Peer) error {
 	if len(txns) == 0 {
 		return nil
 	}
-	return s.withV2Peers(origin, func(p *Peer) error { return p.RelayV2TransactionSet(index, txns, s.config.RelayTransactionSetTimeout) }, s.log.Named("relayV2TransactionSet"))
+	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2TransactionSet(index, txns, s.config.RelayTransactionSetTimeout) }, s.log.Named("relayV2TransactionSet"))
 }
 
 func (s *Syncer) allowConnect(ctx context.Context, peer string, inbound bool) error {
@@ -661,7 +619,10 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 			peers = append(peers, p)
 		}
 		sort.Slice(peers, func(i, j int) bool {
-			return peers[i].t.SupportsV2() && !peers[j].t.SupportsV2()
+			// prefer syncing with outbound peers over
+			// inbound peers since they were explicitly
+			// connected to
+			return !peers[i].Inbound && peers[j].Inbound
 		})
 		return
 	}
@@ -705,34 +666,31 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 				}
 				return nil
 			}
-			if p.t.SupportsV2() {
-				history := history[:]
-				err = func() error {
-					// cap the amount of time we will spend syncing
-					// with a single peer. This is so we don't get stuck
-					// syncing with a peer that is also syncing.
-					ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-					defer cancel()
-					for {
-						select {
-						case <-ctx.Done():
-							return ctx.Err()
-						default:
-						}
-						blocks, rem, err := p.SendV2Blocks(history, s.config.MaxSendBlocks, s.config.SendBlocksTimeout)
-						if err != nil {
-							return err
-						} else if err := addBlocks(blocks); err != nil {
-							return err
-						} else if rem == 0 {
-							return nil
-						}
-						history = []types.BlockID{blocks[len(blocks)-1].ID()}
+			last := history[:]
+			err = func() error {
+				// cap the amount of time we will spend syncing
+				// with a single peer. This is so we don't get stuck
+				// syncing with a peer that is also syncing.
+				ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+				defer cancel()
+				for {
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					default:
 					}
-				}()
-			} else {
-				err = p.SendBlocks(history, s.config.SendBlocksTimeout, addBlocks)
-			}
+					blocks, rem, err := p.SendV2Blocks(last, s.config.MaxSendBlocks, s.config.SendBlocksTimeout)
+					if err != nil {
+						return err
+					} else if err := addBlocks(blocks); err != nil {
+						return err
+					} else if rem == 0 {
+						return nil
+					}
+					last = []types.BlockID{blocks[len(blocks)-1].ID()}
+				}
+			}()
+
 			totalBlocks := s.cm.Tip().Height - oldTip.Height
 			if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 				s.log.Debug("syncing with peer failed", zap.Stringer("peer", p), zap.Error(err), zap.Uint64("blocks", totalBlocks))
