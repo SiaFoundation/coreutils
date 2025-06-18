@@ -132,6 +132,65 @@ func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 		l.SetProgress(100)
 		fallthrough
 	case 4:
+		// hydrate bFileContractExpirations
+		l.Printf("Removing file contract data")
+		for key := range dbs.db.Bucket(bFileContractElements).Iter() {
+			dbs.bucket(bFileContractElements).delete(key)
+		}
+		l.Printf("Computing file contract expirations")
+		if _, err := dbs.db.CreateBucket(bFileContractExpirations); err != nil {
+			panic(err)
+		}
+		v1Blocks := min(dbs.getHeight(), n.HardforkV2.RequireHeight) + 1
+		cs := n.GenesisState()
+		for height := range v1Blocks {
+			index, _ := dbs.BestIndex(height)
+			_, b, bs, _ := dbs.getBlock(index.ID)
+			if b == nil || bs == nil {
+				return errors.New("missing block needed for migration")
+			}
+			var cau consensus.ApplyUpdate
+			ancestorTimestamp, _ := dbs.AncestorTimestamp(b.ParentID)
+			cs, cau = consensus.ApplyBlock(cs, *b, *bs, ancestorTimestamp)
+
+			for _, fced := range cau.FileContractElementDiffs() {
+				fce := &fced.FileContractElement
+				if fced.Created && fced.Resolved {
+					continue
+				} else if fced.Resolved {
+					dbs.deleteFileContractElement(fce.ID)
+					dbs.deleteFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
+				} else if fced.Revision != nil {
+					rev := fce.Share()
+					rev.FileContract = *fced.Revision
+					dbs.putFileContractElement(rev.Share())
+					if rev.FileContract.WindowEnd != fce.FileContract.WindowEnd {
+						dbs.deleteFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
+						dbs.putFileContractExpiration(fce.ID, rev.FileContract.WindowEnd)
+					}
+				} else {
+					dbs.putFileContractElement(fce.Share())
+					dbs.putFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
+				}
+			}
+
+			if dbs.shouldFlush() {
+				if err := dbs.Flush(); err != nil {
+					return err
+				}
+			}
+			l.SetProgress(99.9 * float64(height) / float64(v1Blocks))
+		}
+		if err := dbs.Flush(); err != nil {
+			return err
+		}
+		dbs.bucket(bVersion).putRaw(bVersion, []byte{5})
+		if err := dbs.Flush(); err != nil {
+			return err
+		}
+		l.SetProgress(100)
+		fallthrough
+	case 5:
 		// up-to-date
 		return nil
 	default:
