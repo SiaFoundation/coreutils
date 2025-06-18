@@ -577,13 +577,18 @@ func (m *Manager) revalidatePool() {
 	m.txpool.weight = 0
 	filtered := m.txpool.txns[:0]
 	for _, txn := range m.txpool.txns {
+		id := txn.ID()
+		if _, ok := m.txpool.indices[id]; ok {
+			// already in the pool
+			continue
+		}
 		ts := m.store.SupplementTipTransaction(txn)
 		if err := consensus.ValidateTransaction(m.txpool.ms, txn, ts); err != nil {
 			log.Debug("dropping invalid pool transaction", zap.Stringer("id", txn.ID()), zap.Error(err))
 			continue
 		}
 		m.txpool.ms.ApplyTransaction(txn, ts)
-		m.txpool.indices[txn.ID()] = len(filtered)
+		m.txpool.indices[id] = len(filtered)
 		m.txpool.weight += m.tipState.TransactionWeight(txn)
 		filtered = append(filtered, txn)
 	}
@@ -592,12 +597,16 @@ func (m *Manager) revalidatePool() {
 	m.txpool.v2txns = append(m.txpool.v2txns, m.txpool.lastRevertedV2...)
 	v2filtered := m.txpool.v2txns[:0]
 	for _, txn := range m.txpool.v2txns {
-		if err := consensus.ValidateV2Transaction(m.txpool.ms, txn); err != nil {
+		id := txn.ID()
+		if _, ok := m.txpool.indices[id]; ok {
+			// already in the pool
+			continue
+		} else if err := consensus.ValidateV2Transaction(m.txpool.ms, txn); err != nil {
 			log.Debug("dropping invalid pool v2 transaction", zap.Stringer("id", txn.ID()), zap.Error(err))
 			continue
 		}
 		m.txpool.ms.ApplyV2Transaction(txn)
-		m.txpool.indices[txn.ID()] = len(v2filtered)
+		m.txpool.indices[id] = len(v2filtered)
 		m.txpool.weight += m.tipState.V2TransactionWeight(txn)
 		v2filtered = append(v2filtered, txn)
 	}
