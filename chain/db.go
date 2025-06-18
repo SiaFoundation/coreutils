@@ -617,7 +617,7 @@ func (db *DBStore) deleteFileContractExpiration(id types.FileContractID, windowE
 	val := append([]byte(nil), b.getRaw(key)...)
 	for i := 0; i < len(val); i += 32 {
 		if *(*types.FileContractID)(val[i:]) == id {
-			copy(val[i:], val[len(val)-32:])
+			copy(val[i:], val[i+32:])
 			val = val[:len(val)-32]
 			i -= 32
 			b.putRaw(key, val)
