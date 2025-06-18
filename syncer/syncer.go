@@ -341,7 +341,7 @@ func (s *Syncer) runPeer(p *Peer) {
 // fail, it returns the first error encountered. If there are no peers, it returns [ErrNoPeers].
 //
 // The Syncer mutex will be locked while calling fn
-func (s *Syncer) withPeers(origin *Peer, fn func(p *Peer) error, log *zap.Logger) error {
+func (s *Syncer) withPeers(origin *Peer, fn func(p *Peer) error) error {
 	s.mu.Lock()
 	peers := slices.Collect(maps.Values(s.peers))
 	s.mu.Unlock()
@@ -353,11 +353,13 @@ func (s *Syncer) withPeers(origin *Peer, fn func(p *Peer) error, log *zap.Logger
 		}
 		inflight++
 		go func(p *Peer) {
-			err := fn(p)
+			done, err := s.tg.Add()
 			if err != nil {
-				log.Debug("relay failed", zap.String("peer", p.Addr()), zap.Error(err))
+				errCh <- err
+				return
 			}
-			errCh <- err
+			defer done()
+			errCh <- fn(p)
 		}(p)
 	}
 	if inflight == 0 {
@@ -378,29 +380,29 @@ func (s *Syncer) withPeers(origin *Peer, fn func(p *Peer) error, log *zap.Logger
 }
 
 func (s *Syncer) relayHeader(h types.BlockHeader, origin *Peer) error {
-	return s.withPeers(origin, func(p *Peer) error { return p.RelayHeader(h, s.config.RelayHeaderTimeout) }, s.log.Named("relayHeader"))
+	return s.withPeers(origin, func(p *Peer) error { return p.RelayHeader(h, s.config.RelayHeaderTimeout) })
 }
 
 func (s *Syncer) relayTransactionSet(txns []types.Transaction, origin *Peer) error {
 	if len(txns) == 0 {
 		return nil
 	}
-	return s.withPeers(origin, func(p *Peer) error { return p.RelayTransactionSet(txns, s.config.RelayTransactionSetTimeout) }, s.log.Named("relayTransactionSet"))
+	return s.withPeers(origin, func(p *Peer) error { return p.RelayTransactionSet(txns, s.config.RelayTransactionSetTimeout) })
 }
 
 func (s *Syncer) relayV2Header(bh types.BlockHeader, origin *Peer) error {
-	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2Header(bh, s.config.RelayHeaderTimeout) }, s.log.Named("relayV2Header"))
+	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2Header(bh, s.config.RelayHeaderTimeout) })
 }
 
 func (s *Syncer) relayV2BlockOutline(pb gateway.V2BlockOutline, origin *Peer) error {
-	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2BlockOutline(pb, s.config.RelayBlockOutlineTimeout) }, s.log.Named("relayV2BlockOutline"))
+	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2BlockOutline(pb, s.config.RelayBlockOutlineTimeout) })
 }
 
 func (s *Syncer) relayV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction, origin *Peer) error {
 	if len(txns) == 0 {
 		return nil
 	}
-	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2TransactionSet(index, txns, s.config.RelayTransactionSetTimeout) }, s.log.Named("relayV2TransactionSet"))
+	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2TransactionSet(index, txns, s.config.RelayTransactionSetTimeout) })
 }
 
 func (s *Syncer) allowConnect(ctx context.Context, peer string, inbound bool) error {
