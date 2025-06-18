@@ -414,9 +414,31 @@ func (m *Manager) reorgTo(index types.ChainIndex) error {
 	m.txpool.ms = nil
 	m.txpool.medianFee = nil
 	if len(revert) > 0 {
+		seen := make(map[types.TransactionID]bool)
 		b, _, _ := m.store.Block(revert[0].ID)
-		m.txpool.lastReverted = b.Transactions
-		m.txpool.lastRevertedV2 = b.V2Transactions()
+		m.txpool.lastReverted = m.txpool.lastReverted[:0]
+		// prevent coinbase transactions from spamming the pool
+		for _, txn := range b.Transactions {
+			if len(txn.SiacoinInputs) == 0 && len(txn.SiafundInputs) == 0 && len(txn.FileContractRevisions) == 0 && len(txn.StorageProofs) == 0 {
+				continue
+			}
+			id := txn.ID()
+			if !seen[id] {
+				seen[id] = true
+				m.txpool.lastReverted = append(m.txpool.lastReverted, txn)
+			}
+		}
+		m.txpool.lastRevertedV2 = m.txpool.lastRevertedV2[:0]
+		for _, txn := range b.V2Transactions() {
+			if len(txn.SiacoinInputs) == 0 && len(txn.SiafundInputs) == 0 && len(txn.FileContractRevisions) == 0 && len(txn.FileContractResolutions) == 0 {
+				continue
+			}
+			id := txn.ID()
+			if !seen[id] {
+				seen[id] = true
+				m.txpool.lastRevertedV2 = append(m.txpool.lastRevertedV2, txn)
+			}
+		}
 	}
 	return nil
 }
