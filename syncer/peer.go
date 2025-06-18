@@ -3,9 +3,7 @@ package syncer
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net"
-	"os"
 	"sync"
 	"time"
 
@@ -301,7 +299,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 					log.Debug("invalid transaction set received", zap.Error(err))
 				}
 			} else {
-				s.relayTransactionSet(r.Transactions, origin) // non-blocking
+				go s.relayTransactionSet(r.Transactions, origin) // non-blocking
 			}
 		}
 		return nil
@@ -412,7 +410,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		// quickly as possible that a new block has been found. A proper
 		// BlockOutline should follow soon after, allowing peers to obtain the
 		// actual block. As such, we take no action here other than relaying.
-		s.relayV2Header(r.Header, origin) // non-blocking
+		go s.relayV2Header(r.Header, origin) // non-blocking
 		return nil
 
 	case *gateway.RPCRelayV2BlockOutline:
@@ -447,10 +445,8 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 			if err != nil {
 				// log-worthy, but not ban-worthy
 				log.Debug("couldn't retrieve missing transactions from peer", zap.Stringer("blockID", bid), zap.Stringer("origin", origin), zap.Error(err))
-				if os.IsTimeout(err) || errors.Is(err, io.EOF) {
-					// possibly a temporary network issue, try to retrieve the block
-					s.resync(origin, fmt.Sprintf("failed to retrieve missing v2 transactions for block %v from peer %v: %v", bid, origin, err))
-				}
+				// possibly a temporary network issue, try to retrieve the block
+				s.resync(origin, fmt.Sprintf("failed to retrieve missing v2 transactions for block %v from peer %v: %v", bid, origin, err))
 				return nil
 			}
 			b, missing = r.Block.Complete(cs, txns, v2txns)
@@ -484,7 +480,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 			if err != nil {
 				s.log.Debug("received invalid transaction set", zap.Stringer("origin", origin), zap.Error(err))
 			} else {
-				s.relayV2TransactionSet(r.Index, r.Transactions, origin) // non-blocking
+				go s.relayV2TransactionSet(r.Index, r.Transactions, origin) // non-blocking
 			}
 		}
 		return nil

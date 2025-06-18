@@ -341,7 +341,7 @@ func (s *Syncer) runPeer(p *Peer) {
 // fail, it returns the first error encountered. If there are no peers, it returns [ErrNoPeers].
 //
 // The Syncer mutex will be locked while calling fn
-func (s *Syncer) withPeers(origin *Peer, fn func(p *Peer) error, log *zap.Logger) error {
+func (s *Syncer) withPeers(origin *Peer, fn func(p *Peer) error) error {
 	s.mu.Lock()
 	peers := slices.Collect(maps.Values(s.peers))
 	s.mu.Unlock()
@@ -353,11 +353,13 @@ func (s *Syncer) withPeers(origin *Peer, fn func(p *Peer) error, log *zap.Logger
 		}
 		inflight++
 		go func(p *Peer) {
-			err := fn(p)
+			done, err := s.tg.Add()
 			if err != nil {
-				log.Debug("relay failed", zap.String("peer", p.Addr()), zap.Error(err))
+				errCh <- err
+				return
 			}
-			errCh <- err
+			defer done()
+			errCh <- fn(p)
 		}(p)
 	}
 	if inflight == 0 {
@@ -378,29 +380,29 @@ func (s *Syncer) withPeers(origin *Peer, fn func(p *Peer) error, log *zap.Logger
 }
 
 func (s *Syncer) relayHeader(h types.BlockHeader, origin *Peer) error {
-	return s.withPeers(origin, func(p *Peer) error { return p.RelayHeader(h, s.config.RelayHeaderTimeout) }, s.log.Named("relayHeader"))
+	return s.withPeers(origin, func(p *Peer) error { return p.RelayHeader(h, s.config.RelayHeaderTimeout) })
 }
 
 func (s *Syncer) relayTransactionSet(txns []types.Transaction, origin *Peer) error {
 	if len(txns) == 0 {
 		return nil
 	}
-	return s.withPeers(origin, func(p *Peer) error { return p.RelayTransactionSet(txns, s.config.RelayTransactionSetTimeout) }, s.log.Named("relayTransactionSet"))
+	return s.withPeers(origin, func(p *Peer) error { return p.RelayTransactionSet(txns, s.config.RelayTransactionSetTimeout) })
 }
 
 func (s *Syncer) relayV2Header(bh types.BlockHeader, origin *Peer) error {
-	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2Header(bh, s.config.RelayHeaderTimeout) }, s.log.Named("relayV2Header"))
+	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2Header(bh, s.config.RelayHeaderTimeout) })
 }
 
 func (s *Syncer) relayV2BlockOutline(pb gateway.V2BlockOutline, origin *Peer) error {
-	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2BlockOutline(pb, s.config.RelayBlockOutlineTimeout) }, s.log.Named("relayV2BlockOutline"))
+	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2BlockOutline(pb, s.config.RelayBlockOutlineTimeout) })
 }
 
 func (s *Syncer) relayV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction, origin *Peer) error {
 	if len(txns) == 0 {
 		return nil
 	}
-	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2TransactionSet(index, txns, s.config.RelayTransactionSetTimeout) }, s.log.Named("relayV2TransactionSet"))
+	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2TransactionSet(index, txns, s.config.RelayTransactionSetTimeout) })
 }
 
 func (s *Syncer) allowConnect(ctx context.Context, peer string, inbound bool) error {
@@ -486,23 +488,26 @@ func (s *Syncer) acceptLoop(ctx context.Context) error {
 			conn.SetDeadline(time.Now().Add(s.config.ConnectTimeout))
 			if err := s.allowConnect(ctx, conn.RemoteAddr().String(), true); err != nil {
 				s.log.Debug("rejected inbound connection", zap.Stringer("remoteAddress", conn.RemoteAddr()), zap.Error(err))
-			} else if t, err := gateway.Accept(conn, s.header); err != nil {
-				s.log.Debug("failed to accept inbound connection", zap.Stringer("remoteAddress", conn.RemoteAddr()), zap.Error(err))
-			} else if s.alreadyConnected(t.UniqueID) {
-				s.log.Debug("already connected to peer", zap.Stringer("remoteAddress", conn.RemoteAddr()))
-			} else {
-				conn.SetDeadline(time.Time{})
-				p := &Peer{
-					t:        t,
-					ConnAddr: conn.RemoteAddr().String(),
-					Inbound:  true,
-				}
-				if err := s.addPeer(p); err != nil {
-					s.log.Debug("failed to add peer", zap.Stringer("remoteAddress", conn.RemoteAddr()), zap.Error(err))
-				} else {
-					s.runPeer(p)
-				}
+				return
 			}
+
+			t, err := gateway.Accept(conn, s.header)
+			if err != nil || s.alreadyConnected(t.UniqueID) {
+				// note: most likely a timeout or other temp network error.
+				// logging is very noisy
+				return
+			}
+			conn.SetDeadline(time.Time{})
+			p := &Peer{
+				t:        t,
+				ConnAddr: conn.RemoteAddr().String(),
+				Inbound:  true,
+			}
+			if err := s.addPeer(p); err != nil {
+				s.log.Debug("failed to add peer", zap.Stringer("remoteAddress", conn.RemoteAddr()), zap.Error(err))
+				return
+			}
+			s.runPeer(p)
 		}()
 	}
 }
@@ -640,7 +645,7 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 			if err != nil {
 				return err // generally fatal
 			}
-			s.log.Debug("syncing with peer", zap.Stringer("peer", p))
+			log := s.log.Named("syncLoop").With(zap.Stringer("peer", p))
 			oldTip := s.cm.Tip()
 			oldTime := time.Now()
 			var lastPrint time.Time
@@ -661,7 +666,7 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 				}
 				startTime, startHeight = endTime, endHeight
 				if time.Since(lastPrint) > 30*time.Second {
-					s.log.Debug("syncing with peer", zap.Stringer("peer", p), zap.Uint64("blocks", sentBlocks), zap.Duration("elapsed", endTime.Sub(oldTime)))
+					log.Debug("syncing with peer", zap.Stringer("peer", p), zap.Uint64("blocks", sentBlocks), zap.Duration("elapsed", endTime.Sub(oldTime)))
 					lastPrint = time.Now()
 				}
 				return nil
@@ -693,7 +698,7 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 
 			totalBlocks := s.cm.Tip().Height - oldTip.Height
 			if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-				s.log.Debug("syncing with peer failed", zap.Stringer("peer", p), zap.Error(err), zap.Uint64("blocks", totalBlocks))
+				log.Debug("syncing with peer failed", zap.Error(err), zap.Uint64("blocks", totalBlocks))
 				continue
 			} else if err == nil {
 				p.setSynced(true)
@@ -709,9 +714,9 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 			}
 
 			if newTip := s.cm.Tip(); newTip != oldTip {
-				s.log.Debug("finished syncing with peer", zap.Stringer("peer", p), zap.Stringer("newTip", newTip), zap.Uint64("blocks", totalBlocks))
+				log.Debug("finished syncing with peer", zap.Stringer("newTip", newTip), zap.Uint64("blocks", totalBlocks))
 			} else {
-				s.log.Debug("finished syncing with peer, tip unchanged", zap.Stringer("peer", p), zap.Uint64("blocks", sentBlocks))
+				log.Debug("finished syncing with peer, tip unchanged", zap.Uint64("blocks", sentBlocks))
 			}
 		}
 	}
@@ -857,12 +862,12 @@ func New(l net.Listener, cm ChainManager, pm PeerStore, header gateway.Header, o
 	config := config{
 		MaxInboundPeers:            64,
 		MaxOutboundPeers:           16,
-		MaxInflightRPCs:            3,
+		MaxInflightRPCs:            64,
 		ConnectTimeout:             10 * time.Second,
-		RPCTimeout:                 2 * time.Minute,
+		RPCTimeout:                 5 * time.Minute,
 		ShareNodesTimeout:          5 * time.Second,
 		SendBlockTimeout:           60 * time.Second,
-		SendTransactionsTimeout:    60 * time.Second,
+		SendTransactionsTimeout:    3 * time.Minute,
 		RelayHeaderTimeout:         5 * time.Second,
 		RelayBlockOutlineTimeout:   60 * time.Second,
 		RelayTransactionSetTimeout: 60 * time.Second,
