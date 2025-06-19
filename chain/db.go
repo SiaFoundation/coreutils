@@ -604,13 +604,14 @@ func (db *DBStore) putFileContractExpiration(id types.FileContractID, windowEnd 
 }
 
 func (db *DBStore) restoreFileContractExpiration(id types.FileContractID, windowEnd uint64) {
-	// deleteFileContractExpiration deletes via "swap-and-pop", so we need to
-	// store the old position in order to restore it during a revert
 	idx := binary.LittleEndian.Uint32(db.bucket(bFileContractExpirations).getRaw(id[:]))
-	b := db.bucket(bFileContractElements)
 	key := db.encHeight(windowEnd)
-	ids := b.getRaw(key)
-	b.putRaw(key, append(ids[:idx*32], append(id[:], ids[idx*32:]...)...))
+	ids := db.bucket(bFileContractElements).getRaw(key)
+	// invert swap-and-pop
+	ids = append(ids, id[:]...)
+	copy(ids[len(ids)-32:], ids[idx*32:])
+	copy(ids[idx*32:], id[:])
+	db.bucket(bFileContractElements).putRaw(key, ids)
 	db.bucket(bFileContractExpirations).delete(id[:])
 }
 
@@ -626,7 +627,6 @@ func (db *DBStore) deleteFileContractExpiration(id types.FileContractID, windowE
 			// store the position for restoreFileContractExpiration
 			idx := binary.LittleEndian.AppendUint32(nil, uint32(i/32))
 			db.bucket(bFileContractExpirations).putRaw(id[:], idx)
-			i -= 32
 			return
 		}
 	}
