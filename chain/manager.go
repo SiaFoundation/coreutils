@@ -415,8 +415,21 @@ func (m *Manager) reorgTo(index types.ChainIndex) error {
 	m.txpool.medianFee = nil
 	if len(revert) > 0 {
 		b, _, _ := m.store.Block(revert[0].ID)
-		m.txpool.lastReverted = b.Transactions
-		m.txpool.lastRevertedV2 = b.V2Transactions()
+		m.txpool.lastReverted = m.txpool.lastReverted[:0]
+		// prevent coinbase transactions from spamming the pool
+		for _, txn := range b.Transactions {
+			if len(txn.MinerFees) == 0 {
+				continue
+			}
+			m.txpool.lastReverted = append(m.txpool.lastReverted, txn)
+		}
+		m.txpool.lastRevertedV2 = m.txpool.lastRevertedV2[:0]
+		for _, txn := range b.V2Transactions() {
+			if txn.MinerFee.IsZero() {
+				continue
+			}
+			m.txpool.lastRevertedV2 = append(m.txpool.lastRevertedV2, txn)
+		}
 	}
 	return nil
 }
@@ -564,13 +577,18 @@ func (m *Manager) revalidatePool() {
 	m.txpool.weight = 0
 	filtered := m.txpool.txns[:0]
 	for _, txn := range m.txpool.txns {
+		id := txn.ID()
+		if _, ok := m.txpool.indices[id]; ok {
+			// already in the pool
+			continue
+		}
 		ts := m.store.SupplementTipTransaction(txn)
 		if err := consensus.ValidateTransaction(m.txpool.ms, txn, ts); err != nil {
 			log.Debug("dropping invalid pool transaction", zap.Stringer("id", txn.ID()), zap.Error(err))
 			continue
 		}
 		m.txpool.ms.ApplyTransaction(txn, ts)
-		m.txpool.indices[txn.ID()] = len(filtered)
+		m.txpool.indices[id] = len(filtered)
 		m.txpool.weight += m.tipState.TransactionWeight(txn)
 		filtered = append(filtered, txn)
 	}
@@ -579,12 +597,16 @@ func (m *Manager) revalidatePool() {
 	m.txpool.v2txns = append(m.txpool.v2txns, m.txpool.lastRevertedV2...)
 	v2filtered := m.txpool.v2txns[:0]
 	for _, txn := range m.txpool.v2txns {
-		if err := consensus.ValidateV2Transaction(m.txpool.ms, txn); err != nil {
+		id := txn.ID()
+		if _, ok := m.txpool.indices[id]; ok {
+			// already in the pool
+			continue
+		} else if err := consensus.ValidateV2Transaction(m.txpool.ms, txn); err != nil {
 			log.Debug("dropping invalid pool v2 transaction", zap.Stringer("id", txn.ID()), zap.Error(err))
 			continue
 		}
 		m.txpool.ms.ApplyV2Transaction(txn)
-		m.txpool.indices[txn.ID()] = len(v2filtered)
+		m.txpool.indices[id] = len(v2filtered)
 		m.txpool.weight += m.tipState.V2TransactionWeight(txn)
 		v2filtered = append(v2filtered, txn)
 	}
