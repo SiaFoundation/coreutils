@@ -1,3 +1,15 @@
+## 0.16.3 (2025-06-19)
+
+### Features
+
+- Require peers to support V2.
+
+### Fixes
+
+- Increase default MaxInflightRPCs
+- prevent reverted coinbase transactions from spamming the transaction pool
+- Update core to v0.14.0
+
 ## 0.16.2 (2025-06-17)
 
 ### Fixes
