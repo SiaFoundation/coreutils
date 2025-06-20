@@ -861,6 +861,11 @@ func (db *DBStore) SupplementTipBlock(b types.Block) (bs consensus.V1BlockSupple
 		}
 		bs.ExpiringFileContracts = append(bs.ExpiringFileContracts, fce.Move())
 	}
+	// Sort the expiring file contracts lexicographically so the contract payouts
+	// are always the same leaf index
+	sort.Slice(bs.ExpiringFileContracts, func(i, j int) bool {
+		return bytes.Compare(bs.ExpiringFileContracts[i].ID[:], bs.ExpiringFileContracts[j].ID[:]) < 0
+	})
 	return bs
 }
 
