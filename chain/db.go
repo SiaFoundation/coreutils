@@ -864,7 +864,7 @@ func (db *DBStore) OverwriteElements(b types.Block) types.Block {
 	numLeaves := cs.Elements.NumLeaves
 	lib := db.bucket(bLeafIndexes)
 	overwrite := func(id [32]byte, se *types.StateElement) {
-		se.LeafIndex = binary.LittleEndian.Uint64(lib.getRaw(id[:]))
+		se.LeafIndex = binary.BigEndian.Uint64(lib.getRaw(id[:]))
 		se.MerkleProof = db.getElementProof(se.LeafIndex, numLeaves)
 	}
 
