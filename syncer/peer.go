@@ -174,7 +174,8 @@ func (p *Peer) SendCheckpoint(index types.ChainIndex, timeout time.Duration) (ty
 			err = errors.New("checkpoint is not a v2 block")
 		} else if r.Block.ID() != index.ID {
 			err = errors.New("checkpoint has wrong index")
-		} else if r.Block.V2.Commitment != r.State.Commitment(r.Block.MinerPayouts[0].Address, r.Block.Transactions, r.Block.V2Transactions()) {
+		} else if r.Block.V2.Height > r.State.Network.HardforkV2.RequireHeight &&
+			r.Block.V2.Commitment != r.State.Commitment(r.Block.MinerPayouts[0].Address, r.Block.Transactions, r.Block.V2Transactions()) {
 			err = errors.New("checkpoint has wrong commitment")
 		}
 	}
@@ -440,6 +441,12 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		txns, v2txns := s.cm.TransactionsForPartialBlock(r.Block.Missing())
 		b, missing := r.Block.Complete(cs, txns, v2txns)
 		if len(missing) > 0 {
+			// blocks should be complete until require height
+			if b.V2.Height <= s.cm.TipState().Network.HardforkV2.RequireHeight {
+				log.Debug("peer sent v2 block with missing transactions", zap.Stringer("blockID", bid), zap.Stringer("origin", origin))
+				return nil
+			}
+
 			index := types.ChainIndex{Height: r.Block.Height, ID: bid}
 			txns, v2txns, err := origin.SendTransactions(index, missing, s.config.SendTransactionsTimeout)
 			if err != nil {
@@ -464,7 +471,9 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		//
 		// NOTE: crucially, we do NOT exclude any txns we had to request from the
 		// sending peer, since other peers probably don't have them either
-		r.Block.RemoveTransactions(txns, v2txns)
+		if b.V2.Height > s.cm.TipState().Network.HardforkV2.RequireHeight {
+			r.Block.RemoveTransactions(txns, v2txns)
+		}
 		go s.relayV2BlockOutline(r.Block, origin) // non-blocking
 		return nil
 
