@@ -103,6 +103,7 @@ func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 				return errors.New("missing block needed for migration")
 			}
 			bs := dbs.SupplementTipBlock(*b)
+			*b = dbs.OverwriteElements(*b)
 			dbs.putBlock(b.Header(), b, &bs)
 			if err := consensus.ValidateBlock(cs, *b, bs); err != nil && index.Height > 0 {
 				l.Printf("Block %v is invalid (%v), removing it and all subsequent blocks", index, err)
