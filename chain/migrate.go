@@ -50,8 +50,22 @@ func NewZapMigrationLogger(log *zap.Logger) MigrationLogger {
 func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 	version := dbs.bucket(bVersion).getRaw(bVersion)
 	switch version[0] {
-	case 1, 2, 3:
-		l.Printf("Removing sidechain blocks")
+	case 1, 2, 3, 4:
+		// full resync
+		for _, bucket := range [][]byte{
+			bVersion,
+			bMainChain,
+			bStates,
+			bBlocks,
+			bFileContractElements,
+			bSiacoinElements,
+			bSiafundElements,
+			bTree,
+			bLeafIndexes,
+		} {
+			dbs.db.CreateBucket(bucket)
+		}
+		l.Printf("Removing sidechains")
 		toDelete := make(map[types.BlockID]bool)
 		for id := range dbs.db.Bucket(bBlocks).Iter() {
 			toDelete[(types.BlockID)(id)] = true
@@ -65,7 +79,7 @@ func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 			dbs.bucket(bBlocks).delete(id[:])
 			dbs.bucket(bStates).delete(id[:])
 		}
-		l.Printf("Removing block supplement data")
+		l.Printf("Removing element data")
 		for id := range dbs.db.Bucket(bFileContractElements).Iter() {
 			dbs.bucket(bFileContractElements).delete(id)
 		}
@@ -75,16 +89,14 @@ func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 		for id := range dbs.db.Bucket(bSiafundElements).Iter() {
 			dbs.bucket(bSiafundElements).delete(id)
 		}
-		if dbs.shouldFlush() {
-			if err := dbs.Flush(); err != nil {
-				return err
-			}
+		if err := dbs.Flush(); err != nil {
+			return err
 		}
 
 		l.Printf("Recomputing main chain")
-		v1Blocks := min(dbs.getHeight(), n.HardforkV2.RequireHeight) + 1
 		cs := n.GenesisState()
-		for height := range v1Blocks {
+		tipHeight := dbs.getHeight()
+		for height := range tipHeight {
 			index, _ := dbs.BestIndex(height)
 			_, b, _, _ := dbs.getBlock(index.ID)
 			if b == nil {
@@ -92,23 +104,20 @@ func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 			}
 			bs := dbs.SupplementTipBlock(*b)
 			dbs.putBlock(b.Header(), b, &bs)
-			// v2 blocks may be invalid
-			if height >= n.HardforkV2.AllowHeight {
-				if err := consensus.ValidateBlock(cs, *b, bs); err != nil && index.Height > 0 {
-					l.Printf("Block %v is invalid (%v), removing it and all subsequent blocks", index, err)
-					for ; height < v1Blocks; height++ {
-						if index, ok := dbs.BestIndex(height); ok {
-							dbs.bucket(bBlocks).delete(index.ID[:])
-							dbs.bucket(bStates).delete(index.ID[:])
-							if dbs.shouldFlush() {
-								if err := dbs.Flush(); err != nil {
-									return err
-								}
+			if err := consensus.ValidateBlock(cs, *b, bs); err != nil && index.Height > 0 {
+				l.Printf("Block %v is invalid (%v), removing it and all subsequent blocks", index, err)
+				for ; height < tipHeight; height++ {
+					if index, ok := dbs.BestIndex(height); ok {
+						dbs.bucket(bBlocks).delete(index.ID[:])
+						dbs.bucket(bStates).delete(index.ID[:])
+						if dbs.shouldFlush() {
+							if err := dbs.Flush(); err != nil {
+								return err
 							}
 						}
 					}
-					break
 				}
+				break
 			}
 			var cau consensus.ApplyUpdate
 			ancestorTimestamp, _ := dbs.AncestorTimestamp(b.ParentID)
@@ -120,18 +129,18 @@ func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 					return err
 				}
 			}
-			l.SetProgress(99.9 * float64(height) / float64(v1Blocks))
+			l.SetProgress(99.9 * float64(height) / float64(tipHeight))
 		}
 		if err := dbs.Flush(); err != nil {
 			return err
 		}
-		dbs.bucket(bVersion).putRaw(bVersion, []byte{4})
+		dbs.bucket(bVersion).putRaw(bVersion, []byte{5})
 		if err := dbs.Flush(); err != nil {
 			return err
 		}
 		l.SetProgress(100)
 		fallthrough
-	case 4:
+	case 5:
 		// up-to-date
 		return nil
 	default:

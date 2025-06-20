@@ -405,6 +405,7 @@ var (
 	bSiacoinElements      = []byte("SiacoinElements")
 	bSiafundElements      = []byte("SiafundElements")
 	bTree                 = []byte("Tree")
+	bLeafIndexes          = []byte("LeafIndexes")
 
 	keyHeight = []byte("Height")
 )
@@ -556,10 +557,12 @@ func (db *DBStore) getSiacoinElement(id types.SiacoinOutputID, numLeaves uint64)
 func (db *DBStore) putSiacoinElement(sce types.SiacoinElement) {
 	sce.StateElement.MerkleProof = nil
 	db.bucket(bSiacoinElements).put(sce.ID[:], sce.Share())
+	db.bucket(bLeafIndexes).putRaw(sce.ID[:], db.encHeight(sce.StateElement.LeafIndex))
 }
 
 func (db *DBStore) deleteSiacoinElement(id types.SiacoinOutputID) {
 	db.bucket(bSiacoinElements).delete(id[:])
+	db.bucket(bLeafIndexes).delete(id[:])
 }
 
 func (db *DBStore) getSiafundElement(id types.SiafundOutputID, numLeaves uint64) (sfe types.SiafundElement, ok bool) {
@@ -573,10 +576,12 @@ func (db *DBStore) getSiafundElement(id types.SiafundOutputID, numLeaves uint64)
 func (db *DBStore) putSiafundElement(sfe types.SiafundElement) {
 	sfe.StateElement.MerkleProof = nil
 	db.bucket(bSiafundElements).put(sfe.ID[:], sfe.Share())
+	db.bucket(bLeafIndexes).putRaw(sfe.ID[:], db.encHeight(sfe.StateElement.LeafIndex))
 }
 
 func (db *DBStore) deleteSiafundElement(id types.SiafundOutputID) {
 	db.bucket(bSiafundElements).delete(id[:])
+	db.bucket(bLeafIndexes).delete(id[:])
 }
 
 func (db *DBStore) getFileContractElement(id types.FileContractID, numLeaves uint64) (fce types.FileContractElement, ok bool) {
@@ -590,10 +595,20 @@ func (db *DBStore) getFileContractElement(id types.FileContractID, numLeaves uin
 func (db *DBStore) putFileContractElement(fce types.FileContractElement) {
 	fce.StateElement.MerkleProof = nil
 	db.bucket(bFileContractElements).put(fce.ID[:], fce.Share())
+	db.bucket(bLeafIndexes).putRaw(fce.ID[:], db.encHeight(fce.StateElement.LeafIndex))
 }
 
 func (db *DBStore) deleteFileContractElement(id types.FileContractID) {
 	db.bucket(bFileContractElements).delete(id[:])
+	db.bucket(bLeafIndexes).delete(id[:])
+}
+
+func (db *DBStore) putV2FileContractLeafIndex(id types.FileContractID, leafIndex uint64) {
+	db.bucket(bLeafIndexes).putRaw(id[:], db.encHeight(leafIndex))
+}
+
+func (db *DBStore) deleteV2FileContractLeafIndex(id types.FileContractID) {
+	db.bucket(bLeafIndexes).delete(id[:])
 }
 
 func (db *DBStore) putFileContractExpiration(id types.FileContractID, windowEnd uint64, apply bool) {
@@ -680,9 +695,29 @@ func (db *DBStore) applyElements(cau consensus.ApplyUpdate) {
 			db.putFileContractExpiration(fce.ID, fce.FileContract.WindowEnd, true)
 		}
 	}
+	for _, v2fced := range cau.V2FileContractElementDiffs() {
+		v2fce := &v2fced.V2FileContractElement
+		if v2fced.Created && v2fced.Resolution != nil {
+			continue
+		} else if v2fced.Resolution != nil {
+			db.deleteV2FileContractLeafIndex(v2fce.ID)
+		} else {
+			db.putV2FileContractLeafIndex(v2fce.ID, v2fce.StateElement.LeafIndex)
+		}
+	}
 }
 
 func (db *DBStore) revertElements(cru consensus.RevertUpdate) {
+	for _, v2fced := range cru.V2FileContractElementDiffs() {
+		v2fce := &v2fced.V2FileContractElement
+		if v2fced.Created && v2fced.Resolution != nil {
+			continue
+		} else if v2fced.Resolution != nil {
+			db.putV2FileContractLeafIndex(v2fce.ID, v2fce.StateElement.LeafIndex)
+		} else {
+			db.deleteV2FileContractLeafIndex(v2fce.ID)
+		}
+	}
 	for _, fced := range cru.FileContractElementDiffs() {
 		fce := &fced.FileContractElement
 		if fced.Created && fced.Resolved {
@@ -815,6 +850,48 @@ func (db *DBStore) SupplementTipBlock(b types.Block) (bs consensus.V1BlockSupple
 		bs.ExpiringFileContracts = append(bs.ExpiringFileContracts, fce.Move())
 	}
 	return bs
+}
+
+// OverwriteElements implements Store.
+func (db *DBStore) OverwriteElements(b types.Block) types.Block {
+	height := db.getHeight()
+	if b.V2 == nil || height >= db.n.HardforkV2.RequireHeight {
+		return b
+	}
+	// get tip state, for proof-trimming
+	index, _ := db.BestIndex(height)
+	cs, _ := db.State(index.ID)
+	numLeaves := cs.Elements.NumLeaves
+	lib := db.bucket(bLeafIndexes)
+	overwrite := func(id [32]byte, se *types.StateElement) {
+		se.LeafIndex = binary.LittleEndian.Uint64(lib.getRaw(id[:]))
+		se.MerkleProof = db.getElementProof(se.LeafIndex, numLeaves)
+	}
+
+	b2 := b
+	b2.V2 = new(types.V2BlockData)
+	*b2.V2 = *b.V2
+	b2.V2.Transactions = make([]types.V2Transaction, len(b.V2.Transactions))
+	for i := range b.V2.Transactions {
+		txn := b.V2.Transactions[i].DeepCopy()
+		for i := range txn.SiacoinInputs {
+			overwrite(txn.SiacoinInputs[i].Parent.ID, &txn.SiacoinInputs[i].Parent.StateElement)
+		}
+		for i := range txn.SiafundInputs {
+			overwrite(txn.SiafundInputs[i].Parent.ID, &txn.SiafundInputs[i].Parent.StateElement)
+		}
+		for i := range txn.FileContractRevisions {
+			overwrite(txn.FileContractRevisions[i].Parent.ID, &txn.FileContractRevisions[i].Parent.StateElement)
+		}
+		for i := range txn.FileContractResolutions {
+			overwrite(txn.FileContractResolutions[i].Parent.ID, &txn.FileContractResolutions[i].Parent.StateElement)
+			if sp, ok := txn.FileContractResolutions[i].Resolution.(*types.V2StorageProof); ok {
+				overwrite(sp.ProofIndex.ID, &sp.ProofIndex.StateElement)
+			}
+		}
+		b2.V2.Transactions[i] = txn
+	}
+	return b2
 }
 
 // AncestorTimestamp implements Store.
@@ -953,12 +1030,13 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 			bSiacoinElements,
 			bSiafundElements,
 			bTree,
+			bLeafIndexes,
 		} {
 			if _, err := db.CreateBucket(bucket); err != nil {
 				panic(err)
 			}
 		}
-		dbs.bucket(bVersion).putRaw(bVersion, []byte{4})
+		dbs.bucket(bVersion).putRaw(bVersion, []byte{5})
 
 		// store genesis state and apply genesis block to it
 		genesisState := n.GenesisState()
@@ -971,7 +1049,7 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 		if err := dbs.Flush(); err != nil {
 			return nil, consensus.State{}, err
 		}
-	} else if version[0] != 4 {
+	} else if version[0] != 5 {
 		if logger == nil {
 			logger = noopLogger{}
 		}

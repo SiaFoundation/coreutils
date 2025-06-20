@@ -49,6 +49,7 @@ type Store interface {
 	BestIndex(height uint64) (types.ChainIndex, bool)
 	SupplementTipTransaction(txn types.Transaction) consensus.V1TransactionSupplement
 	SupplementTipBlock(b types.Block) consensus.V1BlockSupplement
+	OverwriteElements(b types.Block) types.Block
 
 	Block(id types.BlockID) (types.Block, *consensus.V1BlockSupplement, bool)
 	AddBlock(b types.Block, bs *consensus.V1BlockSupplement)
@@ -309,6 +310,7 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 	} else if bs == nil {
 		bs = new(consensus.V1BlockSupplement)
 		*bs = m.store.SupplementTipBlock(b)
+		b = m.store.OverwriteElements(b)
 		if err := consensus.ValidateBlock(m.tipState, b, *bs); err != nil {
 			m.markBadBlock(index.ID, err)
 			return fmt.Errorf("block %v is invalid: %w", index, err)
