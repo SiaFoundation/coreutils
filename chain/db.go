@@ -611,6 +611,14 @@ func (db *DBStore) deleteV2FileContractLeafIndex(id types.FileContractID) {
 	db.bucket(bLeafIndexes).delete(id[:])
 }
 
+func (db *DBStore) putChainIndexLeafIndex(id types.BlockID, leafIndex uint64) {
+	db.bucket(bLeafIndexes).putRaw(id[:], db.encHeight(leafIndex))
+}
+
+func (db *DBStore) deleteChainIndexLeafIndex(id types.BlockID) {
+	db.bucket(bLeafIndexes).delete(id[:])
+}
+
 func (db *DBStore) putFileContractExpiration(id types.FileContractID, windowEnd uint64, apply bool) {
 	b := db.bucket(bFileContractElements)
 	key := db.encHeight(windowEnd)
@@ -705,9 +713,13 @@ func (db *DBStore) applyElements(cau consensus.ApplyUpdate) {
 			db.putV2FileContractLeafIndex(v2fce.ID, v2fce.StateElement.LeafIndex)
 		}
 	}
+
+	cie := cau.ChainIndexElement()
+	db.putChainIndexLeafIndex(cie.ID, cie.StateElement.LeafIndex)
 }
 
 func (db *DBStore) revertElements(cru consensus.RevertUpdate) {
+	db.deleteChainIndexLeafIndex(cru.ChainIndexElement().ID)
 	for _, v2fced := range cru.V2FileContractElementDiffs() {
 		v2fce := &v2fced.V2FileContractElement
 		if v2fced.Created && v2fced.Resolution != nil {
