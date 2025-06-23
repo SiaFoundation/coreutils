@@ -493,30 +493,6 @@ func (db *DBStore) getAncestorInfo(id types.BlockID) (parentID types.BlockID, ti
 	return
 }
 
-func (db *DBStore) getBlockHeader(id types.BlockID) (bh types.BlockHeader, ok bool) {
-	ok = db.bucket(bBlocks).get(id[:], types.DecoderFunc(func(d *types.Decoder) {
-		v := d.ReadUint8()
-		if v != 2 && v != 3 {
-			d.SetErr(fmt.Errorf("incompatible version (%d)", v))
-			return
-		}
-		if v == 3 {
-			bhp := &bh
-			types.DecodePtr(d, &bhp)
-			if bhp != nil {
-				return
-			} else if !d.ReadBool() {
-				d.SetErr(errors.New("neither header nor block present"))
-				return
-			}
-		}
-		var b types.Block
-		(*types.V2Block)(&b).DecodeFrom(d)
-		bh = b.Header()
-	}))
-	return
-}
-
 func (db *DBStore) treeKey(row, col uint64) []byte {
 	// If we assume that the total number of elements is less than 2^32, we can
 	// pack row and col into one uint32 key. We do this by setting the top 'row'
@@ -609,6 +585,16 @@ func (db *DBStore) putFileContractExpiration(id types.FileContractID, windowEnd 
 	} else {
 		b.putRaw(key, append(id[:], b.getRaw(key)...))
 	}
+}
+
+func (db *DBStore) OverwriteFileContractExpiration(windowEnd uint64, eles []types.FileContractID) {
+	b := db.bucket(bFileContractElements)
+	key := db.encHeight(windowEnd)
+	val := make([]byte, 0, len(eles)*32)
+	for _, id := range eles {
+		val = append(val, id[:]...)
+	}
+	b.putRaw(key, val)
 }
 
 func (db *DBStore) deleteFileContractExpiration(id types.FileContractID, windowEnd uint64) {
