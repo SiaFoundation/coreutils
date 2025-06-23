@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go.sia.tech/core/consensus"
+	"go.sia.tech/core/gateway"
 	"go.sia.tech/core/types"
 )
 
@@ -406,6 +407,7 @@ var (
 	bSiafundElements      = []byte("SiafundElements")
 	bTree                 = []byte("Tree")
 	bLeafIndexes          = []byte("LeafIndexes")
+	bPeerBlocks           = []byte("PeerBlocks")
 
 	keyHeight = []byte("Height")
 )
@@ -965,6 +967,31 @@ func (db *DBStore) AddBlock(b types.Block, bs *consensus.V1BlockSupplement) {
 	db.putBlock(b.Header(), &b, bs)
 }
 
+// PeerBlock implements Store.
+func (db *DBStore) PeerBlock(id types.BlockID) (pb gateway.PeerBlock, ok bool) {
+	ok = db.bucket(bPeerBlocks).get(id[:], &pb)
+	if ok {
+		return pb, true
+	}
+	_, b, _, _ := db.getBlock(id)
+	if b == nil {
+		return pb, false
+	}
+	pb.Block = *b
+	cs, ok := db.State(id)
+	if !ok {
+		return pb, false
+	}
+	pb.StateLeafHash = cs.MerkleLeafHash(b.MinerPayouts[0].Address)
+	return pb, true
+}
+
+// AddPeerBlock implements Store.
+func (db *DBStore) AddPeerBlock(pb gateway.PeerBlock) {
+	id := pb.Block.ID()
+	db.bucket(bPeerBlocks).put(id[:], pb)
+}
+
 // PruneBlock implements Store.
 func (db *DBStore) PruneBlock(id types.BlockID) {
 	if bh, _, _, ok := db.getBlock(id); ok {
@@ -1051,6 +1078,7 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 			bSiafundElements,
 			bTree,
 			bLeafIndexes,
+			bPeerBlocks,
 		} {
 			if _, err := db.CreateBucket(bucket); err != nil {
 				panic(err)

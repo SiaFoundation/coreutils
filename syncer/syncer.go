@@ -33,6 +33,9 @@ type ChainManager interface {
 	Tip() types.ChainIndex
 	TipState() consensus.State
 
+	AddPeerBlocks(blocks []gateway.PeerBlock) error
+	PeerBlocksForHistory(history []types.BlockID, max uint64) ([]gateway.PeerBlock, uint64, error)
+
 	PoolTransaction(txid types.TransactionID) (types.Transaction, bool)
 	AddPoolTransactions(txns []types.Transaction) (bool, error)
 	V2PoolTransaction(txid types.TransactionID) (types.V2Transaction, bool)
@@ -651,8 +654,8 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 			var lastPrint time.Time
 			startTime, startHeight := oldTime, oldTip.Height
 			var sentBlocks uint64
-			addBlocks := func(blocks []types.Block) error {
-				if err := s.cm.AddBlocks(blocks); err != nil {
+			addBlocks := func(blocks []gateway.PeerBlock) error {
+				if err := s.cm.AddPeerBlocks(blocks); err != nil {
 					return err
 				}
 				sentBlocks += uint64(len(blocks))
@@ -692,7 +695,7 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 					} else if rem == 0 {
 						return nil
 					}
-					last = []types.BlockID{blocks[len(blocks)-1].ID()}
+					last = []types.BlockID{blocks[len(blocks)-1].Block.ID()}
 				}
 			}()
 

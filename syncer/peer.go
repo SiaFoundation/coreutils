@@ -202,7 +202,7 @@ func (p *Peer) RelayV2TransactionSet(index types.ChainIndex, txns []types.V2Tran
 // SendV2Blocks requests up to n blocks from p, starting from the most recent
 // element of history known to p. The peer also returns the number of remaining
 // blocks left to sync.
-func (p *Peer) SendV2Blocks(history []types.BlockID, maxBlocks uint64, timeout time.Duration) ([]types.Block, uint64, error) {
+func (p *Peer) SendV2Blocks(history []types.BlockID, maxBlocks uint64, timeout time.Duration) ([]gateway.PeerBlock, uint64, error) {
 	r := &gateway.RPCSendV2Blocks{History: history, Max: maxBlocks}
 	err := p.callRPC(r, timeout)
 	return r.Blocks, r.Remaining, err
@@ -425,7 +425,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 			s.resync(origin, fmt.Sprintf("peer relayed a v2 outline with unknown parent (%v)", r.Block.ParentID))
 			return nil
 		}
-		bid := r.Block.ID(cs)
+		bid := r.Block.ID()
 		if _, ok := s.cm.State(bid); ok {
 			return nil // already seen
 		} else if bid.CmpWork(cs.ChildTarget) < 0 {
@@ -441,7 +441,8 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		// transactions; first, check for them in our txpool; then, if block is
 		// still incomplete, request remaining transactions from the peer
 		txns, v2txns := s.cm.TransactionsForPartialBlock(r.Block.Missing())
-		b, missing := r.Block.Complete(cs, txns, v2txns)
+		pb, missing := r.Block.Complete(cs, txns, v2txns)
+		b := pb.Block
 		if len(missing) > 0 {
 			// blocks should be complete until require height
 			if b.V2.Height <= s.cm.TipState().Network.HardforkV2.RequireHeight {
@@ -458,13 +459,13 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 				s.resync(origin, fmt.Sprintf("failed to retrieve missing v2 transactions for block %v from peer %v: %v", bid, origin, err))
 				return nil
 			}
-			b, missing = r.Block.Complete(cs, txns, v2txns)
+			pb, missing = r.Block.Complete(cs, txns, v2txns)
 			if len(missing) > 0 {
 				// inexcusable
 				return s.ban(origin, errors.New("peer sent wrong missing transactions for a block it relayed"))
 			}
 		}
-		if err := s.cm.AddBlocks([]types.Block{b}); err != nil {
+		if err := s.cm.AddPeerBlocks([]gateway.PeerBlock{pb}); err != nil {
 			return s.ban(origin, err)
 		}
 		log.Debug("added v2 block", zap.Stringer("blockID", bid), zap.Stringer("origin", origin))
@@ -504,7 +505,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		if r.Max > 100 {
 			r.Max = 100
 		}
-		r.Blocks, r.Remaining, err = s.cm.BlocksForHistory(r.History, r.Max)
+		r.Blocks, r.Remaining, err = s.cm.PeerBlocksForHistory(r.History, r.Max)
 		if err != nil {
 			return err
 		} else if err := stream.WriteResponse(r); err != nil {

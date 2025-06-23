@@ -8,7 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"go.sia.tech/core/blake2b"
 	"go.sia.tech/core/consensus"
+	"go.sia.tech/core/gateway"
 	"go.sia.tech/core/types"
 	"go.uber.org/zap"
 	"lukechampine.com/frand"
@@ -57,6 +59,9 @@ type Store interface {
 	State(id types.BlockID) (consensus.State, bool)
 	AddState(cs consensus.State)
 	AncestorTimestamp(id types.BlockID) (time.Time, bool)
+
+	AddPeerBlock(pb gateway.PeerBlock)
+	PeerBlock(id types.BlockID) (gateway.PeerBlock, bool)
 
 	// ApplyBlock and RevertBlock are free to commit whenever they see fit.
 	ApplyBlock(s consensus.State, cau consensus.ApplyUpdate)
@@ -203,6 +208,38 @@ func (m *Manager) BlocksForHistory(history []types.BlockID, maxBlocks uint64) ([
 	return blocks, m.tipState.Index.Height - (attachHeight + maxBlocks), nil
 }
 
+// PeerBlocksForHistory returns up to max consecutive blocks from the best chain,
+// starting from the "attach point" -- the first ID in the history that is
+// present in the best chain (or, if no match is found, genesis). It also
+// returns the number of blocks between the end of the returned slice and the
+// current tip.
+func (m *Manager) PeerBlocksForHistory(history []types.BlockID, maxBlocks uint64) ([]gateway.PeerBlock, uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var attachHeight uint64
+	for _, id := range history {
+		if cs, ok := m.store.State(id); !ok {
+			continue
+		} else if index, ok := m.store.BestIndex(cs.Index.Height); ok && index == cs.Index {
+			attachHeight = cs.Index.Height
+			break
+		}
+	}
+	if maxBlocks > m.tipState.Index.Height-attachHeight {
+		maxBlocks = m.tipState.Index.Height - attachHeight
+	}
+	blocks := make([]gateway.PeerBlock, maxBlocks)
+	for i := range blocks {
+		index, _ := m.store.BestIndex(attachHeight + uint64(i) + 1)
+		pb, ok := m.store.PeerBlock(index.ID)
+		if !ok {
+			return nil, 0, fmt.Errorf("missing block %v", index)
+		}
+		blocks[i] = pb
+	}
+	return blocks, m.tipState.Index.Height - (attachHeight + maxBlocks), nil
+}
+
 // AddBlocks adds a sequence of blocks to a tracked chain. If the blocks are
 // valid, the chain may become the new best chain, triggering a reorg.
 func (m *Manager) AddBlocks(blocks []types.Block) error {
@@ -241,6 +278,96 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 		cs = consensus.ApplyOrphan(cs, b, ancestorTimestamp)
 		m.store.AddState(cs)
 		m.store.AddBlock(b, nil)
+		log.Debug("added block", zap.Uint64("height", cs.Index.Height), zap.Stringer("id", bid))
+	}
+
+	// if this chain is now the best chain, trigger a reorg
+	if cs.SufficientlyHeavierThan(m.tipState) {
+		oldTip := m.tipState.Index
+		log.Debug("reorging to", zap.Stringer("current", oldTip), zap.Stringer("target", cs.Index))
+		if err := m.reorgTo(cs.Index); err != nil {
+			if err := m.reorgTo(oldTip); err != nil {
+				return fmt.Errorf("failed to revert failed reorg: %w", err)
+			}
+			return fmt.Errorf("reorg failed: %w", err)
+		}
+		// release lock while notifying listeners
+		tip := m.tipState.Index
+		fns := make([]func(), 0, len(m.onReorg)+len(m.onPool))
+		for _, fn := range m.onReorg {
+			fns = append(fns, func() { fn(tip) })
+		}
+		for _, fn := range m.onPool {
+			fns = append(fns, fn)
+		}
+		m.mu.Unlock()
+		for _, fn := range fns {
+			fn()
+		}
+		m.mu.Lock()
+	}
+	return nil
+}
+
+// AddPeerBlocks adds a sequence of blocks to a tracked chain. If the blocks are
+// valid, the chain may become the new best chain, triggering a reorg.
+func (m *Manager) AddPeerBlocks(blocks []gateway.PeerBlock) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(blocks) == 0 {
+		return nil
+	}
+
+	log := m.log.Named("AddBlocks")
+
+	cs := m.tipState
+	for _, pb := range blocks {
+		b := pb.Block
+
+		// validate commitment
+		if pb.Block.V2 != nil {
+			var acc blake2b.Accumulator
+			acc.AddLeaf(pb.StateLeafHash)
+			for _, txn := range pb.Block.Transactions {
+				acc.AddLeaf(txn.MerkleLeafHash())
+			}
+			for _, txn := range pb.Block.V2Transactions() {
+				acc.AddLeaf(txn.MerkleLeafHash())
+			}
+			if pb.Block.V2.Commitment != acc.Root() {
+				return errors.New("peer sent v2 block with wrong commitment")
+			}
+		}
+
+		bid := b.ID()
+		var ok bool
+		if err := m.invalidBlocks[bid]; err != nil {
+			return fmt.Errorf("block %v is invalid: %w", types.ChainIndex{Height: cs.Index.Height + 1, ID: bid}, err)
+		} else if cs, ok = m.store.State(bid); ok {
+			// already have this block
+			continue
+		} else if b.ParentID != cs.Index.ID {
+			if cs, ok = m.store.State(b.ParentID); !ok {
+				return fmt.Errorf("missing parent state for block %v", bid)
+			}
+		}
+		if b.Timestamp.After(cs.MaxFutureTimestamp(time.Now())) {
+			return ErrFutureBlock
+		} else if err := consensus.ValidateOrphan(cs, b); err != nil {
+			m.markBadBlock(bid, err)
+			return fmt.Errorf("block %v is invalid: %w", types.ChainIndex{Height: cs.Index.Height + 1, ID: bid}, err)
+		}
+		ancestorTimestamp, ok := m.store.AncestorTimestamp(b.ParentID)
+		if !ok {
+			return fmt.Errorf("missing ancestor timestamp for block %v", b.ParentID)
+		}
+		cs = consensus.ApplyOrphan(cs, b, ancestorTimestamp)
+		m.store.AddState(cs)
+		m.store.AddBlock(b, nil)
+		if cs.Index.Height >= cs.Network.HardforkV2.AllowHeight &&
+			cs.Index.Height <= cs.Network.HardforkV2.RequireHeight {
+			m.store.AddPeerBlock(pb)
+		}
 		log.Debug("added block", zap.Uint64("height", cs.Index.Height), zap.Stringer("id", bid))
 	}
 

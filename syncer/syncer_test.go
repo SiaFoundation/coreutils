@@ -53,7 +53,7 @@ func TestSyncer(t *testing.T) {
 
 	// mine a few blocks on cm1
 	testutil.MineBlocks(t, cm1, types.VoidAddress, 10)
-	// mine less blocks on cm2
+	// mine fewer blocks on cm2
 	testutil.MineBlocks(t, cm2, types.VoidAddress, 5)
 
 	if cm1.Tip().Height != 10 {

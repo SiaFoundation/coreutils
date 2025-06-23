@@ -62,6 +62,7 @@ func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 			bSiafundElements,
 			bTree,
 			bLeafIndexes,
+			bPeerBlocks,
 		} {
 			dbs.db.CreateBucket(bucket)
 		}
