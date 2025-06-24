@@ -76,6 +76,7 @@ func main() {
 		updateFrequency time.Duration
 		pruneTarget     uint64
 		logLevel        zap.AtomicLevel
+		cleanup         bool
 	)
 
 	flag.StringVar(&githubRef, "github.ref", "", "GitHub ref for logging purposes")
@@ -83,8 +84,9 @@ func main() {
 	flag.StringVar(&dir, "dir", ".", "Directory to sync")
 	flag.StringVar(&tipURL, "tip.url", "", "Tip URL to sync to")
 	flag.DurationVar(&updateFrequency, "update.frequency", 10*time.Minute, "the time to wait for an update before failing")
-	flag.Uint64Var(&pruneTarget, "prune.target", 144*365, "the target number of blocks to keep")
+	flag.Uint64Var(&pruneTarget, "prune.target", 0, "the target number of blocks to keep")
 	flag.TextVar(&logLevel, "log.level", zap.NewAtomicLevelAt(zap.InfoLevel), "log level")
+	flag.BoolVar(&cleanup, "cleanup", false, "cleanup the directory after syncing")
 	flag.Parse()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -112,7 +114,6 @@ func main() {
 	}
 
 	cfg := zap.NewProductionEncoderConfig()
-	cfg.TimeKey = "" // prevent duplicate timestamps
 	cfg.EncodeTime = zapcore.RFC3339TimeEncoder
 	cfg.EncodeDuration = zapcore.StringDurationEncoder
 	cfg.EncodeLevel = zapcore.CapitalColorLevelEncoder
@@ -124,9 +125,18 @@ func main() {
 	log := zap.New(zapcore.NewCore(encoder, zapcore.Lock(os.Stdout), logLevel))
 	defer log.Sync()
 
-	zap.RedirectStdLog(log)
-
+	if githubRef == "" {
+		meta, err := getGitMeta()
+		if err != nil {
+			log.Panic("failed to get git meta", zap.Error(err))
+		} else if meta.Tag != "" {
+			githubRef = meta.Tag
+		} else if meta.ShortCommit != "" {
+			githubRef = meta.ShortCommit
+		}
+	}
 	log = log.With(zap.String("commit", githubRef))
+	zap.RedirectStdLog(log)
 
 	dbPath := filepath.Join(dir, "consensus.db")
 	db, err := coreutils.OpenBoltChainDB(dbPath)
@@ -134,9 +144,11 @@ func main() {
 		log.Panic("failed to open db", zap.Error(err))
 	}
 	defer db.Close()
-	defer func() {
-		os.Remove(dbPath)
-	}()
+	if cleanup {
+		defer func() {
+			os.Remove(dbPath)
+		}()
+	}
 
 	store, tipState, err := chain.NewDBStore(db, n, genesis, chain.NewZapMigrationLogger(log.Named("migrate")))
 	if err != nil {
