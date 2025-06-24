@@ -587,16 +587,25 @@ func (db *DBStore) putFileContractExpiration(id types.FileContractID, windowEnd 
 	}
 }
 
-// OverwriteFileContractExpiration overwrites the expiring file contracts at the
-// given windowEnd height with the provided elements.
-func (db *DBStore) OverwriteFileContractExpiration(windowEnd uint64, contractIDs []types.FileContractID) {
-	b := db.bucket(bFileContractElements)
-	key := db.encHeight(windowEnd)
-	val := make([]byte, 0, len(contractIDs)*32)
-	for _, id := range contractIDs {
-		val = append(val, id[:]...)
+// ExpiringFileContractIDs returns the expiring file contract IDs at the given height.
+func (db *DBStore) ExpiringFileContractIDs(height uint64) []types.FileContractID {
+	buf := db.bucket(bFileContractElements).getRaw(db.encHeight(height))
+	ids := make([]types.FileContractID, 0, len(buf)/32)
+	for i := 0; i < len(buf); i += 32 {
+		ids = append(ids, (types.FileContractID)(buf[i:]))
 	}
-	b.putRaw(key, val)
+	return ids
+}
+
+// OverwriteExpiringFileContractIDs overwrites the expiring file contract IDs at the given height.
+// This should not be called unless the IDs are known to be correct, as it will overwrite
+// any existing IDs at that height.
+func (db *DBStore) OverwriteExpiringFileContractIDs(height uint64, ids []types.FileContractID) {
+	buf := make([]byte, len(ids)*32)
+	for i, id := range ids {
+		copy(buf[i*32:], id[:])
+	}
+	db.bucket(bFileContractElements).putRaw(db.encHeight(height), buf)
 }
 
 func (db *DBStore) deleteFileContractExpiration(id types.FileContractID, windowEnd uint64) {
