@@ -57,8 +57,6 @@ type Store interface {
 	AddState(cs consensus.State)
 	AncestorTimestamp(id types.BlockID) (time.Time, bool)
 
-	OverwriteFileContractExpiration(windowEnd uint64, contractIDs []types.FileContractID)
-
 	// ApplyBlock and RevertBlock are free to commit whenever they see fit.
 	ApplyBlock(s consensus.State, cau consensus.ApplyUpdate)
 	RevertBlock(s consensus.State, cru consensus.RevertUpdate)
@@ -84,11 +82,12 @@ func blockAndChild(s Store, id types.BlockID) (types.Block, *consensus.V1BlockSu
 // A Manager tracks multiple blockchains and identifies the best valid
 // chain.
 type Manager struct {
-	store         Store
-	tipState      consensus.State
-	onReorg       map[[16]byte]func(types.ChainIndex)
-	onPool        map[[16]byte]func()
-	invalidBlocks map[types.BlockID]error
+	store                      Store
+	tipState                   consensus.State
+	onReorg                    map[[16]byte]func(types.ChainIndex)
+	onPool                     map[[16]byte]func()
+	invalidBlocks              map[types.BlockID]error
+	expiringFileContractOrders map[types.BlockID][]types.FileContractID
 
 	// configuration options
 	log         *zap.Logger
@@ -300,83 +299,8 @@ func (m *Manager) revertTip() error {
 	return nil
 }
 
-func (m *Manager) reorderContractExpirations(target types.Block) error {
-	parent, bs, ok := m.store.Block(target.ParentID)
-	if !ok {
-		return fmt.Errorf("%w %v", ErrMissingBlock, types.ChainIndex{ID: target.ParentID})
-	} else if len(bs.ExpiringFileContracts) < 2 {
-		return consensus.ErrCommitmentMismatch // re-return the original error
-	}
-	cs, ok := m.store.State(parent.ParentID)
-	if !ok {
-		return fmt.Errorf("missing parent state for block %v", parent.ParentID)
-	}
-	ancestorTimestamp, ok := m.store.AncestorTimestamp(parent.ParentID)
-	if !ok {
-		return fmt.Errorf("missing ancestor timestamp for block %v", parent.ParentID)
-	}
-	// try all permutations of the expiring file contracts, and apply the first one that
-	// doesn't result in a commitment mismatch.
-	var correctState consensus.State
-	tryPermutation := func(fces []types.FileContractElement) ([]types.FileContractID, bool) {
-		var permute func(i int) bool
-		permute = func(i int) bool {
-			if i == len(fces)-1 {
-				trySupplement := *bs
-				trySupplement.ExpiringFileContracts = make([]types.FileContractElement, len(fces))
-				copy(trySupplement.ExpiringFileContracts, fces)
-				tryState, _ := consensus.ApplyBlock(cs, parent, trySupplement, ancestorTimestamp)
-				hash := tryState.Commitment(target.MinerPayouts[0].Address, target.Transactions, target.V2Transactions())
-				if target.V2.Commitment == hash {
-					correctState = tryState
-					return true // found a valid permutation
-				}
-			}
-			for j := i; j < len(fces); j++ {
-				fces[i], fces[j] = fces[j], fces[i]
-				if permute(i + 1) {
-					return true
-				}
-				fces[i], fces[j] = fces[j], fces[i]
-			}
-			return false
-		}
-		if !permute(0) {
-			return nil, false
-		}
-		order := make([]types.FileContractID, len(bs.ExpiringFileContracts))
-		for i, ele := range bs.ExpiringFileContracts {
-			order[i] = ele.ID
-		}
-		return order, true
-	}
-
-	m.log.Debug("reordering contract expirations", zap.Any("block", parent))
-	order, ok := tryPermutation(bs.ExpiringFileContracts)
-	if !ok {
-		m.log.Debug("couldn't reorder contract expirations", zap.Any("block", parent), zap.Int("count", len(bs.ExpiringFileContracts)))
-		return consensus.ErrCommitmentMismatch
-	}
-	// revert the tip
-	if err := m.revertTip(); err != nil {
-		return fmt.Errorf("couldn't revert tip after reordering contract expirations for block %v: %w", parent, err)
-	}
-	// overwrite the ordering
-	m.store.OverwriteFileContractExpiration(parent.V2.Height, order)
-	*bs = m.store.SupplementTipBlock(parent)
-	m.store.AddBlock(parent, bs)
-	m.store.AddState(correctState)
-	// re-apply the tip
-	if err := m.applyTip(correctState.Index); err != nil {
-		return fmt.Errorf("couldn't re-apply tip after reordering contract expirations for block %v: %w", parent, err)
-	}
-	m.log.Debug("fixed contract expirations", zap.Stringers("order", order))
-	return nil
-}
-
 // applyTip adds a block to the current tip.
 func (m *Manager) applyTip(index types.ChainIndex) error {
-	requireHeight := m.tipState.Network.HardforkV2.RequireHeight
 	var cau consensus.ApplyUpdate
 	b, bs, cs, ok := blockAndChild(m.store, index.ID)
 	if !ok {
@@ -386,17 +310,23 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 	} else if bs == nil {
 		bs = new(consensus.V1BlockSupplement)
 		*bs = m.store.SupplementTipBlock(b)
-		if err := consensus.ValidateBlock(m.tipState, b, *bs); errors.Is(err, consensus.ErrCommitmentMismatch) && index.Height < requireHeight && b.V2 != nil {
-			if err := m.reorderContractExpirations(b); err != nil {
-				return fmt.Errorf("couldn't reorder contract expirations for block %v: %w", index, err)
+		if order, ok := m.expiringFileContractOrders[index.ID]; ok {
+			if len(bs.ExpiringFileContracts) != len(order) {
+				return fmt.Errorf("expiring file contract order length mismatch in block %v: expected %d, got %d", index, len(order), len(bs.ExpiringFileContracts))
 			}
-			// try again
-			*bs = m.store.SupplementTipBlock(b)
-			if err := consensus.ValidateBlock(m.tipState, b, *bs); err != nil {
-				m.markBadBlock(index.ID, err)
-				return fmt.Errorf("block %v is invalid: %w", index, err)
+			elements := make(map[types.FileContractID]types.FileContractElement)
+			for _, fce := range bs.ExpiringFileContracts {
+				elements[fce.ID] = fce
 			}
-		} else if err != nil {
+			for _, fcID := range order {
+				if fce, ok := elements[fcID]; ok {
+					bs.ExpiringFileContracts = append(bs.ExpiringFileContracts, fce)
+				} else {
+					return fmt.Errorf("missing expiring file contract %v in block %v", fcID, index)
+				}
+			}
+		}
+		if err := consensus.ValidateBlock(m.tipState, b, *bs); err != nil {
 			m.markBadBlock(index.ID, err)
 			return fmt.Errorf("block %v is invalid: %w", index, err)
 		}
