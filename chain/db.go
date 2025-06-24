@@ -587,11 +587,13 @@ func (db *DBStore) putFileContractExpiration(id types.FileContractID, windowEnd 
 	}
 }
 
-func (db *DBStore) OverwriteFileContractExpiration(windowEnd uint64, eles []types.FileContractID) {
+// OverwriteFileContractExpiration overwrites the expiring file contracts at the
+// given windowEnd height with the provided elements.
+func (db *DBStore) OverwriteFileContractExpiration(windowEnd uint64, contractIDs []types.FileContractID) {
 	b := db.bucket(bFileContractElements)
 	key := db.encHeight(windowEnd)
-	val := make([]byte, 0, len(eles)*32)
-	for _, id := range eles {
+	val := make([]byte, 0, len(contractIDs)*32)
+	for _, id := range contractIDs {
 		val = append(val, id[:]...)
 	}
 	b.putRaw(key, val)
