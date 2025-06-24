@@ -57,7 +57,7 @@ type Store interface {
 	AddState(cs consensus.State)
 	AncestorTimestamp(id types.BlockID) (time.Time, bool)
 
-	OverwriteFileContractExpiration(windowEnd uint64, eles []types.FileContractID)
+	OverwriteFileContractExpiration(windowEnd uint64, contractIDs []types.FileContractID)
 
 	// ApplyBlock and RevertBlock are free to commit whenever they see fit.
 	ApplyBlock(s consensus.State, cau consensus.ApplyUpdate)
@@ -318,13 +318,13 @@ func (m *Manager) reorderContractExpirations(target types.Block) error {
 	// try all permutations of the expiring file contracts, and apply the first one that
 	// doesn't result in a commitment mismatch.
 	var correctState consensus.State
-	tryPermutation := func(eles []types.FileContractElement) ([]types.FileContractID, bool) {
+	tryPermutation := func(fces []types.FileContractElement) ([]types.FileContractID, bool) {
 		var permute func(i int) bool
 		permute = func(i int) bool {
-			if i == len(eles)-1 {
+			if i == len(fces)-1 {
 				trySupplement := *bs
-				trySupplement.ExpiringFileContracts = make([]types.FileContractElement, len(eles))
-				copy(trySupplement.ExpiringFileContracts, eles)
+				trySupplement.ExpiringFileContracts = make([]types.FileContractElement, len(fces))
+				copy(trySupplement.ExpiringFileContracts, fces)
 				tryState, _ := consensus.ApplyBlock(cs, parent, trySupplement, ancestorTimestamp)
 				hash := tryState.Commitment(target.MinerPayouts[0].Address, target.Transactions, target.V2Transactions())
 				if target.V2.Commitment == hash {
@@ -332,12 +332,12 @@ func (m *Manager) reorderContractExpirations(target types.Block) error {
 					return true // found a valid permutation
 				}
 			}
-			for j := i; j < len(eles); j++ {
-				eles[i], eles[j] = eles[j], eles[i]
+			for j := i; j < len(fces); j++ {
+				fces[i], fces[j] = fces[j], fces[i]
 				if permute(i + 1) {
 					return true
 				}
-				eles[i], eles[j] = eles[j], eles[i]
+				fces[i], fces[j] = fces[j], fces[i]
 			}
 			return false
 		}
