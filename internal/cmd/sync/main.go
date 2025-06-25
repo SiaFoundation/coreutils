@@ -155,6 +155,7 @@ func main() {
 		log.Panic("failed to create store", zap.Error(err))
 	}
 	cm := chain.NewManager(store, tipState, chain.WithLog(log.Named("chain")), chain.WithPruneTarget(pruneTarget))
+	log = log.With(zap.Stringer("start", cm.Tip()))
 
 	l, err := net.Listen("tcp", ":0")
 	if err != nil {
