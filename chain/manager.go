@@ -3,6 +3,7 @@ package chain
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"sync"
@@ -57,6 +58,9 @@ type Store interface {
 	AddState(cs consensus.State)
 	AncestorTimestamp(id types.BlockID) (time.Time, bool)
 
+	ExpiringFileContractIDs(height uint64) []types.FileContractID
+	OverwriteExpiringFileContractIDs(height uint64, ids []types.FileContractID)
+
 	// ApplyBlock and RevertBlock are free to commit whenever they see fit.
 	ApplyBlock(s consensus.State, cau consensus.ApplyUpdate)
 	RevertBlock(s consensus.State, cru consensus.RevertUpdate)
@@ -82,12 +86,12 @@ func blockAndChild(s Store, id types.BlockID) (types.Block, *consensus.V1BlockSu
 // A Manager tracks multiple blockchains and identifies the best valid
 // chain.
 type Manager struct {
-	store                      Store
-	tipState                   consensus.State
-	onReorg                    map[[16]byte]func(types.ChainIndex)
-	onPool                     map[[16]byte]func()
-	invalidBlocks              map[types.BlockID]error
-	expiringFileContractOrders map[types.BlockID][]types.FileContractID
+	store                     Store
+	tipState                  consensus.State
+	onReorg                   map[[16]byte]func(types.ChainIndex)
+	onPool                    map[[16]byte]func()
+	invalidBlocks             map[types.BlockID]error
+	expiringFileContractOrder map[types.BlockID][]types.FileContractID
 
 	// configuration options
 	log         *zap.Logger
@@ -301,6 +305,28 @@ func (m *Manager) revertTip() error {
 
 // applyTip adds a block to the current tip.
 func (m *Manager) applyTip(index types.ChainIndex) error {
+	overwriteExpirations := func(bs *consensus.V1BlockSupplement) error {
+		order, ok := m.expiringFileContractOrder[index.ID]
+		if !ok {
+			return nil
+		}
+		if len(bs.ExpiringFileContracts) != len(order) {
+			return fmt.Errorf("expiring file contract order length mismatch in block %v: expected %d, got %d", index, len(order), len(bs.ExpiringFileContracts))
+		}
+		elements := make(map[types.FileContractID]types.FileContractElement)
+		for _, fce := range bs.ExpiringFileContracts {
+			elements[fce.ID] = fce
+		}
+		bs.ExpiringFileContracts = bs.ExpiringFileContracts[:0]
+		for _, fcID := range order {
+			if fce, ok := elements[fcID]; ok {
+				bs.ExpiringFileContracts = append(bs.ExpiringFileContracts, fce)
+			} else {
+				return fmt.Errorf("missing expiring file contract %v in block %v", fcID, index)
+			}
+		}
+		return nil
+	}
 	var cau consensus.ApplyUpdate
 	b, bs, cs, ok := blockAndChild(m.store, index.ID)
 	if !ok {
@@ -310,23 +336,9 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 	} else if bs == nil {
 		bs = new(consensus.V1BlockSupplement)
 		*bs = m.store.SupplementTipBlock(b)
-		if order, ok := m.expiringFileContractOrders[index.ID]; ok {
-			if len(bs.ExpiringFileContracts) != len(order) {
-				return fmt.Errorf("expiring file contract order length mismatch in block %v: expected %d, got %d", index, len(order), len(bs.ExpiringFileContracts))
-			}
-			elements := make(map[types.FileContractID]types.FileContractElement)
-			for _, fce := range bs.ExpiringFileContracts {
-				elements[fce.ID] = fce
-			}
-			for _, fcID := range order {
-				if fce, ok := elements[fcID]; ok {
-					bs.ExpiringFileContracts = append(bs.ExpiringFileContracts, fce)
-				} else {
-					return fmt.Errorf("missing expiring file contract %v in block %v", fcID, index)
-				}
-			}
-		}
-		if err := consensus.ValidateBlock(m.tipState, b, *bs); err != nil {
+		if err := overwriteExpirations(bs); err != nil {
+			return fmt.Errorf("failed to overwrite expiring file contract order in block %v: %w", index, err)
+		} else if err := consensus.ValidateBlock(m.tipState, b, *bs); err != nil {
 			m.markBadBlock(index.ID, err)
 			return fmt.Errorf("block %v is invalid: %w", index, err)
 		}
@@ -341,8 +353,11 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 		ancestorTimestamp, ok := m.store.AncestorTimestamp(b.ParentID)
 		if !ok {
 			return fmt.Errorf("missing ancestor timestamp for block %v", b.ParentID)
+		} else if err := overwriteExpirations(bs); err != nil {
+			return fmt.Errorf("failed to overwrite expiring file contract order in block %v: %w", index, err)
 		}
-		_, cau = consensus.ApplyBlock(m.tipState, b, *bs, ancestorTimestamp)
+		cs, cau = consensus.ApplyBlock(m.tipState, b, *bs, ancestorTimestamp)
+		m.store.AddState(cs)
 	}
 
 	m.store.ApplyBlock(cs, cau)
@@ -1338,6 +1353,49 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 	return false, nil
 }
 
+// ExpiringFileContractIDs returns the expiring file contract IDs at the given height.
+func (m *Manager) ExpiringFileContractIDs(height uint64) []types.FileContractID {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.store.ExpiringFileContractIDs(height)
+}
+
+// OverwriteExpiringFileContractIDs overwrites the expiring file contract IDs at the given height.
+// This should not be called unless the IDs are known to be correct, as it will overwrite
+// any existing IDs at that height.
+func (m *Manager) OverwriteExpiringFileContractIDs(height uint64, ids []types.FileContractID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	expiring := m.store.ExpiringFileContractIDs(height)
+	if slices.Equal(expiring, ids) {
+		return nil // nothing to do
+	} else if len(expiring) != len(ids) {
+		return errors.New("cannot overwrite expiring file contract IDs with a different length")
+	}
+
+	// ensure the IDs match the existing ones
+	known := make(map[types.FileContractID]bool, len(expiring))
+	for _, id := range expiring {
+		known[id] = true
+	}
+	for _, id := range ids {
+		if !known[id] {
+			return fmt.Errorf("cannot overwrite expiring file contract IDs with a different set: %v not found", id)
+		}
+		delete(known, id)
+	}
+	if len(known) > 0 {
+		return fmt.Errorf("cannot overwrite expiring file contract IDs with a different set: %v not found", slices.Collect(maps.Keys(known)))
+	}
+
+	if err := m.revertTip(); err != nil {
+		return fmt.Errorf("failed to revert tip before overwriting expiring file contract IDs: %w", err)
+	}
+	m.store.OverwriteExpiringFileContractIDs(height, ids)
+	return nil
+}
+
 // NewManager returns a Manager initialized with the provided Store and State.
 func NewManager(store Store, cs consensus.State, opts ...ManagerOption) *Manager {
 	m := &Manager{
@@ -1347,6 +1405,8 @@ func NewManager(store Store, cs consensus.State, opts ...ManagerOption) *Manager
 		onReorg:       make(map[[16]byte]func(types.ChainIndex)),
 		onPool:        make(map[[16]byte]func()),
 		invalidBlocks: make(map[types.BlockID]error),
+
+		expiringFileContractOrder: defaultExpiringFileContractOrder,
 	}
 	m.txpool.indices = make(map[types.TransactionID]int)
 	for _, opt := range opts {

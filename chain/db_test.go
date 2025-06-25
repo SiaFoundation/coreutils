@@ -3,6 +3,7 @@ package chain_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"math/bits"
 	"reflect"
 	"testing"
@@ -200,6 +201,7 @@ func TestReorgExpiringFileContractOrder(t *testing.T) {
 	giftUTXOID = formationTxn.SiacoinOutputID(0)
 	giftAmount = formationTxn.SiacoinOutputs[0].Value
 
+	contractA := formationTxn.FileContractID(0)
 	contractB := formationTxn.FileContractID(1)
 	contractC := formationTxn.FileContractID(2)
 
@@ -229,6 +231,7 @@ func TestReorgExpiringFileContractOrder(t *testing.T) {
 	}
 	// Block 2: one extra contract (D) with the same WindowEnd.
 	testutil.MineBlocks(t, cm1, types.VoidAddress, 1)
+	contractD := formationTxn2.FileContractID(0)
 
 	proofTxn := types.Transaction{
 		// Missed‑proof outputs spend the contracts without needing
@@ -241,36 +244,78 @@ func TestReorgExpiringFileContractOrder(t *testing.T) {
 	if _, err = cm1.AddPoolTransactions([]types.Transaction{proofTxn}); err != nil {
 		t.Fatal(err)
 	}
-	// Block 3: Submit storage proofs contracts B and C. They are now in the
-	// middle of the slice (A B C D) when the deletions occur.
+	// Block 3: Submit storage proofs contracts B and C. The remaining
+	// contracts are (A D).
 	testutil.MineBlocks(t, cm1, types.VoidAddress, 1)
 
-	// Reorg: revert the storage proof transaction
+	// revert and reapply the block
 	if err := cm1.ForceRevertTip(); err != nil {
 		t.Fatal(err)
 	}
 	testutil.MineBlocks(t, cm1, types.VoidAddress, 1)
 
 	// mine one block past contract expiration
-	for i := cm1.Tip().Height; i <= 6; i++ {
+	for i := cm1.Tip().Height; i <= 6+1; i++ {
 		testutil.MineBlocks(t, cm1, types.VoidAddress, 1)
 	}
+
+	expirationIndex, ok := cm1.BestIndex(6)
+	if !ok {
+		t.Fatal("expected to find index at height 6")
+	}
+	_, bs, ok := db1.Block(expirationIndex.ID)
+	if !ok {
+		t.Fatal("expected to find block at height 6")
+	}
+	fces := bs.ExpiringFileContracts
+	t.Log(fces)
 
 	_, applied, err := cm1.UpdatesSince(types.ChainIndex{}, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
+	blocks := make([]types.Block, 0, len(applied))
+	for _, cau := range applied {
+		blocks = append(blocks, cau.Block)
+	}
+
 	db2, ts2, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cm2 := chain.NewManager(db2, ts2)
 
-	blocks := make([]types.Block, 0, len(applied))
-	for _, cau := range applied {
-		blocks = append(blocks, cau.Block)
+	// applying the blocks should fail because the expiring file contract
+	// order is not the same because of the missing revert.
+	if err := cm2.AddBlocks(blocks); !errors.Is(err, consensus.ErrCommitmentMismatch) {
+		t.Fatalf("expected %q, got %q", consensus.ErrCommitmentMismatch, err)
 	}
+
+	// reinit the chain manager with the correct expiring contract order
+	cm2 = chain.NewManager(db2, ts2, chain.WithExpiringContractOrder(map[types.BlockID][]types.FileContractID{
+		expirationIndex.ID: {
+			contractD,
+			contractA,
+		},
+	}))
+	// applying the blocks should succeed because the ordering is overwritten
 	if err := cm2.AddBlocks(blocks); err != nil {
+		t.Fatal(err)
+	}
+
+	// init a fresh chain manager with the correct expiring contract order
+	db3, ts3, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm3 := chain.NewManager(db3, ts3, chain.WithExpiringContractOrder(map[types.BlockID][]types.FileContractID{
+		expirationIndex.ID: {
+			contractD,
+			contractA,
+		},
+	}))
+	// applying the blocks should succeed because the ordering is overwritten
+	if err := cm3.AddBlocks(blocks); err != nil {
 		t.Fatal(err)
 	}
 
@@ -284,9 +329,18 @@ func TestReorgExpiringFileContractOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cs3 := cm3.TipState()
+	json3, err := json.Marshal(cs3)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !bytes.Equal(json1, json2) {
 		t.Log(string(json1))
 		t.Log(string(json2))
 		t.Fatal("expected the chain states to be equal after reorg")
+	} else if !bytes.Equal(json1, json3) {
+		t.Log(string(json1))
+		t.Log(string(json3))
+		t.Fatal("expected the chain states to be equal after reorg with new manager")
 	}
 }
