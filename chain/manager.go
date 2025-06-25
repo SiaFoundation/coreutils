@@ -290,6 +290,30 @@ func (m *Manager) markBadBlock(bid types.BlockID, err error) {
 	m.invalidBlocks[bid] = err
 }
 
+func (m *Manager) overwriteExpirations(b types.Block, bs *consensus.V1BlockSupplement) error {
+	order, ok := m.expiringFileContractOrder[b.ID()]
+	if !ok {
+		return nil
+	}
+	if len(bs.ExpiringFileContracts) != len(order) {
+		return fmt.Errorf("expiring file contract order length mismatch in block %v: expected %d, got %d", b.ID(), len(order), len(bs.ExpiringFileContracts))
+	}
+	elements := make(map[types.FileContractID]types.FileContractElement)
+	for _, fce := range bs.ExpiringFileContracts {
+		elements[fce.ID] = fce
+	}
+	bs.ExpiringFileContracts = bs.ExpiringFileContracts[:0]
+	for _, fcID := range order {
+		if fce, ok := elements[fcID]; ok {
+			bs.ExpiringFileContracts = append(bs.ExpiringFileContracts, fce)
+		} else {
+			return fmt.Errorf("missing expiring file contract %v in block %v", fcID, b.ID())
+		}
+	}
+	m.store.AddBlock(b, bs)
+	return nil
+}
+
 // revertTip reverts the current tip.
 func (m *Manager) revertTip() error {
 	b, bs, cs, ok := blockAndParent(m.store, m.tipState.Index.ID)
@@ -305,28 +329,6 @@ func (m *Manager) revertTip() error {
 
 // applyTip adds a block to the current tip.
 func (m *Manager) applyTip(index types.ChainIndex) error {
-	overwriteExpirations := func(bs *consensus.V1BlockSupplement) error {
-		order, ok := m.expiringFileContractOrder[index.ID]
-		if !ok {
-			return nil
-		}
-		if len(bs.ExpiringFileContracts) != len(order) {
-			return fmt.Errorf("expiring file contract order length mismatch in block %v: expected %d, got %d", index, len(order), len(bs.ExpiringFileContracts))
-		}
-		elements := make(map[types.FileContractID]types.FileContractElement)
-		for _, fce := range bs.ExpiringFileContracts {
-			elements[fce.ID] = fce
-		}
-		bs.ExpiringFileContracts = bs.ExpiringFileContracts[:0]
-		for _, fcID := range order {
-			if fce, ok := elements[fcID]; ok {
-				bs.ExpiringFileContracts = append(bs.ExpiringFileContracts, fce)
-			} else {
-				return fmt.Errorf("missing expiring file contract %v in block %v", fcID, index)
-			}
-		}
-		return nil
-	}
 	var cau consensus.ApplyUpdate
 	b, bs, cs, ok := blockAndChild(m.store, index.ID)
 	if !ok {
@@ -336,7 +338,7 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 	} else if bs == nil {
 		bs = new(consensus.V1BlockSupplement)
 		*bs = m.store.SupplementTipBlock(b)
-		if err := overwriteExpirations(bs); err != nil {
+		if err := m.overwriteExpirations(b, bs); err != nil {
 			return fmt.Errorf("failed to overwrite expiring file contract order in block %v: %w", index, err)
 		} else if err := consensus.ValidateBlock(m.tipState, b, *bs); err != nil {
 			m.markBadBlock(index.ID, err)
@@ -353,7 +355,7 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 		ancestorTimestamp, ok := m.store.AncestorTimestamp(b.ParentID)
 		if !ok {
 			return fmt.Errorf("missing ancestor timestamp for block %v", b.ParentID)
-		} else if err := overwriteExpirations(bs); err != nil {
+		} else if err := m.overwriteExpirations(b, bs); err != nil {
 			return fmt.Errorf("failed to overwrite expiring file contract order in block %v: %w", index, err)
 		}
 		cs, cau = consensus.ApplyBlock(m.tipState, b, *bs, ancestorTimestamp)
