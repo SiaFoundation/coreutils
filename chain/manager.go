@@ -309,7 +309,6 @@ func (m *Manager) overwriteExpirations(b types.Block, bs *consensus.V1BlockSuppl
 			return fmt.Errorf("missing expiring file contract %v in block %v", fcID, b.ID())
 		}
 	}
-	m.store.AddBlock(b, bs)
 	return nil
 }
 
