@@ -263,12 +263,6 @@ func TestReorgExpiringFileContractOrder(t *testing.T) {
 	if !ok {
 		t.Fatal("expected to find index at height 6")
 	}
-	_, bs, ok := db1.Block(expirationIndex.ID)
-	if !ok {
-		t.Fatal("expected to find block at height 6")
-	}
-	fces := bs.ExpiringFileContracts
-	t.Log(fces)
 
 	_, applied, err := cm1.UpdatesSince(types.ChainIndex{}, 1000)
 	if err != nil {
