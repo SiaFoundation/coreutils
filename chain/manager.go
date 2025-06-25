@@ -3,7 +3,6 @@ package chain
 import (
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"sort"
 	"sync"
@@ -349,8 +348,6 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 			return fmt.Errorf("missing ancestor timestamp for block %v", b.ParentID)
 		}
 		cs, cau = consensus.ApplyBlock(m.tipState, b, *bs, ancestorTimestamp)
-		m.store.AddState(cs)
-		m.store.AddBlock(b, bs)
 	} else {
 		ancestorTimestamp, ok := m.store.AncestorTimestamp(b.ParentID)
 		if !ok {
@@ -359,9 +356,9 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 			return fmt.Errorf("failed to overwrite expiring file contract order in block %v: %w", index, err)
 		}
 		cs, cau = consensus.ApplyBlock(m.tipState, b, *bs, ancestorTimestamp)
-		m.store.AddState(cs)
 	}
-
+	m.store.AddState(cs)
+	m.store.AddBlock(b, bs)
 	m.store.ApplyBlock(cs, cau)
 	m.applyPoolUpdate(cau, cs)
 	m.tipState = cs
@@ -1353,49 +1350,6 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 	m.mu.Lock()
 
 	return false, nil
-}
-
-// ExpiringFileContractIDs returns the expiring file contract IDs at the given height.
-func (m *Manager) ExpiringFileContractIDs(height uint64) []types.FileContractID {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.store.ExpiringFileContractIDs(height)
-}
-
-// OverwriteExpiringFileContractIDs overwrites the expiring file contract IDs at the given height.
-// This should not be called unless the IDs are known to be correct, as it will overwrite
-// any existing IDs at that height.
-func (m *Manager) OverwriteExpiringFileContractIDs(height uint64, ids []types.FileContractID) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	expiring := m.store.ExpiringFileContractIDs(height)
-	if slices.Equal(expiring, ids) {
-		return nil // nothing to do
-	} else if len(expiring) != len(ids) {
-		return errors.New("cannot overwrite expiring file contract IDs with a different length")
-	}
-
-	// ensure the IDs match the existing ones
-	known := make(map[types.FileContractID]bool, len(expiring))
-	for _, id := range expiring {
-		known[id] = true
-	}
-	for _, id := range ids {
-		if !known[id] {
-			return fmt.Errorf("cannot overwrite expiring file contract IDs with a different set: %v not found", id)
-		}
-		delete(known, id)
-	}
-	if len(known) > 0 {
-		return fmt.Errorf("cannot overwrite expiring file contract IDs with a different set: %v not found", slices.Collect(maps.Keys(known)))
-	}
-
-	if err := m.revertTip(); err != nil {
-		return fmt.Errorf("failed to revert tip before overwriting expiring file contract IDs: %w", err)
-	}
-	m.store.OverwriteExpiringFileContractIDs(height, ids)
-	return nil
 }
 
 // NewManager returns a Manager initialized with the provided Store and State.
