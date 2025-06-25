@@ -28,7 +28,7 @@ import (
 	"go.sia.tech/core/types"
 )
 
-var expiringFileContractOrder = {{.}}
+var defaultExpiringFileContractOrder = {{.}}
 `)
 	if err != nil {
 		return fmt.Errorf("failed to parse template: %w", err)

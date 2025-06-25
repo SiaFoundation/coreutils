@@ -36,6 +36,7 @@ var (
 		"99.152.126.134:9981",
 		"82.5.79.245:9981",
 		"93.94.148.199:9981",
+		"76.8.94.19:9981",
 	}
 
 	// ZenBootstrapPeers is a list of peers for the Zen network.
