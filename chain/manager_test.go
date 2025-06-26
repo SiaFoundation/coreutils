@@ -10,6 +10,16 @@ import (
 	"lukechampine.com/frand"
 )
 
+// ForceRevertTip forces the manager to revert the tip block, regardless of whether
+// the tip is valid or not. This is useful for testing purposes, where we want to
+// simulate a reorganization of the blockchain.
+func (m *Manager) ForceRevertTip() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.revertTip()
+}
+
 func findBlockNonce(cs consensus.State, b *types.Block) {
 	for b.ID().CmpWork(cs.ChildTarget) < 0 {
 		b.Nonce += cs.NonceFactor()

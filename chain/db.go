@@ -493,30 +493,6 @@ func (db *DBStore) getAncestorInfo(id types.BlockID) (parentID types.BlockID, ti
 	return
 }
 
-func (db *DBStore) getBlockHeader(id types.BlockID) (bh types.BlockHeader, ok bool) {
-	ok = db.bucket(bBlocks).get(id[:], types.DecoderFunc(func(d *types.Decoder) {
-		v := d.ReadUint8()
-		if v != 2 && v != 3 {
-			d.SetErr(fmt.Errorf("incompatible version (%d)", v))
-			return
-		}
-		if v == 3 {
-			bhp := &bh
-			types.DecodePtr(d, &bhp)
-			if bhp != nil {
-				return
-			} else if !d.ReadBool() {
-				d.SetErr(errors.New("neither header nor block present"))
-				return
-			}
-		}
-		var b types.Block
-		(*types.V2Block)(&b).DecodeFrom(d)
-		bh = b.Header()
-	}))
-	return
-}
-
 func (db *DBStore) treeKey(row, col uint64) []byte {
 	// If we assume that the total number of elements is less than 2^32, we can
 	// pack row and col into one uint32 key. We do this by setting the top 'row'
@@ -609,6 +585,27 @@ func (db *DBStore) putFileContractExpiration(id types.FileContractID, windowEnd 
 	} else {
 		b.putRaw(key, append(id[:], b.getRaw(key)...))
 	}
+}
+
+// ExpiringFileContractIDs returns the expiring file contract IDs at the given height.
+func (db *DBStore) ExpiringFileContractIDs(height uint64) []types.FileContractID {
+	buf := db.bucket(bFileContractElements).getRaw(db.encHeight(height))
+	ids := make([]types.FileContractID, 0, len(buf)/32)
+	for i := 0; i < len(buf); i += 32 {
+		ids = append(ids, (types.FileContractID)(buf[i:]))
+	}
+	return ids
+}
+
+// OverwriteExpiringFileContractIDs overwrites the expiring file contract IDs at the given height.
+// This should not be called unless the IDs are known to be correct, as it will overwrite
+// any existing IDs at that height.
+func (db *DBStore) OverwriteExpiringFileContractIDs(height uint64, ids []types.FileContractID) {
+	buf := make([]byte, len(ids)*32)
+	for i, id := range ids {
+		copy(buf[i*32:], id[:])
+	}
+	db.bucket(bFileContractElements).putRaw(db.encHeight(height), buf)
 }
 
 func (db *DBStore) deleteFileContractExpiration(id types.FileContractID, windowEnd uint64) {
