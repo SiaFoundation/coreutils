@@ -1146,6 +1146,8 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 			return nil, fmt.Errorf("missing reverted block at index %v", index)
 		} else if bs == nil {
 			return nil, fmt.Errorf("missing reverted block supplement at index %v", index)
+		} else if err := m.overwriteExpirations(b, bs); err != nil {
+			return nil, fmt.Errorf("failed to overwrite expirations for block %v: %w", index, err)
 		}
 		cru := consensus.RevertBlock(cs, b, *bs)
 		for i := range updated {
@@ -1161,6 +1163,8 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 			return nil, fmt.Errorf("missing applied block at index %v", index)
 		} else if bs == nil {
 			return nil, fmt.Errorf("missing applied block supplement at index %v", index)
+		} else if err := m.overwriteExpirations(b, bs); err != nil {
+			return nil, fmt.Errorf("failed to overwrite expirations for block %v: %w", index, err)
 		}
 		ancestorTimestamp, _ := m.store.AncestorTimestamp(b.ParentID)
 		cs, cau := consensus.ApplyBlock(cs, b, *bs, ancestorTimestamp)

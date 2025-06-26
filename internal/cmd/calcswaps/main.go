@@ -93,6 +93,9 @@ func main() {
 		log.Panic("failed to create tip store", zap.Error(err))
 	}
 
+	log.Info("starting expiring file contract order calculation",
+		zap.String("network", network), zap.Stringer("index", tipState.Index))
+
 	cleanStore, cs, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
 	if err != nil {
 		log.Panic("failed to create clean db", zap.Error(err))
