@@ -379,17 +379,6 @@ func (s *Syncer) withPeers(origin *Peer, fn func(p *Peer) error) error {
 	return err
 }
 
-func (s *Syncer) relayHeader(h types.BlockHeader, origin *Peer) error {
-	return s.withPeers(origin, func(p *Peer) error { return p.RelayHeader(h, s.config.RelayHeaderTimeout) })
-}
-
-func (s *Syncer) relayTransactionSet(txns []types.Transaction, origin *Peer) error {
-	if len(txns) == 0 {
-		return nil
-	}
-	return s.withPeers(origin, func(p *Peer) error { return p.RelayTransactionSet(txns, s.config.RelayTransactionSetTimeout) })
-}
-
 func (s *Syncer) relayV2Header(bh types.BlockHeader, origin *Peer) error {
 	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2Header(bh, s.config.RelayHeaderTimeout) })
 }
@@ -812,9 +801,6 @@ func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
 	return p, nil
 }
 
-// BroadcastHeader broadcasts a header to all peers.
-func (s *Syncer) BroadcastHeader(bh types.BlockHeader) error { return s.relayHeader(bh, nil) }
-
 // BroadcastV2Header broadcasts a v2 header to all peers.
 func (s *Syncer) BroadcastV2Header(bh types.BlockHeader) error {
 	return s.relayV2Header(bh, nil)
@@ -823,11 +809,6 @@ func (s *Syncer) BroadcastV2Header(bh types.BlockHeader) error {
 // BroadcastV2BlockOutline broadcasts a v2 block outline to all peers.
 func (s *Syncer) BroadcastV2BlockOutline(b gateway.V2BlockOutline) error {
 	return s.relayV2BlockOutline(b, nil)
-}
-
-// BroadcastTransactionSet broadcasts a transaction set to all peers.
-func (s *Syncer) BroadcastTransactionSet(txns []types.Transaction) error {
-	return s.relayTransactionSet(txns, nil)
 }
 
 // BroadcastV2TransactionSet broadcasts a v2 transaction set to all peers.
