@@ -19,14 +19,14 @@ import (
 	"lukechampine.com/frand"
 )
 
-// ErrNoPeers is returned when there are no peers available to relay
-// to
+// ErrNoPeers is returned when there are no peers available to relay to.
 var ErrNoPeers = errors.New("no peers available")
 
 // A ChainManager manages blockchain state.
 type ChainManager interface {
 	History() ([32]types.BlockID, error)
 	BlocksForHistory(history []types.BlockID, max uint64) ([]types.Block, uint64, error)
+	Headers(index types.ChainIndex, max uint64) ([]types.BlockHeader, uint64, error)
 	Block(id types.BlockID) (types.Block, bool)
 	State(id types.BlockID) (consensus.State, bool)
 	AddBlocks(blocks []types.Block) error

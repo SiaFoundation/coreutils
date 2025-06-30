@@ -51,6 +51,7 @@ type Store interface {
 	SupplementTipBlock(b types.Block) consensus.V1BlockSupplement
 
 	Block(id types.BlockID) (types.Block, *consensus.V1BlockSupplement, bool)
+	Header(id types.BlockID) (types.BlockHeader, bool)
 	AddBlock(b types.Block, bs *consensus.V1BlockSupplement)
 	PruneBlock(id types.BlockID)
 	State(id types.BlockID) (consensus.State, bool)
@@ -174,9 +175,31 @@ func (m *Manager) History() ([32]types.BlockID, error) {
 	return history, nil
 }
 
-// BlocksForHistory returns up to max consecutive blocks from the best chain,
-// starting from the "attach point" -- the first ID in the history that is
-// present in the best chain (or, if no match is found, genesis). It also
+// Headers returns up to max consecutive headers starting from supplied index,
+// which must be on the best chain. It also returns the number of headers
+// between the end of the returned slice and the current tip.
+func (m *Manager) Headers(index types.ChainIndex, max uint64) ([]types.BlockHeader, uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if bestIndex, ok := m.store.BestIndex(index.Height); !ok || bestIndex != index {
+		return nil, 0, fmt.Errorf("index %v is not on our best chain", index)
+	}
+	max = min(max, m.tipState.Index.Height-index.Height)
+	headers := make([]types.BlockHeader, max)
+	for i := range headers {
+		index, _ := m.store.BestIndex(index.Height + uint64(i) + 1)
+		bh, ok := m.store.Header(index.ID)
+		if !ok {
+			return nil, 0, fmt.Errorf("missing block header %v", index)
+		}
+		headers[i] = bh
+	}
+	return headers, m.tipState.Index.Height - (index.Height + max), nil
+}
+
+// BlocksForHistory returns up to maxBlocks consecutive blocks from the best
+// chain, starting from the "attach point" -- the first ID in the history that
+// is present in the best chain (or, if no match is found, genesis). It also
 // returns the number of blocks between the end of the returned slice and the
 // current tip.
 func (m *Manager) BlocksForHistory(history []types.BlockID, maxBlocks uint64) ([]types.Block, uint64, error) {

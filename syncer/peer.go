@@ -109,6 +109,15 @@ func (p *Peer) DiscoverIP(timeout time.Duration) (string, error) {
 	return r.IP, err
 }
 
+// SendHeaders requests up to n headers from p, starting from the supplied
+// index, which must be on the peer's best chain. The peer also returns the
+// number of remaining headers left to sync.
+func (p *Peer) SendHeaders(index types.ChainIndex, max uint64, timeout time.Duration) ([]types.BlockHeader, uint64, error) {
+	r := &gateway.RPCSendHeaders{Index: index, Max: max}
+	err := p.callRPC(r, timeout)
+	return r.Headers, r.Remaining, err
+}
+
 // SendBlock requests a single block from the peer.
 func (p *Peer) SendBlock(id types.BlockID, timeout time.Duration) (types.Block, error) {
 	r := &gateway.RPCSendBlk{ID: id}
@@ -250,6 +259,22 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 	case *gateway.RPCDiscoverIP:
 		r.IP, _, _ = net.SplitHostPort(origin.t.Addr)
 		if err := stream.WriteResponse(r); err != nil {
+			return err
+		}
+		return nil
+
+	case *gateway.RPCSendHeaders:
+		err := stream.ReadRequest(r)
+		if err != nil {
+			return err
+		}
+		if r.Max > 10000 {
+			r.Max = 10000
+		}
+		r.Headers, r.Remaining, err = s.cm.Headers(r.Index, r.Max)
+		if err != nil {
+			return err
+		} else if err := stream.WriteResponse(r); err != nil {
 			return err
 		}
 		return nil
