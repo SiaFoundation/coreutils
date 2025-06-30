@@ -29,14 +29,14 @@ const (
 
 type (
 	stream struct {
-		quic.Stream
+		*quic.Stream
 
 		localAddr  net.Addr
 		remoteAddr net.Addr
 	}
 
 	client struct {
-		conn    quic.Connection
+		conn    *quic.Conn
 		peerKey types.PublicKey
 	}
 
@@ -120,7 +120,7 @@ func Dial(ctx context.Context, addr string, peerKey types.PublicKey, opts ...Cli
 
 type (
 	transport struct {
-		qc quic.Connection
+		qc *quic.Conn
 	}
 )
 
@@ -148,7 +148,7 @@ type webTransport struct {
 }
 
 type webStream struct {
-	webtransport.Stream
+	*webtransport.Stream
 
 	localAddr, remoteAddr net.Addr
 }
