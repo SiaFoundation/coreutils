@@ -1,6 +1,7 @@
 package wallet
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -9,6 +10,7 @@ import (
 
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils/threadgroup"
 	"go.uber.org/zap"
 )
 
@@ -20,6 +22,11 @@ const (
 	// redistributeBatchSize is the number of outputs to redistribute per txn to
 	// avoid creating a txn that is too large.
 	redistributeBatchSize = 10
+
+	// maxRebroadcastPeriod is the maximum period of time a transaction set is
+	// being rebroadcasted, after this period the broadcasted set is removed
+	// from the store
+	maxRebroadcastPeriod = 7 * 24 * time.Hour // 1 week
 )
 
 var (
@@ -77,6 +84,25 @@ type (
 		LockedUTXOs(time.Time) ([]types.SiacoinOutputID, error)
 		// ReleaseUTXOs unlocks the given siacoin output IDs.
 		ReleaseUTXOs([]types.SiacoinOutputID) error
+
+		// AddBroadcastedSet adds a set of broadcasted transactions. The wallet
+		// will periodically rebroadcast the transactions in this set until all
+		// transactions are gone from the transaction pool or one week has
+		// passed.
+		AddBroadcastedSet(BroadcastedSet) error
+		// BroadcastedSets returns recently broadcasted sets.
+		BroadcastedSets() ([]BroadcastedSet, error)
+		// RemoveBroadcastedSet removes a set so it's no longer rebroadcasted.
+		RemoveBroadcastedSet(BroadcastedSet) error
+	}
+
+	// A BroadcastedSet is a transaction set that was successfully broadcasted.
+	// This set will be periodically rebroadcasted for one week or until it's
+	// removed from the store.
+	BroadcastedSet struct {
+		Basis         types.ChainIndex
+		BroadcastedAt time.Time
+		Transactions  []types.V2Transaction
 	}
 
 	// A SingleAddressWallet is a hot wallet that manages the outputs controlled
@@ -88,7 +114,9 @@ type (
 		cm     ChainManager
 		store  SingleAddressStore
 		syncer Syncer
-		log    *zap.Logger
+
+		tg  *threadgroup.ThreadGroup
+		log *zap.Logger
 
 		cfg config
 
@@ -106,12 +134,24 @@ type (
 	}
 )
 
+// ID returns a unique identifier for the BroadcastedSet.
+func (set BroadcastedSet) ID() types.Hash256 {
+	h := types.NewHasher()
+	set.Basis.EncodeTo(h.E)
+	for _, txn := range set.Transactions {
+		txn.EncodeTo(h.E)
+	}
+	h.E.WriteTime(set.BroadcastedAt)
+	return h.Sum()
+}
+
 // ErrDifferentSeed is returned when a different seed is provided to
 // NewSingleAddressWallet than was used to initialize the wallet
 var ErrDifferentSeed = errors.New("seed differs from wallet seed")
 
 // Close closes the wallet
 func (sw *SingleAddressWallet) Close() error {
+	sw.tg.Stop()
 	return nil
 }
 
@@ -793,7 +833,12 @@ func (sw *SingleAddressWallet) isLocked(id types.SiacoinOutputID) bool {
 func (sw *SingleAddressWallet) BroadcastV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction) error {
 	if _, err := sw.cm.AddV2PoolTransactions(index, txns); err != nil {
 		return fmt.Errorf("failed to broadcast v2 transaction set: %w", err)
-	} else if err := sw.syncer.BroadcastV2TransactionSet(index, txns); err != nil {
+	}
+	set := BroadcastedSet{Basis: index, Transactions: txns, BroadcastedAt: time.Now()}
+	if err := sw.store.AddBroadcastedSet(set); err != nil {
+		sw.log.Debug("failed to store broadcasted v2 transaction set", zap.Error(err))
+	}
+	if err := sw.syncer.BroadcastV2TransactionSet(index, txns); err != nil {
 		return fmt.Errorf("failed to broadcast v2 transaction set to syncer: %w", err)
 	}
 	return nil
@@ -905,6 +950,7 @@ func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store Single
 
 		cfg: cfg,
 		log: cfg.Log,
+		tg:  threadgroup.New(),
 
 		addr:   types.StandardUnlockHash(priv.PublicKey()),
 		locked: make(map[types.SiacoinOutputID]time.Time),
@@ -918,5 +964,79 @@ func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store Single
 	for _, id := range lockedIDs {
 		sw.locked[id] = time.Now().Add(sw.cfg.ReservationDuration)
 	}
+
+	// subscribe to reorg events to rebroadcast transactions
+	reorgCh := make(chan struct{}, 1)
+	reorgCh <- struct{}{}
+	stop := cm.OnReorg(func(_ types.ChainIndex) {
+		select {
+		case reorgCh <- struct{}{}:
+		default:
+		}
+	})
+
+	// rebroadcast transactions in a separate goroutine
+	go func() {
+		defer stop()
+
+		ctx, cancel, err := sw.tg.AddContext(context.Background())
+		if err != nil {
+			sw.log.Error("failed to add context", zap.Error(err))
+			return
+		}
+		defer cancel()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-reorgCh:
+				if err := sw.rebroadcastTransactions(); err != nil && !errors.Is(err, context.Canceled) {
+					sw.log.Debug("failed to rebroadcast transactions", zap.Error(err))
+				}
+			}
+		}
+	}()
+
 	return sw, nil
+}
+
+func (sw *SingleAddressWallet) rebroadcastTransactions() error {
+	inPool := make(map[types.TransactionID]struct{})
+	for _, txn := range sw.cm.V2PoolTransactions() {
+		inPool[txn.ID()] = struct{}{}
+	}
+
+	sets, err := sw.store.BroadcastedSets()
+	if err != nil {
+		return fmt.Errorf("failed to get transactions to rebroadcast: %w", err)
+	}
+
+	for _, set := range sets {
+		if time.Since(set.BroadcastedAt) > maxRebroadcastPeriod {
+			sw.log.Debug("removing broadcasted set", zap.Time("broadcastedAt", set.BroadcastedAt))
+			if err := sw.store.RemoveBroadcastedSet(set); err != nil {
+				sw.log.Debug("failed to remove broadcasted set", zap.Error(err))
+			}
+			continue
+		}
+		missing := make([]types.V2Transaction, 0, len(set.Transactions))
+		for _, txn := range set.Transactions {
+			if _, ok := inPool[txn.ID()]; !ok {
+				missing = append(missing, txn)
+			}
+		}
+		if len(missing) == len(set.Transactions) {
+			if err := sw.store.RemoveBroadcastedSet(set); err != nil {
+				sw.log.Debug("failed to remove old broadcasted set", zap.Error(err))
+			}
+		} else if len(missing) > 0 {
+			if _, err := sw.cm.AddV2PoolTransactions(set.Basis, missing); err != nil {
+				sw.log.Debug("failed to add transactions to pool", zap.Error(err))
+			} else if err := sw.syncer.BroadcastV2TransactionSet(set.Basis, missing); err != nil {
+				sw.log.Debug("failed to broadcast transaction set", zap.Error(err))
+			}
+		}
+	}
+	return nil
 }
