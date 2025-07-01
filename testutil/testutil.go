@@ -13,11 +13,19 @@ import (
 type (
 	// A MockSyncer is a syncer that does nothing. It is used in tests to avoid
 	// the peer check
-	MockSyncer struct{}
+	MockSyncer struct {
+		Calls []broadcastCall
+	}
+
+	broadcastCall struct {
+		Index types.ChainIndex
+		Txns  []types.V2Transaction
+	}
 )
 
 // BroadcastV2TransactionSet implements the syncer.Syncer interface
-func (MockSyncer) BroadcastV2TransactionSet(types.ChainIndex, []types.V2Transaction) error {
+func (s *MockSyncer) BroadcastV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction) error {
+	s.Calls = append(s.Calls, broadcastCall{Index: index, Txns: txns})
 	return nil
 }
 
