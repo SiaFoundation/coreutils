@@ -1907,13 +1907,14 @@ func TestRecommendedFee(t *testing.T) {
 
 func TestRebroadcastTransaction(t *testing.T) {
 	oneSC := types.Siacoins(1)
+	network, genesis := testutil.V2Network()
+	network.MaturityDelay = 0
 
 	// create wallet store
 	pk := types.GeneratePrivateKey()
 	ws := testutil.NewEphemeralWalletStore()
 
 	// create chain store
-	network, genesis := testutil.V2Network()
 	dbs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -1931,42 +1932,40 @@ func TestRebroadcastTransaction(t *testing.T) {
 	}
 	defer w.Close()
 
-	// fund the wallet and mine until one utxo is mature
+	// fund the wallet
 	mineAndSync(t, cm, ws, w, w.Address(), 1)
-	mineAndSync(t, cm, ws, w, types.VoidAddress, network.MaturityDelay)
 
 	// redistribute so we have two outputs
-	txns, toSign, err := w.RedistributeV2(2, oneSC, types.ZeroCurrency)
+	txns, toSignIdxs, err := w.RedistributeV2(2, oneSC, types.ZeroCurrency)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.SignV2Inputs(&txns[0], toSign[0])
+	w.SignV2Inputs(&txns[0], toSignIdxs[0])
 	if _, err := cm.AddV2PoolTransactions(cm.Tip(), txns); err != nil {
 		t.Fatal(err)
 	}
 	mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
 
-	// prepare two transactions
-	txn1 := types.V2Transaction{SiacoinOutputs: []types.SiacoinOutput{{Address: types.VoidAddress, Value: oneSC}}}
-	_, toSignIdxs, err := w.FundV2Transaction(&txn1, oneSC, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	w.SignV2Inputs(&txn1, toSignIdxs)
-
-	txn2 := types.V2Transaction{SiacoinOutputs: []types.SiacoinOutput{{Address: types.VoidAddress, Value: oneSC}}}
-	basis, toSignIdxs, err := w.FundV2Transaction(&txn2, oneSC, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	w.SignV2Inputs(&txn2, toSignIdxs)
-
-	// assert ephemeral store has no transactions
+	// assert there's no broadcasted sets
 	if sets, err := ws.BroadcastedSets(); err != nil {
 		t.Fatal(err)
 	} else if len(sets) != 0 {
 		t.Fatalf("expected no broadcasted sets, got %v", len(sets))
 	}
+
+	// prepare the transaction set
+	txn1 := types.V2Transaction{SiacoinOutputs: []types.SiacoinOutput{{Address: types.VoidAddress, Value: oneSC}}}
+	_, toSign1, err := w.FundV2Transaction(&txn1, oneSC, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	txn2 := types.V2Transaction{SiacoinOutputs: []types.SiacoinOutput{{Address: types.VoidAddress, Value: oneSC}}}
+	basis, toSign2, err := w.FundV2Transaction(&txn2, oneSC, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SignV2Inputs(&txn1, toSign1)
+	w.SignV2Inputs(&txn2, toSign2)
 
 	// broadcast the transaction set
 	if err := w.BroadcastV2TransactionSet(basis, []types.V2Transaction{txn1, txn2}); err != nil {
@@ -2013,19 +2012,19 @@ func TestRebroadcastTransaction(t *testing.T) {
 		t.Fatal("unexpected second call to BroadcastV2TransactionSet")
 	}
 
-	// construct a block that holds the first transaction
+	// construct a block that contains only the second transaction
 	cs := cm.TipState()
 	b := types.Block{
 		ParentID:  cs.Index.ID,
 		Timestamp: types.CurrentTimestamp(),
 		MinerPayouts: []types.SiacoinOutput{{
-			Value:   cs.BlockReward().Add(poolTxns[0].MinerFee),
+			Value:   cs.BlockReward().Add(poolTxns[1].MinerFee),
 			Address: types.VoidAddress,
 		}},
 		V2: &types.V2BlockData{
 			Height:       cs.Index.Height + 1,
-			Transactions: []types.V2Transaction{poolTxns[0]},
-			Commitment:   cs.Commitment(types.VoidAddress, nil, []types.V2Transaction{poolTxns[0]}),
+			Transactions: []types.V2Transaction{poolTxns[1]},
+			Commitment:   cs.Commitment(types.VoidAddress, nil, []types.V2Transaction{poolTxns[1]}),
 		},
 	}
 
@@ -2035,18 +2034,20 @@ func TestRebroadcastTransaction(t *testing.T) {
 	} else if err := cm.AddBlocks([]types.Block{b}); err != nil {
 		t.Fatal(err)
 	}
+	time.Sleep(100 * time.Millisecond)
 
 	// assert the set was rebroadcasted
-	time.Sleep(100 * time.Millisecond)
-	if len(s.Calls) <= 2 {
+	if len(s.Calls) == 2 {
 		t.Fatal("expected set to have been rebroadcasted")
+	} else if len(s.Calls[len(s.Calls)-1].Txns) != 1 || s.Calls[len(s.Calls)-1].Txns[0].ID() != txn2.ID() {
+		t.Fatal("expected only to have rebroadcasted a single transaction")
 	}
 
 	// mine a block
 	mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
+	time.Sleep(100 * time.Millisecond)
 
 	// assert the set was removed
-	time.Sleep(100 * time.Millisecond)
 	if sets, err := ws.BroadcastedSets(); err != nil {
 		t.Fatal(err)
 	} else if len(sets) != 0 {
