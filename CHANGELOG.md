@@ -1,3 +1,9 @@
+## 0.16.4 (2025-07-01)
+
+### Fixes
+
+- Fix incorrect ordering of contract expirations preventing a consensus resync from scratch
+
 ## 0.16.3 (2025-06-19)
 
 ### Features
