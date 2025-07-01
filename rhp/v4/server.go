@@ -649,7 +649,7 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 
 	var broadcast bool
 	// fund the host collateral
-	basis, toSign, err := s.wallet.FundV2Transaction(&formationTxn, hostCost, true)
+	basis, toSign, err := s.wallet.FundV2Transaction(&formationTxn, hostCost, false)
 	if errors.Is(err, wallet.ErrNotEnoughFunds) {
 		return rhp4.ErrHostFundError
 	} else if err != nil {
@@ -805,7 +805,7 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 	}
 
 	var broadcast bool
-	basis, toSign, err := s.wallet.FundV2Transaction(&renewalTxn, hostCost, true)
+	basis, toSign, err := s.wallet.FundV2Transaction(&renewalTxn, hostCost, false)
 	if errors.Is(err, wallet.ErrNotEnoughFunds) {
 		return rhp4.ErrHostFundError
 	} else if err != nil {
@@ -983,7 +983,7 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	}
 
 	var broadcast bool
-	basis, toSign, err := s.wallet.FundV2Transaction(&renewalTxn, hostCost, true)
+	basis, toSign, err := s.wallet.FundV2Transaction(&renewalTxn, hostCost, false)
 	if errors.Is(err, wallet.ErrNotEnoughFunds) {
 		return rhp4.ErrHostFundError
 	} else if err != nil {

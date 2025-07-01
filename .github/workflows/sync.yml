@@ -30,4 +30,4 @@ jobs:
         uses: actions/setup-go@v5
       - name: Sync
         run: |
-          go run ./internal/cmd/sync/main.go --log.level=debug --network ${{ matrix.network }} --github.ref ${{ github.sha }}
+          go run ./internal/cmd/sync --log.level=debug --network ${{ matrix.network }} --github.ref ${{ github.sha }}
