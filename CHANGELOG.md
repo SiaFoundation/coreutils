@@ -1,3 +1,9 @@
+## 0.16.5 (2025-07-01)
+
+### Fixes
+
+- Use only confirmed UTXOs for contract formation and renewals.
+
 ## 0.16.4 (2025-07-01)
 
 ### Fixes

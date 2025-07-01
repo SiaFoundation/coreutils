@@ -1,4 +1,4 @@
-module go.sia.tech/coreutils // v0.16.4
+module go.sia.tech/coreutils // v0.16.5
 
 go 1.23.1
 
