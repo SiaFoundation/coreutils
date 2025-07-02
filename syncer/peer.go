@@ -112,9 +112,17 @@ func (p *Peer) DiscoverIP(timeout time.Duration) (string, error) {
 // SendHeaders requests up to n headers from p, starting from the supplied
 // index, which must be on the peer's best chain. The peer also returns the
 // number of remaining headers left to sync.
-func (p *Peer) SendHeaders(index types.ChainIndex, max uint64, timeout time.Duration) ([]types.BlockHeader, uint64, error) {
-	r := &gateway.RPCSendHeaders{Index: index, Max: max}
+func (p *Peer) SendHeaders(cs consensus.State, max uint64, timeout time.Duration) ([]types.BlockHeader, uint64, error) {
+	r := &gateway.RPCSendHeaders{Index: cs.Index, Max: max}
 	err := p.callRPC(r, timeout)
+	if err == nil {
+		for _, bh := range r.Headers {
+			if err := consensus.ValidateHeader(cs, bh); err != nil {
+				return nil, 0, fmt.Errorf("peer sent invalid header %v: %w", bh.ID(), err)
+			}
+			cs = consensus.ApplyHeader(cs, bh, time.Time{})
+		}
+	}
 	return r.Headers, r.Remaining, err
 }
 
