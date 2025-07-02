@@ -264,7 +264,7 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 		if !ok {
 			return fmt.Errorf("missing ancestor timestamp for block %v", b.ParentID)
 		}
-		cs = consensus.ApplyOrphan(cs, b, ancestorTimestamp)
+		cs = consensus.ApplyHeader(cs, b.Header(), ancestorTimestamp)
 		m.store.AddState(cs)
 		m.store.AddBlock(b, nil)
 		log.Debug("added block", zap.Uint64("height", cs.Index.Height), zap.Stringer("id", bid))
