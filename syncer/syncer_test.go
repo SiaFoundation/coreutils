@@ -73,7 +73,7 @@ func TestSyncer(t *testing.T) {
 	}
 
 	// broadcast the tip from s1 to s2
-	s1.BroadcastHeader(b.Header())
+	s1.BroadcastV2Header(b.Header())
 
 	for i := 0; i < 100; i++ {
 		if cm1.Tip() == cm2.Tip() {

@@ -872,6 +872,11 @@ func (db *DBStore) PruneBlock(id types.BlockID) {
 	}
 }
 
+// Header implements Store.
+func (db *DBStore) Header(id types.BlockID) (bh types.BlockHeader, exists bool) {
+	return db.getBlockHeader(id)
+}
+
 func (db *DBStore) shouldFlush() bool {
 	// NOTE: these values were chosen empirically and should constitute a
 	// sensible default; if necessary, we can make them configurable
