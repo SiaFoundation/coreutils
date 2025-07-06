@@ -178,14 +178,14 @@ func (m *Manager) History() ([32]types.BlockID, error) {
 // Headers returns up to max consecutive headers starting from supplied index,
 // which must be on the best chain. It also returns the number of headers
 // between the end of the returned slice and the current tip.
-func (m *Manager) Headers(index types.ChainIndex, max uint64) ([]types.BlockHeader, uint64, error) {
+func (m *Manager) Headers(index types.ChainIndex, maxHeaders uint64) ([]types.BlockHeader, uint64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if bestIndex, ok := m.store.BestIndex(index.Height); !ok || bestIndex != index {
 		return nil, 0, fmt.Errorf("index %v is not on our best chain", index)
 	}
-	max = min(max, m.tipState.Index.Height-index.Height)
-	headers := make([]types.BlockHeader, max)
+	maxHeaders = min(maxHeaders, m.tipState.Index.Height-index.Height)
+	headers := make([]types.BlockHeader, maxHeaders)
 	for i := range headers {
 		index, _ := m.store.BestIndex(index.Height + uint64(i) + 1)
 		bh, ok := m.store.Header(index.ID)
@@ -194,7 +194,7 @@ func (m *Manager) Headers(index types.ChainIndex, max uint64) ([]types.BlockHead
 		}
 		headers[i] = bh
 	}
-	return headers, m.tipState.Index.Height - (index.Height + max), nil
+	return headers, m.tipState.Index.Height - (index.Height + maxHeaders), nil
 }
 
 // BlocksForHistory returns up to maxBlocks consecutive blocks from the best
