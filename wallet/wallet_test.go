@@ -1905,6 +1905,10 @@ func TestRecommendedFee(t *testing.T) {
 	}
 }
 
+// TestRebroadcastTransaction tests the rebroadcasting of a transaction set that
+// has already been broadcasted. It ensures that the wallet's ephemeral store is
+// updated correctly and that the transaction set is not rebroadcasted if it has
+// already been mined.
 func TestRebroadcastTransaction(t *testing.T) {
 	oneSC := types.Siacoins(1)
 	network, genesis := testutil.V2Network()
@@ -2042,6 +2046,80 @@ func TestRebroadcastTransaction(t *testing.T) {
 	} else if len(s.Calls[len(s.Calls)-1].Txns) != 1 || s.Calls[len(s.Calls)-1].Txns[0].ID() != txn2.ID() {
 		t.Fatal("expected only to have rebroadcasted a single transaction")
 	}
+
+	// mine a block
+	mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
+	time.Sleep(100 * time.Millisecond)
+
+	// assert the set was removed
+	if sets, err := ws.BroadcastedSets(); err != nil {
+		t.Fatal(err)
+	} else if len(sets) != 0 {
+		t.Fatalf("expected no broadcasted sets, got %v", len(sets))
+	}
+}
+
+// TestReloadBroadcastedSets tests that broadcasted sets and readded to the
+// chain manager when the single address wallet is intialised. This asserts the
+// transactions are properly rebroadcasted after a restart.
+func TestReloadBroadcastedSets(t *testing.T) {
+	oneSC := types.Siacoins(1)
+	network, genesis := testutil.V2Network()
+	network.MaturityDelay = 0
+
+	// create wallet store
+	pk := types.GeneratePrivateKey()
+	ws := testutil.NewEphemeralWalletStore()
+
+	// create chain store
+	dbs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// create chain manager and subscribe the wallet
+	cm := chain.NewManager(dbs, genesisState)
+
+	// create wallet
+	l := zaptest.NewLogger(t)
+	s := &testutil.MockSyncer{}
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, s, wallet.WithLogger(l.Named("wallet")))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// fund the wallet
+	mineAndSync(t, cm, ws, w, w.Address(), 1)
+
+	// create a new transaction
+	txn := types.V2Transaction{SiacoinOutputs: []types.SiacoinOutput{{Address: types.VoidAddress, Value: oneSC}}}
+	basis, toSign, err := w.FundV2Transaction(&txn, oneSC, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SignV2Inputs(&txn, toSign)
+
+	// broadcast the transaction
+	if err := w.BroadcastV2TransactionSet(basis, []types.V2Transaction{txn}); err != nil {
+		t.Fatal(err)
+	}
+
+	// close and recreate the wallet
+	w.Close()
+
+	// assert the set was persisted
+	if sets, err := ws.BroadcastedSets(); err != nil {
+		t.Fatal(err)
+	} else if len(sets) != 1 {
+		t.Fatalf("expected 1 broadcasted set, got %v", len(sets))
+	}
+
+	// recreate the wallet
+	w, err = wallet.NewSingleAddressWallet(pk, cm, ws, s, wallet.WithLogger(l.Named("wallet")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
 
 	// mine a block
 	mineAndSync(t, cm, ws, w, types.VoidAddress, 1)

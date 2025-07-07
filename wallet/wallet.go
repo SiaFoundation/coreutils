@@ -965,6 +965,22 @@ func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store Single
 		sw.locked[id] = time.Now().Add(sw.cfg.ReservationDuration)
 	}
 
+	// load the broadcasted transactions and add them to the pool, we don't
+	// bother checking whether the transactions are in the pool already because
+	// the transaction pool is not persisted
+	sets, err := store.BroadcastedSets()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get broadcasted sets: %w", err)
+	}
+	for _, set := range sets {
+		if time.Since(set.BroadcastedAt) < maxRebroadcastPeriod {
+			if _, err := cm.AddV2PoolTransactions(set.Basis, set.Transactions); err != nil {
+				sw.log.Debug("failed to add broadcasted transactions to pool", zap.Error(err))
+			}
+			// NOTE: purposefully don't broadcast these to the network
+		}
+	}
+
 	// subscribe to reorg events to rebroadcast transactions
 	reorgCh := make(chan struct{}, 1)
 	reorgCh <- struct{}{}
