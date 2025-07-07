@@ -545,111 +545,6 @@ func TestWalletUnconfirmed(t *testing.T) {
 	}
 }
 
-func TestWalletRedistribute(t *testing.T) {
-	// create wallet store
-	pk := types.GeneratePrivateKey()
-	ws := testutil.NewEphemeralWalletStore()
-
-	// create chain store
-	network, genesis := testutil.Network()
-	cs, tipState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// create chain manager and subscribe the wallet
-	cm := chain.NewManager(cs, tipState)
-	// create wallet
-	l := zaptest.NewLogger(t)
-	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer w.Close()
-
-	// fund the wallet
-	mineAndSync(t, cm, ws, w, w.Address(), 1)
-	mineAndSync(t, cm, ws, w, types.VoidAddress, cm.TipState().MaturityHeight()-1)
-
-	redistribute := func(amount types.Currency, n int) error {
-		txns, toSign, err := w.Redistribute(n, amount, types.ZeroCurrency)
-		if err != nil {
-			return fmt.Errorf("redistribute failed: %w", err)
-		} else if len(txns) == 0 {
-			return nil
-		}
-
-		for i := 0; i < len(txns); i++ {
-			w.SignTransaction(&txns[i], toSign[i], types.CoveredFields{WholeTransaction: true})
-		}
-		if _, err := cm.AddPoolTransactions(txns); err != nil {
-			return fmt.Errorf("failed to add transactions to pool: %w", err)
-		}
-		mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
-		return nil
-	}
-
-	assertOutputs := func(amount types.Currency, n int) error {
-		utxos, err := w.SpendableOutputs()
-		if err != nil {
-			return fmt.Errorf("failed to get unspent outputs: %w", err)
-		}
-		var count int
-		for _, utxo := range utxos {
-			if utxo.SiacoinOutput.Value.Equals(amount) {
-				count++
-			}
-		}
-		if count != n {
-			return fmt.Errorf("expected %v outputs of %v, got %v", n, amount, count)
-		}
-		return nil
-	}
-
-	// assert we have one output
-	assertOutputs(tipState.BlockReward(), 1)
-
-	// redistribute the wallet into 4 outputs of 75KS
-	amount := types.Siacoins(75e3)
-	if err := redistribute(amount, 4); err != nil {
-		t.Fatal(err)
-	}
-	assertOutputs(amount, 4)
-
-	// redistribute the wallet into 4 outputs of 50KS
-	amount = types.Siacoins(50e3)
-	if err := redistribute(amount, 4); err != nil {
-		t.Fatal(err)
-	}
-	assertOutputs(amount, 4)
-
-	// redistribute the wallet into 3 outputs of 101KS - expect ErrNotEnoughFunds
-	if err := redistribute(types.Siacoins(101e3), 3); !errors.Is(err, wallet.ErrNotEnoughFunds) {
-		t.Fatalf("expected ErrNotEnoughFunds, got %v", err)
-	}
-
-	// redistribute the wallet into 3 outputs of 50KS - assert this is a no-op
-	txns, toSign, err := w.Redistribute(3, amount, types.ZeroCurrency)
-	if err != nil {
-		t.Fatal(err)
-	} else if len(txns) != 0 {
-		t.Fatalf("expected no transactions, got %v", len(txns))
-	} else if len(toSign) != 0 {
-		t.Fatalf("expected no ids, got %v", len(toSign))
-	}
-
-	// redistribute the wallet into more outputs than the batch size to make
-	// sure the resulting txn set contains more than 1 txn
-	outputs, err := w.SpendableOutputs()
-	if err != nil {
-		t.Fatal(err)
-	} else if len(outputs) >= 11 {
-		t.Fatalf("expected at least 11 outputs, got %v", len(outputs))
-	} else if err := redistribute(types.Siacoins(1e3), 11); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestWalletRedistributeV2(t *testing.T) {
 	// create wallet store
 	pk := types.GeneratePrivateKey()
@@ -678,7 +573,7 @@ func TestWalletRedistributeV2(t *testing.T) {
 	mineAndSync(t, cm, ws, w, types.VoidAddress, cm.TipState().MaturityHeight()-1)
 
 	redistribute := func(amount types.Currency, n int) error {
-		txns, toSign, err := w.RedistributeV2(n, amount, types.ZeroCurrency)
+		basis, txns, toSign, err := w.RedistributeV2(n, amount, types.ZeroCurrency)
 		if err != nil {
 			return fmt.Errorf("redistribute failed: %w", err)
 		} else if len(txns) == 0 {
@@ -688,7 +583,7 @@ func TestWalletRedistributeV2(t *testing.T) {
 		for i := 0; i < len(txns); i++ {
 			w.SignV2Inputs(&txns[i], toSign[i])
 		}
-		if _, err := cm.AddV2PoolTransactions(cm.Tip(), txns); err != nil {
+		if _, err := cm.AddV2PoolTransactions(basis, txns); err != nil {
 			return fmt.Errorf("failed to add transactions to pool: %w", err)
 		}
 		mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
@@ -735,7 +630,7 @@ func TestWalletRedistributeV2(t *testing.T) {
 	}
 
 	// redistribute the wallet into 3 outputs of 50KS - assert this is a no-op
-	txns, toSign, err := w.RedistributeV2(3, amount, types.ZeroCurrency)
+	_, txns, toSign, err := w.RedistributeV2(3, amount, types.ZeroCurrency)
 	if err != nil {
 		t.Fatal(err)
 	} else if len(txns) != 0 {

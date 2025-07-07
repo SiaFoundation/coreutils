@@ -656,130 +656,31 @@ func (sw *SingleAddressWallet) selectRedistributeUTXOs(bh uint64, outputs int, a
 	return utxos, outputs, nil
 }
 
-// Redistribute returns a transaction that redistributes money in the wallet by
-// selecting a minimal set of inputs to cover the creation of the requested
-// outputs. It also returns a list of output IDs that need to be signed.
-func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte types.Currency) (txns []types.Transaction, toSign [][]types.Hash256, err error) {
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
-
-	tip, elements, err := sw.store.UnspentSiacoinElements()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	var toLock []types.SiacoinOutputID
-	utxos, outputs, err := sw.selectRedistributeUTXOs(tip.Height, outputs, amount, elements)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// return early if we don't have to defrag at all
-	if outputs <= 0 {
-		return nil, nil, nil
-	}
-
-	// desc sort
-	sort.Slice(utxos, func(i, j int) bool {
-		return utxos[i].SiacoinOutput.Value.Cmp(utxos[j].SiacoinOutput.Value) > 0
-	})
-
-	// prepare defrag transactions
-	state := sw.cm.TipState()
-	for outputs > 0 {
-		var txn types.Transaction
-		for i := 0; i < outputs && i < redistributeBatchSize; i++ {
-			txn.SiacoinOutputs = append(txn.SiacoinOutputs, types.SiacoinOutput{
-				Value:   amount,
-				Address: sw.addr,
-			})
-		}
-		outputs -= len(txn.SiacoinOutputs)
-
-		// estimate the fees
-		outputFees := feePerByte.Mul64(state.TransactionWeight(txn))
-		feePerInput := feePerByte.Mul64(bytesPerInput)
-
-		// collect outputs that cover the total amount
-		var inputs []types.SiacoinElement
-		want := amount.Mul64(uint64(len(txn.SiacoinOutputs)))
-		for _, sce := range utxos {
-			inputs = append(inputs, sce.Share())
-			fee := feePerInput.Mul64(uint64(len(inputs))).Add(outputFees)
-			if SumOutputs(inputs).Cmp(want.Add(fee)) > 0 {
-				break
-			}
-		}
-
-		// remove used inputs from utxos
-		utxos = utxos[len(inputs):]
-
-		// not enough outputs found
-		fee := feePerInput.Mul64(uint64(len(inputs))).Add(outputFees)
-		if sumOut := SumOutputs(inputs); sumOut.Cmp(want.Add(fee)) < 0 {
-			if len(txns) > 0 {
-				// consider redistributing successful if we could generate at least one txn
-				break
-			}
-			return nil, nil, fmt.Errorf("%w: inputs %v < needed %v + txnFee %v", ErrNotEnoughFunds, sumOut.String(), want.String(), fee.String())
-		}
-
-		// set the miner fee
-		if !fee.IsZero() {
-			txn.MinerFees = []types.Currency{fee}
-		}
-
-		// add the change output
-		change := SumOutputs(inputs).Sub(want.Add(fee))
-		if !change.IsZero() {
-			txn.SiacoinOutputs = append(txn.SiacoinOutputs, types.SiacoinOutput{
-				Value:   change,
-				Address: sw.addr,
-			})
-		}
-
-		// add the inputs
-		toSignTxn := make([]types.Hash256, 0, len(inputs))
-		for _, sce := range inputs {
-			toSignTxn = append(toSignTxn, types.Hash256(sce.ID))
-			txn.SiacoinInputs = append(txn.SiacoinInputs, types.SiacoinInput{
-				ParentID:         sce.ID,
-				UnlockConditions: types.StandardUnlockConditions(sw.priv.PublicKey()),
-			})
-			toLock = append(toLock, sce.ID)
-		}
-		txns = append(txns, txn)
-		toSign = append(toSign, toSignTxn)
-	}
-
-	if err := sw.lockUTXOs(toLock); err != nil {
-		return nil, nil, fmt.Errorf("failed to lock UTXOs: %w", err)
-	}
-	return
-}
-
 // RedistributeV2 returns a transaction that redistributes money in the wallet
 // by selecting a minimal set of inputs to cover the creation of the requested
 // outputs. It also returns a list of output IDs that need to be signed.
-func (sw *SingleAddressWallet) RedistributeV2(outputs int, amount, feePerByte types.Currency) (txns []types.V2Transaction, toSign [][]int, err error) {
+func (sw *SingleAddressWallet) RedistributeV2(outputs int, amount, feePerByte types.Currency) (types.ChainIndex, []types.V2Transaction, [][]int, error) {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
 	tip, elements, err := sw.store.UnspentSiacoinElements()
 	if err != nil {
-		return nil, nil, err
+		return types.ChainIndex{}, nil, nil, err
 	}
 
 	var toLock []types.SiacoinOutputID
 	utxos, outputs, err := sw.selectRedistributeUTXOs(tip.Height, outputs, amount, elements)
 	if err != nil {
-		return nil, nil, err
+		return types.ChainIndex{}, nil, nil, err
 	}
 
 	// return early if we don't have to defrag at all
 	if outputs <= 0 {
-		return nil, nil, nil
+		return types.ChainIndex{}, nil, nil, nil
 	}
+
+	var txns []types.V2Transaction
+	var toSign [][]int
 
 	// prepare defrag transactions
 	state := sw.cm.TipState()
@@ -818,7 +719,7 @@ func (sw *SingleAddressWallet) RedistributeV2(outputs int, amount, feePerByte ty
 				// consider redistributing successful if we could generate at least one txn
 				break
 			}
-			return nil, nil, fmt.Errorf("%w: inputs %v < needed %v + txnFee %v", ErrNotEnoughFunds, sumOut.String(), want.String(), fee.String())
+			return types.ChainIndex{}, nil, nil, fmt.Errorf("%w: inputs %v < needed %v + txnFee %v", ErrNotEnoughFunds, sumOut.String(), want.String(), fee.String())
 		}
 
 		// set the miner fee
@@ -849,9 +750,9 @@ func (sw *SingleAddressWallet) RedistributeV2(outputs int, amount, feePerByte ty
 	}
 
 	if err := sw.lockUTXOs(toLock); err != nil {
-		return nil, nil, fmt.Errorf("failed to lock UTXOs: %w", err)
+		return types.ChainIndex{}, nil, nil, fmt.Errorf("failed to lock UTXOs: %w", err)
 	}
-	return
+	return tip, txns, toSign, nil
 }
 
 // ReleaseInputs is a helper function that releases the inputs of txn for use in
