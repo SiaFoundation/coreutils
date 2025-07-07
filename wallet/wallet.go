@@ -679,17 +679,6 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 		return nil, nil, nil
 	}
 
-	// in case of an error we need to free all inputs
-	defer func() {
-		if err != nil {
-			for _, ids := range toSign {
-				for _, id := range ids {
-					delete(sw.locked, types.SiacoinOutputID(id))
-				}
-			}
-		}
-	}()
-
 	// desc sort
 	sort.Slice(utxos, func(i, j int) bool {
 		return utxos[i].SiacoinOutput.Value.Cmp(utxos[j].SiacoinOutput.Value) > 0
@@ -791,17 +780,6 @@ func (sw *SingleAddressWallet) RedistributeV2(outputs int, amount, feePerByte ty
 	if outputs <= 0 {
 		return nil, nil, nil
 	}
-
-	// in case of an error we need to free all inputs
-	defer func() {
-		if err != nil {
-			for txnIdx, toSignTxn := range toSign {
-				for i := range toSignTxn {
-					delete(sw.locked, txns[txnIdx].SiacoinInputs[i].Parent.ID)
-				}
-			}
-		}
-	}()
 
 	// prepare defrag transactions
 	state := sw.cm.TipState()
