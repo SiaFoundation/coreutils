@@ -545,7 +545,7 @@ func TestWalletUnconfirmed(t *testing.T) {
 	}
 }
 
-func TestWalletRedistributeV2(t *testing.T) {
+func TestWalletRedistribute(t *testing.T) {
 	// create wallet store
 	pk := types.GeneratePrivateKey()
 	ws := testutil.NewEphemeralWalletStore()
@@ -573,7 +573,7 @@ func TestWalletRedistributeV2(t *testing.T) {
 	mineAndSync(t, cm, ws, w, types.VoidAddress, cm.TipState().MaturityHeight()-1)
 
 	redistribute := func(amount types.Currency, n int) error {
-		basis, txns, toSign, err := w.RedistributeV2(n, amount, types.ZeroCurrency)
+		basis, txns, toSign, err := w.Redistribute(n, amount, types.ZeroCurrency)
 		if err != nil {
 			return fmt.Errorf("redistribute failed: %w", err)
 		} else if len(txns) == 0 {
@@ -630,7 +630,7 @@ func TestWalletRedistributeV2(t *testing.T) {
 	}
 
 	// redistribute the wallet into 3 outputs of 50KS - assert this is a no-op
-	_, txns, toSign, err := w.RedistributeV2(3, amount, types.ZeroCurrency)
+	_, txns, toSign, err := w.Redistribute(3, amount, types.ZeroCurrency)
 	if err != nil {
 		t.Fatal(err)
 	} else if len(txns) != 0 {

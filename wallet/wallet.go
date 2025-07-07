@@ -656,10 +656,10 @@ func (sw *SingleAddressWallet) selectRedistributeUTXOs(bh uint64, outputs int, a
 	return utxos, outputs, nil
 }
 
-// RedistributeV2 returns a transaction that redistributes money in the wallet
-// by selecting a minimal set of inputs to cover the creation of the requested
+// Redistribute returns a transaction that redistributes money in the wallet by
+// selecting a minimal set of inputs to cover the creation of the requested
 // outputs. It also returns a list of output IDs that need to be signed.
-func (sw *SingleAddressWallet) RedistributeV2(outputs int, amount, feePerByte types.Currency) (types.ChainIndex, []types.V2Transaction, [][]int, error) {
+func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte types.Currency) (types.ChainIndex, []types.V2Transaction, [][]int, error) {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
