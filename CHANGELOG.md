@@ -1,3 +1,14 @@
+## 0.16.5 (2025-07-07)
+
+### Features
+
+- Remove RedistributeV1|2 in favour of Redistribute. Return the index so the caller can use it as the basis when broadcasting the transactions.
+
+### Fixes
+
+- Remove faulty utxo release, it is redundant since we lock utxos as the final step.
+- Use only confirmed UTXOs for contract formation and renewals.
+
 ## 0.16.4 (2025-07-01)
 
 ### Fixes
