@@ -12,19 +12,14 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Configure git
-        run: git config --global core.autocrlf false # required on Windows
-
       - uses: actions/checkout@v4
         with:
           repository: SiaFoundation/fuzz
 
       - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ matrix.go-version }}
 
       - name: Build
-        run: go get go.sia.tech/core@none && go get go.sia.tech/coreutils@master && go mod tidy && go build -buildvcs=false .
+        run: go get go.sia.tech/core@none && go get go.sia.tech/coreutils@$GITHUB_SHA && go mod tidy && go build -buildvcs=false .
 
       - name: Run
         run: ./fuzzer fuzz
