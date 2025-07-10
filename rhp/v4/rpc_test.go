@@ -13,14 +13,12 @@ import (
 	"time"
 
 	"go.sia.tech/core/consensus"
-	"go.sia.tech/core/gateway"
 	proto4 "go.sia.tech/core/rhp/v4"
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/chain"
 	rhp4 "go.sia.tech/coreutils/rhp/v4"
 	"go.sia.tech/coreutils/rhp/v4/quic"
 	"go.sia.tech/coreutils/rhp/v4/siamux"
-	"go.sia.tech/coreutils/syncer"
 	"go.sia.tech/coreutils/testutil"
 	"go.sia.tech/coreutils/wallet"
 	"go.uber.org/zap"
@@ -96,7 +94,7 @@ func testRenterHostPairQUIC(tb testing.TB, hostKey types.PrivateKey, cm rhp4.Cha
 	return transport
 }
 
-func startTestNode(tb testing.TB, n *consensus.Network, genesis types.Block) (*chain.Manager, *syncer.Syncer, *wallet.SingleAddressWallet) {
+func startTestNode(tb testing.TB, n *consensus.Network, genesis types.Block) (*chain.Manager, *wallet.SingleAddressWallet) {
 	db, tipstate, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
 	if err != nil {
 		tb.Fatal(err)
@@ -109,16 +107,8 @@ func startTestNode(tb testing.TB, n *consensus.Network, genesis types.Block) (*c
 	}
 	tb.Cleanup(func() { syncerListener.Close() })
 
-	s := syncer.New(syncerListener, cm, testutil.NewEphemeralPeerStore(), gateway.Header{
-		GenesisID:  genesis.ID(),
-		UniqueID:   gateway.GenerateUniqueID(),
-		NetAddress: "localhost:1234",
-	})
-	go s.Run()
-	tb.Cleanup(func() { s.Close() })
-
 	ws := testutil.NewEphemeralWalletStore()
-	w, err := wallet.NewSingleAddressWallet(types.GeneratePrivateKey(), cm, ws, s)
+	w, err := wallet.NewSingleAddressWallet(types.GeneratePrivateKey(), cm, ws, &testutil.MockSyncer{})
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -155,7 +145,7 @@ func startTestNode(tb testing.TB, n *consensus.Network, genesis types.Block) (*c
 	})
 	tb.Cleanup(stop)
 
-	return cm, s, w
+	return cm, w
 }
 
 func mineAndSync(tb testing.TB, cm *chain.Manager, addr types.Address, n int, tippers ...interface {
@@ -209,7 +199,7 @@ func TestFormContract(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, _, w := startTestNode(t, n, genesis)
+	cm, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -284,8 +274,8 @@ func TestFormContractBasis(t *testing.T) {
 		n, genesis := testutil.V2Network()
 		hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-		cm1, _, w1 := startTestNode(t, n, genesis)
-		cm2, _, w2 := startTestNode(t, n, genesis)
+		cm1, w1 := startTestNode(t, n, genesis)
+		cm2, w2 := startTestNode(t, n, genesis)
 
 		// fund both wallets
 		mineAndSync(t, cm1, w2.Address(), int(n.MaturityDelay+20))
@@ -378,8 +368,8 @@ func TestFormContractBasis(t *testing.T) {
 		n, genesis := testutil.V2Network()
 		hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-		cm1, _, w1 := startTestNode(t, n, genesis)
-		cm2, _, w2 := startTestNode(t, n, genesis)
+		cm1, w1 := startTestNode(t, n, genesis)
+		cm2, w2 := startTestNode(t, n, genesis)
 
 		// fund both wallets
 		mineAndSync(t, cm1, w2.Address(), int(n.MaturityDelay+20))
@@ -472,7 +462,7 @@ func TestFormContractBasis(t *testing.T) {
 func TestRPCRefresh(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
-	cm, _, w := startTestNode(t, n, genesis)
+	cm, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -620,7 +610,7 @@ func TestRPCRefresh(t *testing.T) {
 func TestRPCRenew(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
-	cm, _, w := startTestNode(t, n, genesis)
+	cm, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -843,7 +833,7 @@ func TestRPCRenew(t *testing.T) {
 
 func TestRPCTimeout(t *testing.T) {
 	n, genesis := testutil.V2Network()
-	cm, _, w := startTestNode(t, n, genesis)
+	cm, w := startTestNode(t, n, genesis)
 
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
@@ -885,7 +875,7 @@ func TestRPCTimeout(t *testing.T) {
 
 func TestSiamuxDialUpgradeTimeout(t *testing.T) {
 	n, genesis := testutil.V2Network()
-	cm, _, w := startTestNode(t, n, genesis)
+	cm, w := startTestNode(t, n, genesis)
 
 	ss := testutil.NewEphemeralSectorStore()
 	c := testutil.NewEphemeralContractor(cm)
@@ -929,7 +919,7 @@ func TestRPCReplenishAccounts(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, _, w := startTestNode(t, n, genesis)
+	cm, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -1130,7 +1120,7 @@ func TestAccounts(t *testing.T) {
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 	account := proto4.Account(renterKey.PublicKey())
 
-	cm, _, w := startTestNode(t, n, genesis)
+	cm, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -1249,7 +1239,7 @@ func TestReadWriteSector(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, _, w := startTestNode(t, n, genesis)
+	cm, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -1336,7 +1326,7 @@ func TestAppendSectors(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, _, w := startTestNode(t, n, genesis)
+	cm, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -1487,7 +1477,7 @@ func TestVerifySector(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, _, w := startTestNode(t, n, genesis)
+	cm, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -1571,7 +1561,7 @@ func TestRPCFreeSectors(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, _, w := startTestNode(t, n, genesis)
+	cm, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -1703,7 +1693,7 @@ func TestRPCSectorRoots(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, _, w := startTestNode(t, n, genesis)
+	cm, w := startTestNode(t, n, genesis)
 
 	// fund the wallet
 	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -1817,7 +1807,7 @@ func BenchmarkWrite(b *testing.B) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, _, w := startTestNode(b, n, genesis)
+	cm, w := startTestNode(b, n, genesis)
 
 	// fund the wallet
 	mineAndSync(b, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -1900,7 +1890,7 @@ func BenchmarkRead(b *testing.B) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, _, w := startTestNode(b, n, genesis)
+	cm, w := startTestNode(b, n, genesis)
 
 	// fund the wallet
 	mineAndSync(b, cm, w.Address(), int(n.MaturityDelay+20), w)
@@ -1995,7 +1985,7 @@ func BenchmarkContractUpload(b *testing.B) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
 
-	cm, _, w := startTestNode(b, n, genesis)
+	cm, w := startTestNode(b, n, genesis)
 
 	// fund the wallet
 	mineAndSync(b, cm, w.Address(), int(n.MaturityDelay+20), w)
