@@ -1,6 +1,8 @@
 package testutil
 
 import (
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,23 +16,29 @@ type (
 	// A MockSyncer is a syncer that does nothing. It is used in tests to avoid
 	// the peer check
 	MockSyncer struct {
-		Calls []broadcastCall
+		mu    sync.Mutex
+		calls []MockBroadcastCall
 	}
 
-	broadcastCall struct {
+	// A MockBroadcastCall is a call to broadcast a transaction set made to the MockSyncer
+	MockBroadcastCall struct {
 		Index types.ChainIndex
 		Txns  []types.V2Transaction
 	}
 )
 
-// BroadcastV2TransactionSet implements the syncer.Syncer interface
-func (s *MockSyncer) BroadcastV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction) error {
-	s.Calls = append(s.Calls, broadcastCall{Index: index, Txns: txns})
-	return nil
+// BroadcastCalls returns the calls made to the MockSyncer
+func (s *MockSyncer) BroadcastCalls() []MockBroadcastCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.calls)
 }
 
-// BroadcastTransactionSet implements the syncer.Syncer interface
-func (MockSyncer) BroadcastTransactionSet([]types.Transaction) error {
+// BroadcastV2TransactionSet implements the syncer.Syncer interface
+func (s *MockSyncer) BroadcastV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, MockBroadcastCall{Index: index, Txns: txns})
 	return nil
 }
 
