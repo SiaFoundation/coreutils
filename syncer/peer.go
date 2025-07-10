@@ -109,52 +109,21 @@ func (p *Peer) DiscoverIP(timeout time.Duration) (string, error) {
 	return r.IP, err
 }
 
-// SendBlock requests a single block from the peer.
-func (p *Peer) SendBlock(id types.BlockID, timeout time.Duration) (types.Block, error) {
-	r := &gateway.RPCSendBlk{ID: id}
+// SendHeaders requests up to n headers from p, starting from the supplied
+// index, which must be on the peer's best chain. The peer also returns the
+// number of remaining headers left to sync.
+func (p *Peer) SendHeaders(cs consensus.State, maxHeaders uint64, timeout time.Duration) ([]types.BlockHeader, uint64, error) {
+	r := &gateway.RPCSendHeaders{Index: cs.Index, Max: maxHeaders}
 	err := p.callRPC(r, timeout)
-	return r.Block, err
-}
-
-// RelayHeader relays a header to the peer.
-func (p *Peer) RelayHeader(h types.BlockHeader, timeout time.Duration) error {
-	return p.callRPC(&gateway.RPCRelayHeader{Header: h}, timeout)
-}
-
-// RelayTransactionSet relays a transaction set to the peer.
-func (p *Peer) RelayTransactionSet(txns []types.Transaction, timeout time.Duration) error {
-	return p.callRPC(&gateway.RPCRelayTransactionSet{Transactions: txns}, timeout)
-}
-
-// SendBlocks downloads blocks from p, starting from the most recent element of
-// history known to p. The blocks are sent in batches, and fn is called on each
-// batch.
-func (p *Peer) SendBlocks(history [32]types.BlockID, timeout time.Duration, fn func([]types.Block) error) error {
-	s, err := p.t.DialStream()
-	if err != nil {
-		return fmt.Errorf("couldn't open stream: %w", err)
-	}
-	defer s.Close()
-
-	s.SetDeadline(time.Now().Add(timeout))
-	r := &gateway.RPCSendBlocks{History: history}
-	if err := s.WriteID(r); err != nil {
-		return fmt.Errorf("couldn't write RPC ID: %w", err)
-	} else if err := s.WriteRequest(r); err != nil {
-		return fmt.Errorf("couldn't write request: %w", err)
-	}
-	rma := &gateway.RPCSendBlocksMoreAvailable{MoreAvailable: true}
-	for rma.MoreAvailable {
-		s.SetDeadline(time.Now().Add(timeout))
-		if err := s.ReadResponse(r); err != nil {
-			return fmt.Errorf("couldn't read response: %w", err)
-		} else if err := s.ReadResponse(rma); err != nil {
-			return fmt.Errorf("couldn't read response: %w", err)
-		} else if err := fn(r.Blocks); err != nil {
-			return err
+	if err == nil {
+		for _, bh := range r.Headers {
+			if err := consensus.ValidateHeader(cs, bh); err != nil {
+				return nil, 0, fmt.Errorf("peer sent invalid header %v: %w", bh.ID(), err)
+			}
+			cs = consensus.ApplyHeader(cs, bh, time.Time{})
 		}
 	}
-	return nil
+	return r.Headers, r.Remaining, err
 }
 
 // SendTransactions requests a subset of a block's transactions from the peer.
@@ -254,89 +223,37 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		}
 		return nil
 
-	case *gateway.RPCRelayHeader:
-		if err := stream.ReadRequest(r); err != nil {
-			return err
-		}
-		cs, ok := s.cm.State(r.Header.ParentID)
-		if !ok {
-			s.resync(origin, fmt.Sprintf("peer relayed a header with unknown parent (%v)", r.Header.ParentID))
-			return nil
-		}
-		bid := r.Header.ID()
-		if _, ok := s.cm.State(bid); ok {
-			return nil // already seen
-		} else if bid.CmpWork(cs.ChildTarget) < 0 {
-			return s.ban(origin, errors.New("peer sent header with insufficient work"))
-		} else if r.Header.ParentID != s.cm.Tip().ID {
-			// block extends a sidechain, which peer (if honest) believes to be the
-			// heaviest chain
-			s.resync(origin, "peer relayed a header that does not attach to our tip")
-			return nil
-		}
-		// request + validate full block
-		if b, err := origin.SendBlock(r.Header.ID(), s.config.SendBlockTimeout); err != nil {
-			// log-worthy, but not ban-worthy
-			log.Warn("couldn't retrieve new block after header relay", zap.Stringer("header", r.Header.ID()), zap.Error(err))
-			return nil
-		} else if err := s.cm.AddBlocks([]types.Block{b}); err != nil {
-			return s.ban(origin, err)
-		}
-		s.relayHeader(r.Header, origin) // non-blocking
-		return nil
-
-	case *gateway.RPCRelayTransactionSet:
-		if err := stream.ReadRequest(r); err != nil {
-			return err
-		}
-		if len(r.Transactions) == 0 {
-			return s.ban(origin, errors.New("peer sent an empty transaction set"))
-		} else if known, err := s.cm.AddPoolTransactions(r.Transactions); !known {
-			if err != nil {
-				// too risky to ban here (txns are probably just outdated), but at least
-				// log it if we think we're synced
-				if b, ok := s.cm.Block(s.cm.Tip().ID); ok && time.Since(b.Timestamp) < 2*s.cm.TipState().BlockInterval() {
-					log.Debug("invalid transaction set received", zap.Error(err))
-				}
-			} else {
-				go s.relayTransactionSet(r.Transactions, origin) // non-blocking
-			}
-		}
-		return nil
-
-	case *gateway.RPCSendBlk:
+	case *gateway.RPCSendHeaders:
 		err := stream.ReadRequest(r)
 		if err != nil {
 			return err
 		}
-		var ok bool
-		r.Block, ok = s.cm.Block(r.ID)
-		if !ok {
-			return fmt.Errorf("block %v not found", r.ID)
+		if r.Max > 10000 {
+			r.Max = 10000
+		}
+		r.Headers, r.Remaining, err = s.cm.Headers(r.Index, r.Max)
+		if err != nil {
+			return err
 		} else if err := stream.WriteResponse(r); err != nil {
 			return err
 		}
 		return nil
 
-	case *gateway.RPCSendBlocks:
+	case *gateway.RPCSendV2Blocks:
 		err := stream.ReadRequest(r)
 		if err != nil {
 			return err
 		}
-		for {
-			var rem uint64
-			r.Blocks, rem, err = s.cm.BlocksForHistory(r.History[:], 10)
-			if err != nil {
-				return err
-			} else if err := stream.WriteResponse(r); err != nil {
-				return err
-			} else if err := stream.WriteResponse(&gateway.RPCSendBlocksMoreAvailable{MoreAvailable: rem > 0}); err != nil {
-				return err
-			} else if rem == 0 {
-				return nil
-			}
-			r.History[0] = r.Blocks[len(r.Blocks)-1].ID()
+		if r.Max > 100 {
+			r.Max = 100
 		}
+		r.Blocks, r.Remaining, err = s.cm.BlocksForHistory(r.History, r.Max)
+		if err != nil {
+			return err
+		} else if err := stream.WriteResponse(r); err != nil {
+			return err
+		}
+		return nil
 
 	case *gateway.RPCSendTransactions:
 		err := stream.ReadRequest(r)
@@ -482,22 +399,6 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 			} else {
 				go s.relayV2TransactionSet(r.Index, r.Transactions, origin) // non-blocking
 			}
-		}
-		return nil
-
-	case *gateway.RPCSendV2Blocks:
-		err := stream.ReadRequest(r)
-		if err != nil {
-			return err
-		}
-		if r.Max > 100 {
-			r.Max = 100
-		}
-		r.Blocks, r.Remaining, err = s.cm.BlocksForHistory(r.History, r.Max)
-		if err != nil {
-			return err
-		} else if err := stream.WriteResponse(r); err != nil {
-			return err
 		}
 		return nil
 	default:

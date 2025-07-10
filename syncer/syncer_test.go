@@ -73,7 +73,7 @@ func TestSyncer(t *testing.T) {
 	}
 
 	// broadcast the tip from s1 to s2
-	s1.BroadcastHeader(b.Header())
+	s1.BroadcastV2Header(b.Header())
 
 	for i := 0; i < 100; i++ {
 		if cm1.Tip() == cm2.Tip() {
@@ -118,9 +118,7 @@ func TestSendCheckpoint(t *testing.T) {
 	defer s2.Close()
 
 	// mine above v2 hardfork height
-	genesis, _ := cm1.BestIndex(0)
-	genesisState, _ := cm1.State(genesis.ID)
-	testutil.MineBlocks(t, cm1, types.VoidAddress, int(genesisState.Network.HardforkV2.AllowHeight)+1)
+	testutil.MineBlocks(t, cm1, types.VoidAddress, int(cm1.TipState().Network.HardforkV2.AllowHeight)+1)
 
 	// request a checkpoint
 	p, err := s2.Connect(context.Background(), s1.Addr())
@@ -134,5 +132,31 @@ func TestSendCheckpoint(t *testing.T) {
 		t.Fatalf("expected block %v, got %v", b1, b)
 	} else if cs1, _ := cm1.State(cs.Index.ID); !hashEq(cs, cs1) {
 		t.Fatalf("expected checkpoint %v, got %v", cs1, cs)
+	}
+}
+
+func TestSendHeaders(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	s1, cm1 := newTestSyncer(t, "syncer1", log)
+	defer s1.Close()
+
+	s2, cm2 := newTestSyncer(t, "syncer2", log)
+	defer s2.Close()
+	cs := cm2.TipState()
+
+	testutil.MineBlocks(t, cm1, types.VoidAddress, 100)
+
+	p, err := s2.Connect(context.Background(), s1.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	headers, rem, err := p.SendHeaders(cs, 90, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	} else if len(headers) != 90 {
+		t.Fatalf("expected 90 headers, got %d", len(headers))
+	} else if rem != 10 {
+		t.Fatalf("expected 10 remaining headers, got %d", rem)
 	}
 }

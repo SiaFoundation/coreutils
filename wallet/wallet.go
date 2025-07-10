@@ -43,7 +43,6 @@ type (
 
 	// A ChainManager manages the current state of the blockchain.
 	ChainManager interface {
-		AddPoolTransactions(txns []types.Transaction) (known bool, err error)
 		AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2Transaction) (known bool, err error)
 		TipState() consensus.State
 		BestIndex(height uint64) (types.ChainIndex, bool)
@@ -103,7 +102,6 @@ type (
 	// A Syncer can connect to other peers and broadcast transactions to the
 	// network.
 	Syncer interface {
-		BroadcastTransactionSet(txns []types.Transaction) error
 		BroadcastV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction) error
 	}
 )
@@ -788,17 +786,6 @@ func (sw *SingleAddressWallet) ReleaseInputs(txns []types.Transaction, v2txns []
 // method must be called whilst holding the mutex lock.
 func (sw *SingleAddressWallet) isLocked(id types.SiacoinOutputID) bool {
 	return time.Now().Before(sw.locked[id])
-}
-
-// BroadcastTransactionSet broadcasts a set of transactions to the network after
-// adding them to the transaction pool to make sure they are valid.
-func (sw *SingleAddressWallet) BroadcastTransactionSet(txns []types.Transaction) error {
-	if _, err := sw.cm.AddPoolTransactions(txns); err != nil {
-		return fmt.Errorf("failed to broadcast transaction set: %w", err)
-	} else if err := sw.syncer.BroadcastTransactionSet(txns); err != nil {
-		return fmt.Errorf("failed to broadcast transaction set to syncer: %w", err)
-	}
-	return nil
 }
 
 // BroadcastV2TransactionSet broadcasts a set of v2 transactions to the network
