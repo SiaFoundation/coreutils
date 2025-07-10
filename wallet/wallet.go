@@ -393,10 +393,22 @@ func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, us
 	return tip, selected, inputSum, nil
 }
 
+// cleanLockedUTXOs cleans up the locked UTXOs map by removing entries
+// that have expired.
+// It is expected that the caller will hold sw.mu.
+func (sw *SingleAddressWallet) cleanLockedUTXOs() {
+	for id, expiration := range sw.locked {
+		if time.Now().After(expiration) {
+			delete(sw.locked, id)
+		}
+	}
+}
+
 // lockUTXOs locks the given siacoin output IDs for use in a transaction.
 // The outputs will be unlocked after the given time.
 // It is expected that the caller will hold sw.mu.
 func (sw *SingleAddressWallet) lockUTXOs(ids []types.SiacoinOutputID) {
+	sw.cleanLockedUTXOs()
 	if len(ids) == 0 {
 		return
 	}
@@ -792,6 +804,7 @@ func (sw *SingleAddressWallet) ReleaseInputs(txns []types.Transaction, v2txns []
 			delete(sw.locked, in.Parent.ID)
 		}
 	}
+	sw.cleanLockedUTXOs()
 }
 
 // isLocked returns true if the siacoin output with given id is locked, this
@@ -924,7 +937,8 @@ func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store Single
 		log: cfg.Log,
 		tg:  threadgroup.New(),
 
-		addr:   types.StandardUnlockHash(priv.PublicKey()),
+		addr: types.StandardUnlockHash(priv.PublicKey()),
+
 		locked: make(map[types.SiacoinOutputID]time.Time),
 	}
 

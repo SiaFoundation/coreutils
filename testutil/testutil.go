@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -30,7 +31,7 @@ type (
 func (s *MockSyncer) BroadcastCalls() []MockBroadcastCall {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.calls
+	return slices.Clone(s.calls)
 }
 
 // BroadcastV2TransactionSet implements the syncer.Syncer interface
