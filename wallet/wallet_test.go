@@ -1940,12 +1940,12 @@ func TestRebroadcastTransaction(t *testing.T) {
 	mineAndSync(t, cm, ws, w, w.Address(), 1)
 
 	// redistribute so we have two outputs
-	txns, toSignIdxs, err := w.RedistributeV2(2, oneSC, types.ZeroCurrency)
+	basis, txns, toSignIdxs, err := w.Redistribute(2, oneSC, types.ZeroCurrency)
 	if err != nil {
 		t.Fatal(err)
 	}
 	w.SignV2Inputs(&txns[0], toSignIdxs[0])
-	if _, err := cm.AddV2PoolTransactions(cm.Tip(), txns); err != nil {
+	if _, err := cm.AddV2PoolTransactions(basis, txns); err != nil {
 		t.Fatal(err)
 	}
 	mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
