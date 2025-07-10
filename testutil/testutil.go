@@ -16,17 +16,18 @@ type (
 	// the peer check
 	MockSyncer struct {
 		mu    sync.Mutex
-		calls []broadcastCall
+		calls []MockBroadcastCall
 	}
 
-	broadcastCall struct {
+	// A MockBroadcastCall is a call to broadcast a transaction set made to the MockSyncer
+	MockBroadcastCall struct {
 		Index types.ChainIndex
 		Txns  []types.V2Transaction
 	}
 )
 
 // BroadcastCalls returns the calls made to the MockSyncer
-func (s *MockSyncer) BroadcastCalls() []broadcastCall {
+func (s *MockSyncer) BroadcastCalls() []MockBroadcastCall {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.calls
@@ -36,7 +37,7 @@ func (s *MockSyncer) BroadcastCalls() []broadcastCall {
 func (s *MockSyncer) BroadcastV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.calls = append(s.calls, broadcastCall{Index: index, Txns: txns})
+	s.calls = append(s.calls, MockBroadcastCall{Index: index, Txns: txns})
 	return nil
 }
 
