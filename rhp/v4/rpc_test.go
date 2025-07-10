@@ -41,12 +41,6 @@ func (b *blockingSettingsReporter) Unblock() {
 	close(b.blockChan)
 }
 
-type syncerMock struct{}
-
-func (syncerMock) BroadcastV2TransactionSet(types.ChainIndex, []types.V2Transaction) error {
-	return nil
-}
-
 type fundAndSign struct {
 	w  *wallet.SingleAddressWallet
 	pk types.PrivateKey
@@ -76,7 +70,7 @@ func (fs *fundAndSign) Address() types.Address {
 }
 
 func testRenterHostPairSiaMux(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ChainManager, w rhp4.Wallet, c rhp4.Contractor, sr rhp4.Settings, ss rhp4.Sectors, log *zap.Logger) rhp4.TransportClient {
-	rs := rhp4.NewServer(hostKey, cm, &syncerMock{}, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
+	rs := rhp4.NewServer(hostKey, cm, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
 	hostAddr := testutil.ServeSiaMux(tb, rs, log.Named("siamux"))
 
 	transport, err := siamux.Dial(context.Background(), hostAddr, hostKey.PublicKey())
@@ -89,7 +83,7 @@ func testRenterHostPairSiaMux(tb testing.TB, hostKey types.PrivateKey, cm rhp4.C
 }
 
 func testRenterHostPairQUIC(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ChainManager, w rhp4.Wallet, c rhp4.Contractor, sr rhp4.Settings, ss rhp4.Sectors, log *zap.Logger) rhp4.TransportClient {
-	rs := rhp4.NewServer(hostKey, cm, &syncerMock{}, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
+	rs := rhp4.NewServer(hostKey, cm, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
 	hostAddr := testutil.ServeQUIC(tb, rs, log.Named("quic"))
 
 	transport, err := quic.Dial(context.Background(), hostAddr, hostKey.PublicKey(), quic.WithTLSConfig(func(tc *tls.Config) {
@@ -903,7 +897,7 @@ func TestSiamuxDialUpgradeTimeout(t *testing.T) {
 
 	sr := testutil.NewEphemeralSettingsReporter()
 	hk := types.GeneratePrivateKey()
-	rs := rhp4.NewServer(hk, cm, &syncerMock{}, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
+	rs := rhp4.NewServer(hk, cm, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
 	hostAddr := testutil.ServeSiaMux(t, rs, zap.NewNop())
 
 	t.Run("dial", func(t *testing.T) {

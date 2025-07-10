@@ -53,12 +53,6 @@ type (
 		UpdateV2TransactionSet(txns []types.V2Transaction, from, to types.ChainIndex) ([]types.V2Transaction, error)
 	}
 
-	// A Syncer broadcasts transactions to its peers.
-	Syncer interface {
-		// BroadcastV2TransactionSet broadcasts a transaction set to the network.
-		BroadcastV2TransactionSet(types.ChainIndex, []types.V2Transaction) error
-	}
-
 	// A Wallet manages Siacoins and funds transactions.
 	Wallet interface {
 		// Address returns the host's address
@@ -73,7 +67,10 @@ type (
 		SignV2Inputs(txn *types.V2Transaction, toSign []int)
 		// ReleaseInputs releases the inputs of a transaction. It should only
 		// be used if the transaction is not going to be broadcast
-		ReleaseInputs(txns []types.Transaction, v2txns []types.V2Transaction) error
+		ReleaseInputs(txns []types.Transaction, v2txns []types.V2Transaction)
+
+		// BroadcastV2TransactionSet broadcasts a transaction set to the network.
+		BroadcastV2TransactionSet(types.ChainIndex, []types.V2Transaction) error
 	}
 
 	// A Sectors is an interface for reading and writing sectors.
@@ -134,7 +131,6 @@ type (
 		priceTableValidity time.Duration
 
 		chain      ChainManager
-		syncer     Syncer
 		wallet     Wallet
 		sectors    Sectors
 		contractor Contractor
@@ -730,7 +726,7 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	}, usage)
 	if err != nil {
 		return fmt.Errorf("failed to add contract: %w", err)
-	} else if err := s.syncer.BroadcastV2TransactionSet(basis, formationSet); err != nil {
+	} else if err := s.wallet.BroadcastV2TransactionSet(basis, formationSet); err != nil {
 		return fmt.Errorf("failed to broadcast transaction set: %w", err)
 	}
 	broadcast = true // set broadcast so the UTXOs will not be released if the renter happens to disconnect before receiving the last response
@@ -906,7 +902,7 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 	}, usage)
 	if err != nil {
 		return fmt.Errorf("failed to add contract: %w", err)
-	} else if err := s.syncer.BroadcastV2TransactionSet(basis, renewalSet); err != nil {
+	} else if err := s.wallet.BroadcastV2TransactionSet(basis, renewalSet); err != nil {
 		return fmt.Errorf("failed to broadcast transaction set: %w", err)
 	}
 	broadcast = true // set broadcast so the UTXOs will not be released if the renter happens to disconnect before receiving the last response
@@ -1084,7 +1080,7 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	}, usage)
 	if err != nil {
 		return fmt.Errorf("failed to add contract: %w", err)
-	} else if err := s.syncer.BroadcastV2TransactionSet(basis, renewalSet); err != nil {
+	} else if err := s.wallet.BroadcastV2TransactionSet(basis, renewalSet); err != nil {
 		return fmt.Errorf("failed to broadcast transaction set: %w", err)
 	}
 	broadcast = true // set broadcast so the UTXOs will not be released if the renter happens to disconnect before receiving the last response
@@ -1233,13 +1229,12 @@ func errorDecodingError(f string, p ...any) error {
 }
 
 // NewServer creates a new RHP4 server
-func NewServer(pk types.PrivateKey, cm ChainManager, syncer Syncer, contracts Contractor, wallet Wallet, settings Settings, sectors Sectors, opts ...ServerOption) *Server {
+func NewServer(pk types.PrivateKey, cm ChainManager, contracts Contractor, wallet Wallet, settings Settings, sectors Sectors, opts ...ServerOption) *Server {
 	s := &Server{
 		hostKey:            pk,
 		priceTableValidity: 30 * time.Minute,
 
 		chain:      cm,
-		syncer:     syncer,
 		wallet:     wallet,
 		sectors:    sectors,
 		contractor: contracts,
