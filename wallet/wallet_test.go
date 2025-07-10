@@ -6,7 +6,6 @@ import (
 	"math/bits"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"testing"
 	"time"
 
@@ -393,54 +392,35 @@ func TestWalletLockUnlock(t *testing.T) {
 	mineAndSync(t, cm, ws, w, w.Address(), 1)
 	mineAndSync(t, cm, ws, w, types.VoidAddress, cm.TipState().Network.MaturityDelay)
 
-	txn := types.Transaction{
+	if utxos, err := w.SpendableOutputs(); err != nil {
+		t.Fatal(err)
+	} else if len(utxos) != 1 {
+		t.Fatalf("expected 1 spendable output, got %v", len(utxos))
+	}
+
+	txn := types.V2Transaction{
 		SiacoinOutputs: []types.SiacoinOutput{
 			{Address: types.VoidAddress, Value: initialReward},
 		},
 	}
-	toSign, err := w.FundTransaction(&txn, initialReward, false)
+	_, toSign, err := w.FundV2Transaction(&txn, initialReward, false)
 	if err != nil {
 		t.Fatal(err)
+	} else if len(toSign) != 1 {
+		t.Fatalf("expected 1 input to sign, got %v", len(toSign))
 	}
 
-	locked, err := ws.LockedUTXOs(time.Now())
-	if err != nil {
+	if utxos, err := w.SpendableOutputs(); err != nil {
 		t.Fatal(err)
-	} else if len(locked) != len(toSign) {
-		t.Fatalf("expected %v locked outputs, got %v", len(toSign), len(locked))
+	} else if len(utxos) != 0 {
+		t.Fatalf("expected 0 spendable outputs, got %v", len(utxos))
 	}
+	w.ReleaseInputs(nil, []types.V2Transaction{txn})
 
-	for _, id := range toSign {
-		if !slices.Contains(locked, types.SiacoinOutputID(id)) {
-			t.Fatalf("expected locked output %v, got %v", id, locked)
-		}
-	}
-
-	if err := w.Close(); err != nil {
+	if utxos, err := w.SpendableOutputs(); err != nil {
 		t.Fatal(err)
-	}
-
-	// reload the wallet to check that the locked outputs are loaded
-	w, err = wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer w.Close()
-
-	_, err = w.FundTransaction(&txn, initialReward, false)
-	if !errors.Is(err, wallet.ErrNotEnoughFunds) {
-		t.Fatalf("expected %q, got %q", wallet.ErrNotEnoughFunds, err)
-	}
-
-	if err := w.ReleaseInputs([]types.Transaction{txn}, nil); err != nil {
-		t.Fatal(err)
-	}
-
-	locked, err = ws.LockedUTXOs(time.Now())
-	if err != nil {
-		t.Fatal(err)
-	} else if len(locked) != 0 {
-		t.Fatalf("expected 0 locked outputs, got %v", len(locked))
+	} else if len(utxos) != 1 {
+		t.Fatalf("expected 1 spendable output, got %v", len(utxos))
 	}
 }
 

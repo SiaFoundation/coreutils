@@ -76,15 +76,6 @@ type (
 		// wallet.
 		WalletEventCount() (uint64, error)
 
-		// LockUTXOs locks the given siacoin output IDs for use in a transaction.
-		// The outputs will be unlocked after the given time.
-		LockUTXOs([]types.SiacoinOutputID, time.Time) error
-		// LockedUTXOs returns a list of locked siacoin output IDs. That are locked
-		// as of the given time.
-		LockedUTXOs(time.Time) ([]types.SiacoinOutputID, error)
-		// ReleaseUTXOs unlocks the given siacoin output IDs.
-		ReleaseUTXOs([]types.SiacoinOutputID) error
-
 		// AddBroadcastedSet adds a set of broadcasted transactions. The wallet
 		// will periodically rebroadcast the transactions in this set until all
 		// transactions are gone from the transaction pool or one week has
@@ -405,18 +396,14 @@ func (sw *SingleAddressWallet) selectUTXOs(amount types.Currency, inputs int, us
 // lockUTXOs locks the given siacoin output IDs for use in a transaction.
 // The outputs will be unlocked after the given time.
 // It is expected that the caller will hold sw.mu.
-func (sw *SingleAddressWallet) lockUTXOs(ids []types.SiacoinOutputID) error {
+func (sw *SingleAddressWallet) lockUTXOs(ids []types.SiacoinOutputID) {
 	if len(ids) == 0 {
-		return nil
+		return
 	}
 	expirationTimestamp := time.Now().Add(sw.cfg.ReservationDuration)
-	if err := sw.store.LockUTXOs(ids, expirationTimestamp); err != nil {
-		return err
-	}
 	for _, id := range ids {
 		sw.locked[id] = expirationTimestamp
 	}
-	return nil
 }
 
 // FundTransaction adds siacoin inputs worth at least amount to the provided
@@ -454,10 +441,7 @@ func (sw *SingleAddressWallet) FundTransaction(txn *types.Transaction, amount ty
 		toSign = append(toSign, types.Hash256(sce.ID))
 		toLock = append(toLock, sce.ID)
 	}
-
-	if err := sw.lockUTXOs(toLock); err != nil {
-		return nil, fmt.Errorf("failed to lock UTXOs: %w", err)
-	}
+	sw.lockUTXOs(toLock)
 	return toSign, nil
 }
 
@@ -520,9 +504,7 @@ func (sw *SingleAddressWallet) FundV2Transaction(txn *types.V2Transaction, amoun
 		toLock = append(toLock, sce.ID)
 	}
 
-	if err := sw.lockUTXOs(toLock); err != nil {
-		return types.ChainIndex{}, nil, fmt.Errorf("failed to lock UTXOs: %w", err)
-	}
+	sw.lockUTXOs(toLock)
 	return tip, toSign, nil
 }
 
@@ -789,37 +771,27 @@ func (sw *SingleAddressWallet) Redistribute(outputs int, amount, feePerByte type
 		toSign = append(toSign, toSignTxn)
 	}
 
-	if err := sw.lockUTXOs(toLock); err != nil {
-		return types.ChainIndex{}, nil, nil, fmt.Errorf("failed to lock UTXOs: %w", err)
-	}
+	sw.lockUTXOs(toLock)
 	return tip, txns, toSign, nil
 }
 
 // ReleaseInputs is a helper function that releases the inputs of txn for use in
 // other transactions. It should only be called on transactions that are invalid
 // or will never be broadcast.
-func (sw *SingleAddressWallet) ReleaseInputs(txns []types.Transaction, v2txns []types.V2Transaction) error {
+func (sw *SingleAddressWallet) ReleaseInputs(txns []types.Transaction, v2txns []types.V2Transaction) {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
-	var released []types.SiacoinOutputID
 	for _, txn := range txns {
 		for _, in := range txn.SiacoinInputs {
 			delete(sw.locked, in.ParentID)
-			released = append(released, in.ParentID)
 		}
 	}
 	for _, txn := range v2txns {
 		for _, in := range txn.SiacoinInputs {
 			delete(sw.locked, in.Parent.ID)
-			released = append(released, in.Parent.ID)
 		}
 	}
-
-	if err := sw.store.ReleaseUTXOs(released); err != nil {
-		return fmt.Errorf("failed to release locked UTXOs: %w", err)
-	}
-	return nil
 }
 
 // isLocked returns true if the siacoin output with given id is locked, this
@@ -954,15 +926,6 @@ func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store Single
 
 		addr:   types.StandardUnlockHash(priv.PublicKey()),
 		locked: make(map[types.SiacoinOutputID]time.Time),
-	}
-
-	// load the wallet's locked UTXOs
-	lockedIDs, err := store.LockedUTXOs(time.Now())
-	if err != nil {
-		return nil, fmt.Errorf("failed to get locked UTXOs: %w", err)
-	}
-	for _, id := range lockedIDs {
-		sw.locked[id] = time.Now().Add(sw.cfg.ReservationDuration)
 	}
 
 	// load the broadcasted transactions and add them to the pool, we don't
