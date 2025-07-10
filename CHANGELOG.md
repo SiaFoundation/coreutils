@@ -1,3 +1,23 @@
+## 0.17.0 (2025-07-10)
+
+### Breaking Changes
+
+- Removed unused syncer interface from RHP4 server.
+
+#### Remove persistence for locked UTXOs
+
+Now that the tpool is persisted, UTXOs that have been broadcast will be readded on startup. This should mean that locked UTXOs can be ephemeral again since their primary purpose is to prevent double spends during RPCs.
+
+### Features
+
+- Periodically rebroadcast transactions created with SingleAddressWallet
+
+#### Add RPCSendHeaders
+
+##282 by @lukechampine
+
+See https://github.com/SiaFoundation/core/pull/330
+
 ## 0.16.5 (2025-07-07)
 
 ### Features
