@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -15,11 +16,12 @@ import (
 // primarily useful for testing or as a reference implementation.
 type (
 	EphemeralWalletStore struct {
-		mu     sync.Mutex
-		tip    types.ChainIndex
-		utxos  map[types.SiacoinOutputID]types.SiacoinElement
-		locked map[types.SiacoinOutputID]time.Time
-		events []wallet.Event
+		mu          sync.Mutex
+		tip         types.ChainIndex
+		utxos       map[types.SiacoinOutputID]types.SiacoinElement
+		locked      map[types.SiacoinOutputID]time.Time
+		events      []wallet.Event
+		broadcasted []wallet.BroadcastedSet
 	}
 
 	ephemeralWalletUpdateTxn struct {
@@ -181,6 +183,41 @@ func (es *EphemeralWalletStore) LockedUTXOs(ts time.Time) ([]types.SiacoinOutput
 		}
 	}
 	return ids, nil
+}
+
+// AddBroadcastedSet adds a set of broadcasted transactions. The wallet will
+// periodically rebroadcast the transactions in this set until all transactions
+// are gone from the transaction pool or one week has passed.
+func (es *EphemeralWalletStore) AddBroadcastedSet(set wallet.BroadcastedSet) error {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	for _, existing := range es.broadcasted {
+		if existing.ID() == set.ID() {
+			return nil
+		}
+	}
+	es.broadcasted = append(es.broadcasted, set)
+	return nil
+}
+
+// BroadcastedSets returns recently broadcasted sets.
+func (es *EphemeralWalletStore) BroadcastedSets() ([]wallet.BroadcastedSet, error) {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	return es.broadcasted, nil
+}
+
+// RemoveBroadcastedSet removes a set so it's no longer rebroadcasted.
+func (es *EphemeralWalletStore) RemoveBroadcastedSet(set wallet.BroadcastedSet) error {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	for i, existing := range es.broadcasted {
+		if existing.ID() == set.ID() {
+			es.broadcasted = append(es.broadcasted[:i], es.broadcasted[i+1:]...)
+			return nil
+		}
+	}
+	return errors.New("broadcasted set not found")
 }
 
 // NewEphemeralWalletStore returns a new EphemeralWalletStore.
