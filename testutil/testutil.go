@@ -25,7 +25,8 @@ type (
 	}
 )
 
-func (s *MockSyncer) Calls() []broadcastCall {
+// BroadcastCalls returns the calls made to the MockSyncer
+func (s *MockSyncer) BroadcastCalls() []broadcastCall {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.calls

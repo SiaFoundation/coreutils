@@ -1988,7 +1988,7 @@ func TestRebroadcastTransaction(t *testing.T) {
 	}
 
 	// assert the set was broadcasted twice
-	if calls := s.Calls(); len(calls) != 2 {
+	if calls := s.BroadcastCalls(); len(calls) != 2 {
 		t.Fatalf("expected 2 calls to BroadcastV2TransactionSet, got %v", len(calls))
 	} else if calls[0].Index != basis || !reflect.DeepEqual(calls[0].Txns, set) {
 		t.Fatal("unexpected first call to BroadcastV2TransactionSet")
@@ -2021,7 +2021,7 @@ func TestRebroadcastTransaction(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// assert the set was rebroadcasted
-	if calls := s.Calls(); len(calls) == 2 {
+	if calls := s.BroadcastCalls(); len(calls) == 2 {
 		t.Fatal("expected set to have been rebroadcasted")
 	} else if len(calls[len(calls)-1].Txns) != 1 || calls[len(calls)-1].Txns[0].ID() != txn2.ID() {
 		t.Fatal("expected only to have rebroadcasted a single transaction")
