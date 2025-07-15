@@ -12,7 +12,7 @@ require (
 	go.sia.tech/mux v1.4.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.40.0
-	golang.org/x/net v0.41.0
+	golang.org/x/net v0.42.0
 	lukechampine.com/frand v1.5.1
 )
 
