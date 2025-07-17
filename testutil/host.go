@@ -56,6 +56,17 @@ type EphemeralSectorStore struct {
 
 var _ rhp4.Sectors = (*EphemeralSectorStore)(nil)
 
+// DeleteSector deletes a sector from the store.
+func (es *EphemeralSectorStore) DeleteSector(root types.Hash256) error {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	if _, ok := es.sectors[root]; !ok {
+		return errors.New("sector not found")
+	}
+	delete(es.sectors, root)
+	return nil
+}
+
 // HasSector checks if a sector is stored in the store.
 func (es *EphemeralSectorStore) HasSector(root types.Hash256) (bool, error) {
 	es.mu.Lock()

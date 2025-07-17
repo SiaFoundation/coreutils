@@ -1107,7 +1107,7 @@ func (s *Server) handleRPCVerifySector(stream net.Conn) error {
 
 	sector, err := s.sectors.ReadSector(req.Root)
 	if err != nil {
-		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
+		return rhp4.NewRPCError(rhp4.ErrorCodeHostError, err.Error())
 	}
 
 	proof := rhp4.BuildSectorProof(sector, req.LeafIndex, req.LeafIndex+1)
