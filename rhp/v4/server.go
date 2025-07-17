@@ -606,8 +606,12 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 		return errorDecodingError("failed to read request: %v", err)
 	}
 
-	ourKey := s.hostKey.PublicKey()
 	settings := s.settings.RHP4Settings()
+	if !settings.AcceptingContracts {
+		return rhp4.ErrNotAcceptingContracts
+	}
+
+	ourKey := s.hostKey.PublicKey()
 	tip := s.chain.Tip()
 	if err := req.Validate(ourKey, tip, settings.MaxCollateral, settings.MaxContractDuration); err != nil {
 		return err
@@ -744,6 +748,11 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 		return errorDecodingError("failed to read request: %v", err)
 	}
 
+	settings := s.settings.RHP4Settings()
+	if !settings.AcceptingContracts {
+		return rhp4.ErrNotAcceptingContracts
+	}
+
 	// validate prices
 	prices := req.Prices
 	if err := prices.Validate(s.hostKey.PublicKey()); err != nil {
@@ -765,7 +774,6 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 
 	// validate the request
 	cs := s.chain.TipState()
-	settings := s.settings.RHP4Settings()
 	if err := req.Validate(s.hostKey.PublicKey(), cs.Index, state.Revision, settings.MaxCollateral); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
@@ -920,6 +928,11 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 		return errorDecodingError("failed to read request: %v", err)
 	}
 
+	settings := s.settings.RHP4Settings()
+	if !settings.AcceptingContracts {
+		return rhp4.ErrNotAcceptingContracts
+	}
+
 	// validate prices
 	prices := req.Prices
 	if err := prices.Validate(s.hostKey.PublicKey()); err != nil {
@@ -933,10 +946,8 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	}
 	defer unlock()
 
-	settings := s.settings.RHP4Settings()
-	tip := s.chain.Tip()
-
 	// validate the request
+	tip := s.chain.Tip()
 	if err := req.Validate(s.hostKey.PublicKey(), tip, state.Revision, settings.MaxCollateral, settings.MaxContractDuration); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
