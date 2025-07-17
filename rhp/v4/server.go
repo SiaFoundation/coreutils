@@ -1129,6 +1129,16 @@ func (s *Server) handleRPCVerifySector(stream net.Conn) error {
 	return rhp4.WriteResponse(stream, &resp)
 }
 
+func versionValid(stream net.Conn, version uint8, supported ...uint8) bool {
+	for _, v := range supported {
+		if v == version {
+			return true
+		}
+	}
+	rhp4.WriteResponse(stream, &rhp4.RPCError{Code: rhp4.ErrorCodeBadRequest, Description: fmt.Sprintf("unsupported version %d", version)})
+	return false
+}
+
 func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 	defer stream.Close()
 
@@ -1140,47 +1150,89 @@ func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 
 	stream.SetDeadline(time.Now().Add(30 * time.Second)) // set an initial timeout
 	rpcStart := time.Now()
-	id, err := rhp4.ReadID(stream)
+	header, err := rhp4.ReadHeader(stream)
 	if err != nil {
 		log.Debug("failed to read RPC ID", zap.Error(err))
 		return
 	}
-	log = log.With(zap.Stringer("rpc", id))
+	log = log.With(zap.Stringer("rpc", header))
 
-	switch id {
+	switch header.ID {
 	case rhp4.RPCSettingsID:
+		if !versionValid(stream, header.Version, 0) {
+			return
+		}
 		err = s.handleRPCSettings(stream)
 	// contract
 	case rhp4.RPCFormContractID:
+		if !versionValid(stream, header.Version, 0) {
+			return
+		}
 		err = s.handleRPCFormContract(stream)
 	case rhp4.RPCRefreshContractID:
+		if !versionValid(stream, header.Version, 0) {
+			return
+		}
 		err = s.handleRPCRefreshContract(stream)
 	case rhp4.RPCRenewContractID:
+		if !versionValid(stream, header.Version, 0) {
+			return
+		}
 		err = s.handleRPCRenewContract(stream)
 	case rhp4.RPCLatestRevisionID:
+		if !versionValid(stream, header.Version, 0) {
+			return
+		}
 		err = s.handleRPCLatestRevision(stream)
 	case rhp4.RPCFreeSectorsID:
+		if !versionValid(stream, header.Version, 0) {
+			return
+		}
 		err = s.handleRPCFreeSectors(stream)
 	case rhp4.RPCSectorRootsID:
+		if !versionValid(stream, header.Version, 0) {
+			return
+		}
 		err = s.handleRPCSectorRoots(stream)
 	// account
 	case rhp4.RPCAccountBalanceID:
+		if !versionValid(stream, header.Version, 0) {
+			return
+		}
 		err = s.handleRPCAccountBalance(stream)
 	case rhp4.RPCFundAccountsID:
+		if !versionValid(stream, header.Version, 0) {
+			return
+		}
 		err = s.handleRPCFundAccounts(stream)
 	case rhp4.RPCReplenishAccountsID:
+		if !versionValid(stream, header.Version, 0) {
+			return
+		}
 		err = s.handleRPCReplenishAccounts(stream)
 	// sector
 	case rhp4.RPCAppendSectorsID:
+		if !versionValid(stream, header.Version, 0) {
+			return
+		}
 		err = s.handleRPCAppendSectors(stream)
 	case rhp4.RPCReadSectorID:
+		if !versionValid(stream, header.Version, 0) {
+			return
+		}
 		err = s.handleRPCReadSector(stream, log.Named("RPCReadSector"))
 	case rhp4.RPCWriteSectorID:
+		if !versionValid(stream, header.Version, 0) {
+			return
+		}
 		err = s.handleRPCWriteSector(stream)
 	case rhp4.RPCVerifySectorID:
+		if !versionValid(stream, header.Version, 0) {
+			return
+		}
 		err = s.handleRPCVerifySector(stream)
 	default:
-		log.Debug("unrecognized RPC", zap.Stringer("rpc", id))
+		log.Debug("unrecognized RPC")
 		rhp4.WriteResponse(stream, &rhp4.RPCError{Code: rhp4.ErrorCodeBadRequest, Description: "unrecognized RPC"})
 		return
 	}
