@@ -567,6 +567,166 @@ func TestRPCRefresh(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		expectedAllowance := types.Siacoins(10)
+		expectedCollateral := types.Siacoins(220)
+		renterAllowance := refreshResult.Contract.Revision.RenterOutput.Value
+		hostCollateral := refreshResult.Contract.Revision.TotalCollateral
+		if !renterAllowance.Equals(expectedAllowance) {
+			t.Fatalf("expected renter allowance %v, got %v", expectedAllowance, renterAllowance)
+		} else if !hostCollateral.Equals(expectedCollateral) {
+			t.Fatalf("expected host collateral %v, got %v", expectedCollateral, hostCollateral)
+		}
+
+		// verify the transaction set is valid
+		if known, err := cm.AddV2PoolTransactions(refreshResult.RenewalSet.Basis, refreshResult.RenewalSet.Transactions); err != nil {
+			t.Fatal(err)
+		} else if !known {
+			t.Fatal("expected transaction set to be known")
+		}
+
+		sigHash := cm.TipState().ContractSigHash(refreshResult.Contract.Revision)
+		if !renterKey.PublicKey().VerifyHash(sigHash, refreshResult.Contract.Revision.RenterSignature) {
+			t.Fatal("renter signature verification failed")
+		} else if !hostKey.PublicKey().VerifyHash(sigHash, refreshResult.Contract.Revision.HostSignature) {
+			t.Fatal("host signature verification failed")
+		}
+
+		rs, err := c.RPCLatestRevision(context.Background(), revision.ID)
+		if err != nil {
+			t.Fatal(err)
+		} else if !rs.Renewed {
+			t.Fatal("expected contract to be renewed")
+		} else if rs.Revisable {
+			t.Fatal("expected contract to not be revisable")
+		}
+	})
+}
+
+func TestRPCRefreshV0(t *testing.T) {
+	n, genesis := testutil.V2Network()
+	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
+	cm, w := startTestNode(t, n, genesis)
+
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
+
+	sr := testutil.NewEphemeralSettingsReporter()
+	sr.Update(proto4.HostSettings{
+		Release:             "test",
+		AcceptingContracts:  true,
+		WalletAddress:       w.Address(),
+		MaxCollateral:       types.Siacoins(10000),
+		MaxContractDuration: 1000,
+		RemainingStorage:    100 * proto4.SectorSize,
+		TotalStorage:        100 * proto4.SectorSize,
+		Prices: proto4.HostPrices{
+			ContractPrice: types.Siacoins(1).Div64(5), // 0.2 SC
+			StoragePrice:  types.NewCurrency64(100),   // 100 H / byte / block
+			IngressPrice:  types.NewCurrency64(100),   // 100 H / byte
+			EgressPrice:   types.NewCurrency64(100),   // 100 H / byte
+			Collateral:    types.NewCurrency64(200),
+		},
+	})
+	ss := testutil.NewEphemeralSectorStore()
+	ec := testutil.NewEphemeralContractor(cm)
+
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, w, ec, sr, ss, zap.NewNop())
+	c := rhp4.NewClient(transport)
+	fundAndSign := &fundAndSign{w, renterKey}
+
+	settings, err := c.RPCSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.ProtocolVersion[1] = 0 // force v0 refresh
+	c.OverrideSettings(settings)
+
+	formContractUploadSector := func(t *testing.T, renterAllowance, hostCollateral, accountBalance types.Currency) rhp4.ContractRevision {
+		t.Helper()
+		result, err := c.RPCFormContract(context.Background(), cm, fundAndSign, cm.TipState(), proto4.RPCFormContractParams{
+			RenterPublicKey: renterKey.PublicKey(),
+			RenterAddress:   w.Address(),
+			Allowance:       renterAllowance,
+			Collateral:      hostCollateral,
+			ProofHeight:     cm.Tip().Height + 50,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		revision := result.Contract
+
+		// verify the transaction set is valid
+		if known, err := cm.AddV2PoolTransactions(result.FormationSet.Basis, result.FormationSet.Transactions); err != nil {
+			t.Fatal(err)
+		} else if !known {
+			t.Fatal("expected transaction set to be known")
+		}
+
+		// mine a few blocks to confirm the contract
+		mineAndSync(t, cm, types.VoidAddress, 10, w, ec)
+
+		// fund an account to transfer funds to the host
+		cs := cm.TipState()
+		account := proto4.Account(renterKey.PublicKey())
+		fundResult, err := c.RPCFundAccounts(context.Background(), cs, renterKey, revision, []proto4.AccountDeposit{
+			{Account: account, Amount: accountBalance},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		revision.Revision = fundResult.Revision
+
+		// upload data
+		at := account.Token(renterKey, hostKey.PublicKey())
+		wRes, err := c.RPCWriteSector(context.Background(), at, bytes.NewReader(bytes.Repeat([]byte{1}, proto4.LeafSize)), proto4.LeafSize)
+		if err != nil {
+			t.Fatal(err)
+		}
+		aRes, err := c.RPCAppendSectors(context.Background(), fundAndSign, cs, revision, []types.Hash256{wRes.Root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		revision.Revision = aRes.Revision
+
+		rs, err := c.RPCLatestRevision(context.Background(), revision.ID)
+		if err != nil {
+			t.Fatal(err)
+		} else if rs.Renewed {
+			t.Fatal("expected contract to not be renewed")
+		} else if !rs.Revisable {
+			t.Fatal("expected contract to be revisable")
+		}
+		return revision
+	}
+
+	t.Run("no allowance or collateral", func(t *testing.T) {
+		revision := formContractUploadSector(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+
+		// refresh the contract
+		_, err := c.RPCRefreshContract(context.Background(), cm, fundAndSign, cm.TipState(), revision.Revision, proto4.RPCRefreshContractParams{
+			ContractID: revision.ID,
+			Allowance:  types.ZeroCurrency,
+			Collateral: types.ZeroCurrency,
+		})
+		if err == nil {
+			t.Fatal(err)
+		} else if !strings.Contains(err.Error(), "allowance must be greater than zero") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("valid refresh", func(t *testing.T) {
+		revision := formContractUploadSector(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+		// refresh the contract
+		refreshResult, err := c.RPCRefreshContract(context.Background(), cm, fundAndSign, cm.TipState(), revision.Revision, proto4.RPCRefreshContractParams{
+			ContractID: revision.ID,
+			Allowance:  types.Siacoins(10),
+			Collateral: types.Siacoins(20),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
 		expectedAllowance := revision.Revision.RenterOutput.Value.Add(types.Siacoins(10))
 		expectedCollateral := types.Siacoins(220)
 		renterAllowance := refreshResult.Contract.Revision.RenterOutput.Value
