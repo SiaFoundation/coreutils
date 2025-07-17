@@ -17,7 +17,7 @@ import (
 	"lukechampine.com/frand"
 )
 
-var protocolVersion = [3]byte{4, 0, 0}
+var protocolVersion = [3]byte{4, 1, 0}
 
 type (
 	// A TransportMux is a generic multiplexer for incoming streams.
@@ -742,7 +742,7 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	})
 }
 
-func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
+func (s *Server) handleRPCRefreshContract(stream net.Conn, version uint8) error {
 	var req rhp4.RPCRefreshContractRequest
 	if err := rhp4.ReadRequest(stream, &req); err != nil {
 		return errorDecodingError("failed to read request: %v", err)
@@ -778,7 +778,16 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
-	renewal, usage := rhp4.RefreshContract(existing, prices, req.Refresh)
+	var renewal types.V2FileContractRenewal
+	var usage rhp4.Usage
+	switch version {
+	case 1:
+		renewal, usage = rhp4.RefreshContractPartialRollover(existing, prices, req.Refresh)
+	case 0:
+		renewal, usage = rhp4.RefreshContractFullRollover(existing, prices, req.Refresh)
+	default:
+		return errorBadRequest("unsupported RHP4 version %v", version)
+	}
 	renterCost, hostCost := rhp4.RefreshCost(cs, prices, renewal, req.MinerFee)
 	renewalTxn := types.V2Transaction{
 		MinerFee: req.MinerFee,
@@ -1170,10 +1179,10 @@ func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 		}
 		err = s.handleRPCFormContract(stream)
 	case rhp4.RPCRefreshContractID:
-		if !versionValid(stream, header.Version, 0) {
+		if !versionValid(stream, header.Version, 0, 1) {
 			return
 		}
-		err = s.handleRPCRefreshContract(stream)
+		err = s.handleRPCRefreshContract(stream, header.Version)
 	case rhp4.RPCRenewContractID:
 		if !versionValid(stream, header.Version, 0) {
 			return

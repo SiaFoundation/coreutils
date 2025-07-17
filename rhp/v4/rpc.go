@@ -1010,6 +1010,7 @@ func (rc *Client) RPCRenewContract(ctx context.Context, tp TxPool, signer FormCo
 
 // RPCRefreshContract refreshes a contract with a host.
 func (rc *Client) RPCRefreshContract(ctx context.Context, tp TxPool, signer FormContractSigner, cs consensus.State, existing types.V2FileContract, params rhp4.RPCRefreshContractParams) (RPCRefreshContractResult, error) {
+	var v0ProtocolVersion = [3]byte{4, 0, 0}
 	if existing.HostPublicKey != rc.transport.PeerKey() {
 		return RPCRefreshContractResult{}, fmt.Errorf("host public key %q does not match peer key %q", existing.HostPublicKey, rc.transport.PeerKey())
 	}
@@ -1018,7 +1019,18 @@ func (rc *Client) RPCRefreshContract(ctx context.Context, tp TxPool, signer Form
 		return RPCRefreshContractResult{}, fmt.Errorf("failed to get host settings: %w", err)
 	}
 
-	renewal, usage := rhp4.RefreshContract(existing, settings.Prices, params)
+	var renewal types.V2FileContractRenewal
+	var usage rhp4.Usage
+	var rpcVersion uint8
+	switch settings.ProtocolVersion {
+	case v0ProtocolVersion:
+		renewal, usage = rhp4.RefreshContractFullRollover(existing, settings.Prices, params)
+		rpcVersion = 0
+	default:
+		renewal, usage = rhp4.RefreshContractPartialRollover(existing, settings.Prices, params)
+		rpcVersion = 1
+	}
+
 	renewalTxn := types.V2Transaction{
 		MinerFee: signer.RecommendedFee().Mul64(1000),
 	}
@@ -1054,7 +1066,7 @@ func (rc *Client) RPCRefreshContract(ctx context.Context, tp TxPool, signer Form
 	}
 	defer s.Close()
 
-	if err := rhp4.WriteRequest(s, rpcHeader(rhp4.RPCRefreshContractID, 0), &req); err != nil {
+	if err := rhp4.WriteRequest(s, rpcHeader(rhp4.RPCRefreshContractID, rpcVersion), &req); err != nil {
 		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRefreshContractResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
