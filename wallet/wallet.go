@@ -68,6 +68,8 @@ type (
 		// UnspentSiacoinElements returns the current chain tip along with a
 		// list of all unspent siacoin outputs, including immature ones.
 		UnspentSiacoinElements() (types.ChainIndex, []types.SiacoinElement, error)
+		// WalletEvent returns an individual event with a given ID.
+		WalletEvent(id types.Hash256) (Event, error)
 		// WalletEvents returns a paginated list of transactions ordered by
 		// maturity height, descending. If no more transactions are available,
 		// (nil, nil) should be returned.
@@ -136,9 +138,15 @@ func (set BroadcastedSet) ID() types.Hash256 {
 	return h.Sum()
 }
 
-// ErrDifferentSeed is returned when a different seed is provided to
-// NewSingleAddressWallet than was used to initialize the wallet
-var ErrDifferentSeed = errors.New("seed differs from wallet seed")
+var (
+	// ErrDifferentSeed is returned when a different seed is provided to
+	// NewSingleAddressWallet than was used to initialize the wallet
+	ErrDifferentSeed = errors.New("seed differs from wallet seed")
+
+	// ErrMissingEvent is returned when Event can not find an event with the given
+	// ID.
+	ErrMissingEvent = errors.New("no event with that ID")
+)
 
 // Close closes the wallet
 func (sw *SingleAddressWallet) Close() error {
@@ -223,6 +231,11 @@ func (sw *SingleAddressWallet) Balance() (balance Balance, err error) {
 		balance.Unconfirmed = balance.Unconfirmed.Add(sco.SiacoinOutput.Value)
 	}
 	return
+}
+
+// Event returns an individual event with a given ID.
+func (sw *SingleAddressWallet) Event(id types.Hash256) (Event, error) {
+	return sw.store.WalletEvent(id)
 }
 
 // Events returns a paginated list of events, ordered by maturity height, descending.

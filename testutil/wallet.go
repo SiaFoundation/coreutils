@@ -101,6 +101,20 @@ func (es *EphemeralWalletStore) UpdateChainState(fn func(ux wallet.UpdateTx) err
 	return fn(&ephemeralWalletUpdateTxn{store: es})
 }
 
+// WalletEvent returns a given event.
+func (es *EphemeralWalletStore) WalletEvent(id types.Hash256) (wallet.Event, error) {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+
+	for _, event := range es.events {
+		if event.ID == id {
+			return event, nil
+		}
+	}
+
+	return wallet.Event{}, wallet.ErrMissingEvent
+}
+
 // WalletEvents returns the wallet's events.
 func (es *EphemeralWalletStore) WalletEvents(offset, limit int) ([]wallet.Event, error) {
 	es.mu.Lock()
