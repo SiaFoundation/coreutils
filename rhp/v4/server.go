@@ -742,7 +742,7 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	})
 }
 
-func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
+func (s *Server) handleRPCRefreshContract(stream net.Conn, partial bool) error {
 	var req rhp4.RPCRefreshContractRequest
 	if err := rhp4.ReadRequest(stream, &req); err != nil {
 		return errorDecodingError("failed to read request: %v", err)
@@ -778,7 +778,13 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
-	renewal, usage := rhp4.RefreshContract(existing, prices, req.Refresh)
+	var renewal types.V2FileContractRenewal
+	var usage rhp4.Usage
+	if partial {
+		renewal, usage = rhp4.RefreshContractPartialRollover(existing, prices, req.Refresh)
+	} else {
+		renewal, usage = rhp4.RefreshContractFullRollover(existing, prices, req.Refresh)
+	}
 	renterCost, hostCost := rhp4.RefreshCost(cs, prices, renewal, req.MinerFee)
 	renewalTxn := types.V2Transaction{
 		MinerFee: req.MinerFee,
@@ -1154,7 +1160,9 @@ func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 	case rhp4.RPCFormContractID:
 		err = s.handleRPCFormContract(stream)
 	case rhp4.RPCRefreshContractID:
-		err = s.handleRPCRefreshContract(stream)
+		err = s.handleRPCRefreshContract(stream, false)
+	case rhp4.RPCRefreshContractRev1ID:
+		err = s.handleRPCRefreshContract(stream, true)
 	case rhp4.RPCRenewContractID:
 		err = s.handleRPCRenewContract(stream)
 	case rhp4.RPCLatestRevisionID:

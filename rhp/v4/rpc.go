@@ -236,7 +236,7 @@ type (
 	}
 )
 
-func callSingleRoundtripRPC(ctx context.Context, t TransportClient, rpcID types.Specifier, req, resp rhp4.Object) error {
+func callSingleRoundtripRPC(ctx context.Context, t TransportClient, rpcID rhp4.RPCSpecifier, req, resp rhp4.Object) error {
 	s, err := openStream(ctx, t, defaultStreamTimeout)
 	if err != nil {
 		return fmt.Errorf("failed to dial stream: %w", err)
@@ -955,9 +955,18 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 	}, nil
 }
 
-// RPCRefreshContract refreshes a contract with a host.
-func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRefreshContractParams) (RPCRefreshContractResult, error) {
-	renewal, usage := rhp4.RefreshContract(existing, p, params)
+func rpcRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRefreshContractParams, partialRollover bool) (RPCRefreshContractResult, error) {
+	var renewal types.V2FileContractRenewal
+	var usage rhp4.Usage
+	var id rhp4.RPCSpecifier
+	if partialRollover {
+		renewal, usage = rhp4.RefreshContractPartialRollover(existing, p, params)
+		id = rhp4.RPCRefreshContractRev1ID
+	} else {
+		renewal, usage = rhp4.RefreshContractFullRollover(existing, p, params)
+		id = rhp4.RPCRefreshContractID
+	}
+
 	renewalTxn := types.V2Transaction{
 		MinerFee: signer.RecommendedFee().Mul64(1000),
 	}
@@ -993,7 +1002,7 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 	}
 	defer s.Close()
 
-	if err := rhp4.WriteRequest(s, rhp4.RPCRefreshContractID, &req); err != nil {
+	if err := rhp4.WriteRequest(s, id, &req); err != nil {
 		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRefreshContractResult{}, fmt.Errorf("failed to write request: %w", err)
 	}
@@ -1094,4 +1103,15 @@ func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 		Cost:  renterCost,
 		Usage: usage,
 	}, nil
+}
+
+// RPCRefreshContractFullRollover refreshes a contract with a host.
+// Deprecated: use RPCRefreshContractPartialRollover instead.
+func RPCRefreshContractFullRollover(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRefreshContractParams) (RPCRefreshContractResult, error) {
+	return rpcRefreshContract(ctx, t, tp, signer, cs, p, existing, params, false)
+}
+
+// RPCRefreshContractPartialRollover refreshes a contract with a host.
+func RPCRefreshContractPartialRollover(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRefreshContractParams) (RPCRefreshContractResult, error) {
+	return rpcRefreshContract(ctx, t, tp, signer, cs, p, existing, params, true)
 }
