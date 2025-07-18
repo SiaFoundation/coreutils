@@ -61,7 +61,7 @@ func (es *EphemeralSectorStore) DeleteSector(root types.Hash256) error {
 	es.mu.Lock()
 	defer es.mu.Unlock()
 	if _, ok := es.sectors[root]; !ok {
-		return errors.New("sector not found")
+		return proto4.ErrSectorNotFound
 	}
 	delete(es.sectors, root)
 	return nil
@@ -81,7 +81,7 @@ func (es *EphemeralSectorStore) ReadSector(root types.Hash256) (*[proto4.SectorS
 	defer es.mu.Unlock()
 	sector, ok := es.sectors[root]
 	if !ok {
-		return nil, errors.New("sector not found")
+		return nil, proto4.ErrSectorNotFound
 	}
 	return sector, nil
 }
