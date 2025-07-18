@@ -80,6 +80,28 @@ func assertBalance(t *testing.T, w *wallet.SingleAddressWallet, spendable, confi
 func assertEvent(t *testing.T, wm *wallet.SingleAddressWallet, id types.Hash256, eventType string, inflow, outflow types.Currency, maturityHeight uint64) {
 	t.Helper()
 
+	// check that event is present in Events list and when requested
+	// individually
+	checkEvent := func(event wallet.Event) {
+		if event.Type != eventType {
+			t.Fatalf("expected %v event, got %v", eventType, event.Type)
+		} else if event.MaturityHeight != maturityHeight {
+			t.Fatalf("expected maturity height %v, got %v", maturityHeight, event.MaturityHeight)
+		}
+
+		if !event.SiacoinInflow().Equals(inflow) {
+			t.Fatalf("expected inflow %v, got %v", inflow, event.SiacoinInflow())
+		} else if !event.SiacoinOutflow().Equals(outflow) {
+			t.Fatalf("expected outflow %v, got %v", outflow, event.SiacoinOutflow())
+		}
+	}
+
+	event, err := wm.Event(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkEvent(event)
+
 	events, err := wm.Events(0, 100)
 	if err != nil {
 		t.Fatal(err)
@@ -87,17 +109,7 @@ func assertEvent(t *testing.T, wm *wallet.SingleAddressWallet, id types.Hash256,
 
 	for _, event := range events {
 		if event.ID == id {
-			if event.Type != eventType {
-				t.Fatalf("expected %v event, got %v", eventType, event.Type)
-			} else if event.MaturityHeight != maturityHeight {
-				t.Fatalf("expected maturity height %v, got %v", maturityHeight, event.MaturityHeight)
-			}
-
-			if !event.SiacoinInflow().Equals(inflow) {
-				t.Fatalf("expected inflow %v, got %v", inflow, event.SiacoinInflow())
-			} else if !event.SiacoinOutflow().Equals(outflow) {
-				t.Fatalf("expected outflow %v, got %v", outflow, event.SiacoinOutflow())
-			}
+			checkEvent(event)
 			return
 		}
 	}
