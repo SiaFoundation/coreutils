@@ -19,7 +19,6 @@ type (
 		mu          sync.Mutex
 		tip         types.ChainIndex
 		utxos       map[types.SiacoinOutputID]types.SiacoinElement
-		locked      map[types.SiacoinOutputID]time.Time
 		events      []wallet.Event
 		broadcasted []wallet.BroadcastedSet
 	}
@@ -164,41 +163,6 @@ func (es *EphemeralWalletStore) Tip() (types.ChainIndex, error) {
 	return es.tip, nil
 }
 
-// LockUTXOs locks the siacoin outputs with the given ids.
-func (es *EphemeralWalletStore) LockUTXOs(ids []types.SiacoinOutputID, expiration time.Time) error {
-	es.mu.Lock()
-	defer es.mu.Unlock()
-	for _, id := range ids {
-		es.locked[id] = expiration
-	}
-	return nil
-}
-
-// ReleaseUTXOs unlocks the siacoin outputs with the given ids.
-func (es *EphemeralWalletStore) ReleaseUTXOs(ids []types.SiacoinOutputID) error {
-	es.mu.Lock()
-	defer es.mu.Unlock()
-	for _, id := range ids {
-		delete(es.locked, id)
-	}
-	return nil
-}
-
-// LockedUTXOs returns the wallet's locked siacoin outputs.
-// The returned ids are the ids of the locked siacoin outputs that have
-// not expired.
-func (es *EphemeralWalletStore) LockedUTXOs(ts time.Time) ([]types.SiacoinOutputID, error) {
-	es.mu.Lock()
-	defer es.mu.Unlock()
-	ids := make([]types.SiacoinOutputID, 0, len(es.locked))
-	for id, expiration := range es.locked {
-		if expiration.After(ts) {
-			ids = append(ids, id)
-		}
-	}
-	return ids, nil
-}
-
 // AddBroadcastedSet adds a set of broadcasted transactions. The wallet will
 // periodically rebroadcast the transactions in this set until all transactions
 // are gone from the transaction pool or one week has passed.
@@ -237,7 +201,6 @@ func (es *EphemeralWalletStore) RemoveBroadcastedSet(set wallet.BroadcastedSet) 
 // NewEphemeralWalletStore returns a new EphemeralWalletStore.
 func NewEphemeralWalletStore() *EphemeralWalletStore {
 	return &EphemeralWalletStore{
-		utxos:  make(map[types.SiacoinOutputID]types.SiacoinElement),
-		locked: make(map[types.SiacoinOutputID]time.Time),
+		utxos: make(map[types.SiacoinOutputID]types.SiacoinElement),
 	}
 }
