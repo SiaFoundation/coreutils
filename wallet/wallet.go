@@ -143,9 +143,9 @@ var (
 	// NewSingleAddressWallet than was used to initialize the wallet
 	ErrDifferentSeed = errors.New("seed differs from wallet seed")
 
-	// ErrMissingEvent is returned when Event can not find an event with the given
-	// ID.
-	ErrMissingEvent = errors.New("no event with that ID")
+	// ErrEventNotFound is returned when Event can not find an event with the
+	// given ID.
+	ErrEventNotFound = errors.New("event not found")
 )
 
 // Close closes the wallet

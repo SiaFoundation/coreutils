@@ -112,7 +112,7 @@ func (es *EphemeralWalletStore) WalletEvent(id types.Hash256) (wallet.Event, err
 		}
 	}
 
-	return wallet.Event{}, wallet.ErrMissingEvent
+	return wallet.Event{}, wallet.ErrEventNotFound
 }
 
 // WalletEvents returns the wallet's events.
