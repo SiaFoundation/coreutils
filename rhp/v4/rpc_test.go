@@ -1168,6 +1168,11 @@ func TestAccounts(t *testing.T) {
 
 	cs := cm.TipState()
 
+	var sector *[proto4.SectorSize]byte
+	if err := ss.StoreSector(types.Hash256{1}, sector, 0); err != nil {
+		t.Fatal(err)
+	}
+
 	// test operations against unknown account
 	token := account.Token(renterKey, hostKey.PublicKey())
 	_, err = rhp4.RPCVerifySector(context.Background(), transport, settings.Prices, token, types.Hash256{1})
