@@ -2,8 +2,4 @@
 default: minor
 ---
 
-# Add RPCSendHeaders
-
-#282 by @lukechampine
-
-See https://github.com/SiaFoundation/core/pull/330
+# Added RPCSendHeaders to sync by block headers
