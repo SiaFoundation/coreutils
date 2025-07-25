@@ -251,6 +251,156 @@ func callSingleRoundtripRPC(ctx context.Context, t TransportClient, rpcID types.
 	return nil
 }
 
+func rpcRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRefreshContractParams, partialRollover bool) (RPCRefreshContractResult, error) {
+	var renewal types.V2FileContractRenewal
+	var usage rhp4.Usage
+	var id types.Specifier
+	if partialRollover {
+		renewal, usage = rhp4.RefreshContractPartialRollover(existing, p, params)
+		id = rhp4.RPCRefreshPartialID
+	} else {
+		renewal, usage = rhp4.RefreshContractFullRollover(existing, p, params)
+		id = rhp4.RPCRefreshContractID
+	}
+
+	renewalTxn := types.V2Transaction{
+		MinerFee: signer.RecommendedFee().Mul64(1000),
+	}
+
+	renterCost, hostCost := rhp4.RefreshCost(cs, p, renewal, renewalTxn.MinerFee)
+	req := rhp4.RPCRefreshContractRequest{
+		Prices:   p,
+		Refresh:  params,
+		MinerFee: renewalTxn.MinerFee,
+	}
+
+	basis, toSign, err := signer.FundV2Transaction(&renewalTxn, renterCost)
+	if err != nil {
+		return RPCRefreshContractResult{}, fmt.Errorf("failed to fund transaction: %w", err)
+	}
+
+	req.Basis, req.RenterParents, err = tp.V2TransactionSet(basis, renewalTxn)
+	if err != nil {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
+		return RPCRefreshContractResult{}, fmt.Errorf("failed to get transaction set: %w", err)
+	}
+	for _, si := range renewalTxn.SiacoinInputs {
+		req.RenterInputs = append(req.RenterInputs, si.Parent.Move())
+	}
+	req.RenterParents = req.RenterParents[:len(req.RenterParents)-1] // last transaction is the renewal
+
+	sigHash := req.ChallengeSigHash(existing.RevisionNumber)
+	req.ChallengeSignature = signer.SignHash(sigHash)
+
+	s, err := openStream(ctx, t, defaultStreamTimeout)
+	if err != nil {
+		return RPCRefreshContractResult{}, fmt.Errorf("failed to dial stream: %w", err)
+	}
+	defer s.Close()
+
+	if err := rhp4.WriteRequest(s, id, &req); err != nil {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
+		return RPCRefreshContractResult{}, fmt.Errorf("failed to write request: %w", err)
+	}
+
+	var hostInputsResp rhp4.RPCRefreshContractResponse
+	if err := rhp4.ReadResponse(s, &hostInputsResp); err != nil {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
+		return RPCRefreshContractResult{}, fmt.Errorf("failed to read host inputs response: %w", err)
+	}
+
+	// add the host inputs to the transaction
+	var hostInputSum types.Currency
+	for _, si := range hostInputsResp.HostInputs {
+		hostInputSum = hostInputSum.Add(si.Parent.SiacoinOutput.Value)
+		renewalTxn.SiacoinInputs = append(renewalTxn.SiacoinInputs, si)
+	}
+
+	// verify the host added enough inputs
+	if n := hostInputSum.Cmp(hostCost); n < 0 {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
+		return RPCRefreshContractResult{}, fmt.Errorf("expected host to fund %v, got %v", hostCost, hostInputSum)
+	} else if n > 0 {
+		// add change output
+		renewalTxn.SiacoinOutputs = append(renewalTxn.SiacoinOutputs, types.SiacoinOutput{
+			Address: existing.HostOutput.Address,
+			Value:   hostInputSum.Sub(hostCost),
+		})
+	}
+
+	// sign the renter inputs after adding the host inputs
+	renewalTxn.FileContractResolutions = []types.V2FileContractResolution{{
+		// only the ID is needed when signing; the host's response will contain
+		// the full StateElement
+		Parent:     types.V2FileContractElement{ID: params.ContractID},
+		Resolution: &renewal,
+	}}
+	signer.SignV2Inputs(&renewalTxn, toSign)
+	// sign the renewal
+	renewalSigHash := cs.RenewalSigHash(renewal)
+	renewal.RenterSignature = signer.SignHash(renewalSigHash)
+	// sign the new contract
+	contractSigHash := cs.ContractSigHash(renewal.NewContract)
+	renewal.NewContract.RenterSignature = signer.SignHash(contractSigHash)
+
+	// send the renter signatures
+	renterPolicyResp := rhp4.RPCRefreshContractSecondResponse{
+		RenterRenewalSignature:  renewal.RenterSignature,
+		RenterContractSignature: renewal.NewContract.RenterSignature,
+	}
+	for _, si := range renewalTxn.SiacoinInputs[:len(req.RenterInputs)] {
+		renterPolicyResp.RenterSatisfiedPolicies = append(renterPolicyResp.RenterSatisfiedPolicies, si.SatisfiedPolicy)
+	}
+	if err := rhp4.WriteResponse(s, &renterPolicyResp); err != nil {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
+		return RPCRefreshContractResult{}, fmt.Errorf("failed to write signature response: %w", err)
+	}
+
+	// read the finalized transaction set
+	var hostTransactionSetResp rhp4.RPCRefreshContractThirdResponse
+	if err := rhp4.ReadResponse(s, &hostTransactionSetResp); err != nil {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
+		return RPCRefreshContractResult{}, fmt.Errorf("failed to read final response: %w", err)
+	}
+
+	if len(hostTransactionSetResp.TransactionSet) == 0 {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
+		return RPCRefreshContractResult{}, fmt.Errorf("expected at least one host transaction")
+	}
+	hostRenewalTxn := hostTransactionSetResp.TransactionSet[len(hostTransactionSetResp.TransactionSet)-1]
+	if len(hostRenewalTxn.FileContractResolutions) != 1 {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
+		return RPCRefreshContractResult{}, fmt.Errorf("expected exactly one resolution")
+	}
+
+	hostRenewal, ok := hostRenewalTxn.FileContractResolutions[0].Resolution.(*types.V2FileContractRenewal)
+	if !ok {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
+		return RPCRefreshContractResult{}, fmt.Errorf("expected renewal resolution")
+	}
+
+	// validate the host signature
+	if !existing.HostPublicKey.VerifyHash(renewalSigHash, hostRenewal.HostSignature) {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
+		return RPCRefreshContractResult{}, errors.New("invalid host renewal signature")
+	} else if !existing.HostPublicKey.VerifyHash(contractSigHash, hostRenewal.NewContract.HostSignature) {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
+		return RPCRefreshContractResult{}, errors.New("invalid host contract signature")
+	}
+	return RPCRefreshContractResult{
+		Contract: ContractRevision{
+			ID:       params.ContractID.V2RenewalID(),
+			Revision: hostRenewal.NewContract,
+		},
+		RenewalSet: TransactionSet{
+			Basis:        hostTransactionSetResp.Basis,
+			Transactions: hostTransactionSetResp.TransactionSet,
+		},
+		Cost:  renterCost,
+		Usage: usage,
+	}, nil
+}
+
 // RPCSettings returns the current settings of the host.
 func RPCSettings(ctx context.Context, t TransportClient) (rhp4.HostSettings, error) {
 	var resp rhp4.RPCSettingsResponse
@@ -955,143 +1105,16 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 	}, nil
 }
 
-// RPCRefreshContract refreshes a contract with a host.
-func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRefreshContractParams) (RPCRefreshContractResult, error) {
-	renewal, usage := rhp4.RefreshContract(existing, p, params)
-	renewalTxn := types.V2Transaction{
-		MinerFee: signer.RecommendedFee().Mul64(1000),
-	}
+// RPCRefreshContractFullRollover refreshes a contract with a host.
+//
+// Deprecated: use RPCRefreshContractPartialRollover instead.
+func RPCRefreshContractFullRollover(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRefreshContractParams) (RPCRefreshContractResult, error) {
+	return rpcRefreshContract(ctx, t, tp, signer, cs, p, existing, params, false)
+}
 
-	renterCost, hostCost := rhp4.RefreshCost(cs, p, renewal, renewalTxn.MinerFee)
-	req := rhp4.RPCRefreshContractRequest{
-		Prices:   p,
-		Refresh:  params,
-		MinerFee: renewalTxn.MinerFee,
-	}
-
-	basis, toSign, err := signer.FundV2Transaction(&renewalTxn, renterCost)
-	if err != nil {
-		return RPCRefreshContractResult{}, fmt.Errorf("failed to fund transaction: %w", err)
-	}
-
-	req.Basis, req.RenterParents, err = tp.V2TransactionSet(basis, renewalTxn)
-	if err != nil {
-		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
-		return RPCRefreshContractResult{}, fmt.Errorf("failed to get transaction set: %w", err)
-	}
-	for _, si := range renewalTxn.SiacoinInputs {
-		req.RenterInputs = append(req.RenterInputs, si.Parent.Move())
-	}
-	req.RenterParents = req.RenterParents[:len(req.RenterParents)-1] // last transaction is the renewal
-
-	sigHash := req.ChallengeSigHash(existing.RevisionNumber)
-	req.ChallengeSignature = signer.SignHash(sigHash)
-
-	s, err := openStream(ctx, t, defaultStreamTimeout)
-	if err != nil {
-		return RPCRefreshContractResult{}, fmt.Errorf("failed to dial stream: %w", err)
-	}
-	defer s.Close()
-
-	if err := rhp4.WriteRequest(s, rhp4.RPCRefreshContractID, &req); err != nil {
-		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
-		return RPCRefreshContractResult{}, fmt.Errorf("failed to write request: %w", err)
-	}
-
-	var hostInputsResp rhp4.RPCRefreshContractResponse
-	if err := rhp4.ReadResponse(s, &hostInputsResp); err != nil {
-		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
-		return RPCRefreshContractResult{}, fmt.Errorf("failed to read host inputs response: %w", err)
-	}
-
-	// add the host inputs to the transaction
-	var hostInputSum types.Currency
-	for _, si := range hostInputsResp.HostInputs {
-		hostInputSum = hostInputSum.Add(si.Parent.SiacoinOutput.Value)
-		renewalTxn.SiacoinInputs = append(renewalTxn.SiacoinInputs, si)
-	}
-
-	// verify the host added enough inputs
-	if n := hostInputSum.Cmp(hostCost); n < 0 {
-		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
-		return RPCRefreshContractResult{}, fmt.Errorf("expected host to fund %v, got %v", hostCost, hostInputSum)
-	} else if n > 0 {
-		// add change output
-		renewalTxn.SiacoinOutputs = append(renewalTxn.SiacoinOutputs, types.SiacoinOutput{
-			Address: existing.HostOutput.Address,
-			Value:   hostInputSum.Sub(hostCost),
-		})
-	}
-
-	// sign the renter inputs after adding the host inputs
-	renewalTxn.FileContractResolutions = []types.V2FileContractResolution{{
-		// only the ID is needed when signing; the host's response will contain
-		// the full StateElement
-		Parent:     types.V2FileContractElement{ID: params.ContractID},
-		Resolution: &renewal,
-	}}
-	signer.SignV2Inputs(&renewalTxn, toSign)
-	// sign the renewal
-	renewalSigHash := cs.RenewalSigHash(renewal)
-	renewal.RenterSignature = signer.SignHash(renewalSigHash)
-	// sign the new contract
-	contractSigHash := cs.ContractSigHash(renewal.NewContract)
-	renewal.NewContract.RenterSignature = signer.SignHash(contractSigHash)
-
-	// send the renter signatures
-	renterPolicyResp := rhp4.RPCRefreshContractSecondResponse{
-		RenterRenewalSignature:  renewal.RenterSignature,
-		RenterContractSignature: renewal.NewContract.RenterSignature,
-	}
-	for _, si := range renewalTxn.SiacoinInputs[:len(req.RenterInputs)] {
-		renterPolicyResp.RenterSatisfiedPolicies = append(renterPolicyResp.RenterSatisfiedPolicies, si.SatisfiedPolicy)
-	}
-	if err := rhp4.WriteResponse(s, &renterPolicyResp); err != nil {
-		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
-		return RPCRefreshContractResult{}, fmt.Errorf("failed to write signature response: %w", err)
-	}
-
-	// read the finalized transaction set
-	var hostTransactionSetResp rhp4.RPCRefreshContractThirdResponse
-	if err := rhp4.ReadResponse(s, &hostTransactionSetResp); err != nil {
-		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
-		return RPCRefreshContractResult{}, fmt.Errorf("failed to read final response: %w", err)
-	}
-
-	if len(hostTransactionSetResp.TransactionSet) == 0 {
-		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
-		return RPCRefreshContractResult{}, fmt.Errorf("expected at least one host transaction")
-	}
-	hostRenewalTxn := hostTransactionSetResp.TransactionSet[len(hostTransactionSetResp.TransactionSet)-1]
-	if len(hostRenewalTxn.FileContractResolutions) != 1 {
-		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
-		return RPCRefreshContractResult{}, fmt.Errorf("expected exactly one resolution")
-	}
-
-	hostRenewal, ok := hostRenewalTxn.FileContractResolutions[0].Resolution.(*types.V2FileContractRenewal)
-	if !ok {
-		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
-		return RPCRefreshContractResult{}, fmt.Errorf("expected renewal resolution")
-	}
-
-	// validate the host signature
-	if !existing.HostPublicKey.VerifyHash(renewalSigHash, hostRenewal.HostSignature) {
-		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
-		return RPCRefreshContractResult{}, errors.New("invalid host renewal signature")
-	} else if !existing.HostPublicKey.VerifyHash(contractSigHash, hostRenewal.NewContract.HostSignature) {
-		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
-		return RPCRefreshContractResult{}, errors.New("invalid host contract signature")
-	}
-	return RPCRefreshContractResult{
-		Contract: ContractRevision{
-			ID:       params.ContractID.V2RenewalID(),
-			Revision: hostRenewal.NewContract,
-		},
-		RenewalSet: TransactionSet{
-			Basis:        hostTransactionSetResp.Basis,
-			Transactions: hostTransactionSetResp.TransactionSet,
-		},
-		Cost:  renterCost,
-		Usage: usage,
-	}, nil
+// RPCRefreshContractPartialRollover refreshes a contract with a host.
+//
+// Only supported on hosts using protocol 5.0.0 or later.
+func RPCRefreshContractPartialRollover(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRefreshContractParams) (RPCRefreshContractResult, error) {
+	return rpcRefreshContract(ctx, t, tp, signer, cs, p, existing, params, true)
 }
