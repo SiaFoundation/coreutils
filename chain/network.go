@@ -56,7 +56,7 @@ func Mainnet() (*consensus.Network, types.Block) {
 		}{
 			Height:           135000,
 			FixHeight:        139000,
-			GenesisTimestamp: time.Unix(1433600000, 0), // June 6th, 2015 @ 2:13pm UTC,
+			GenesisTimestamp: time.Unix(1433600000, 0), // June 6th, 2015 @ 2:13pm UTC
 		},
 
 		HardforkASIC: struct {
@@ -196,7 +196,7 @@ func TestnetZen() (*consensus.Network, types.Block) {
 			OakTarget types.BlockID `json:"oakTarget"`
 		}{
 			Height:    20,
-			OakTime:   10000 * time.Second, // 2 hours 46
+			OakTime:   10000 * time.Second, // 2.78 hours
 			OakTarget: types.BlockID{3: 1},
 		},
 
