@@ -778,7 +778,7 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn) error {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
-	renewal, usage := rhp4.RefreshContract(existing, prices, req.Refresh)
+	renewal, usage := rhp4.RefreshContractFullRollover(existing, prices, req.Refresh)
 	renterCost, hostCost := rhp4.RefreshCost(cs, prices, renewal, req.MinerFee)
 	renewalTxn := types.V2Transaction{
 		MinerFee: req.MinerFee,

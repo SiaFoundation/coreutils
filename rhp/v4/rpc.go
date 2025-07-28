@@ -957,7 +957,7 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 
 // RPCRefreshContract refreshes a contract with a host.
 func RPCRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRefreshContractParams) (RPCRefreshContractResult, error) {
-	renewal, usage := rhp4.RefreshContract(existing, p, params)
+	renewal, usage := rhp4.RefreshContractFullRollover(existing, p, params)
 	renewalTxn := types.V2Transaction{
 		MinerFee: signer.RecommendedFee().Mul64(1000),
 	}
