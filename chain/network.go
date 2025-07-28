@@ -26,29 +26,67 @@ func Mainnet() (*consensus.Network, types.Block) {
 		InitialTarget:   types.BlockID{4: 32},
 		BlockInterval:   10 * time.Minute,
 		MaturityDelay:   144,
+
+		HardforkDevAddr: struct {
+			Height     uint64        `json:"height"`
+			OldAddress types.Address `json:"oldAddress"`
+			NewAddress types.Address `json:"newAddress"`
+		}{
+			Height:     10000,
+			OldAddress: parseAddr("7d0c44f7664e2d34e53efde0661a6f628ec9264785ae8e3cd7c973e8d190c3c97b5e3ecbc567"),
+			NewAddress: parseAddr("f371c70bce9eb8979cd5099f599ec4e4fcb14e0afcf31f9791e03e6496a4c0b358c98279730b"),
+		},
+
+		HardforkTax: struct {
+			Height uint64 `json:"height"`
+		}{
+			Height: 21000,
+		},
+
+		HardforkStorageProof: struct {
+			Height uint64 `json:"height"`
+		}{
+			Height: 100000,
+		},
+
+		HardforkOak: struct {
+			Height           uint64    `json:"height"`
+			FixHeight        uint64    `json:"fixHeight"`
+			GenesisTimestamp time.Time `json:"genesisTimestamp"`
+		}{
+			Height:           135000,
+			FixHeight:        139000,
+			GenesisTimestamp: time.Unix(1433600000, 0), // June 6th, 2015 @ 2:13pm UTC,
+		},
+
+		HardforkASIC: struct {
+			Height    uint64        `json:"height"`
+			OakTime   time.Duration `json:"oakTime"`
+			OakTarget types.BlockID `json:"oakTarget"`
+		}{
+			Height:    179000,
+			OakTime:   120000 * time.Second, // 33 hours
+			OakTarget: types.BlockID{8: 32},
+		},
+
+		HardforkFoundation: struct {
+			Height          uint64        `json:"height"`
+			PrimaryAddress  types.Address `json:"primaryAddress"`
+			FailsafeAddress types.Address `json:"failsafeAddress"`
+		}{
+			Height:          298000,
+			PrimaryAddress:  parseAddr("053b2def3cbdd078c19d62ce2b4f0b1a3c5e0ffbeeff01280efb1f8969b2f5bb4fdc680f0807"),
+			FailsafeAddress: parseAddr("27c22a6c6e6645802a3b8fa0e5374657438ef12716d2205d3e866272de1b644dbabd53d6d560"),
+		},
+
+		HardforkV2: struct {
+			AllowHeight   uint64 `json:"allowHeight"`
+			RequireHeight uint64 `json:"requireHeight"`
+		}{
+			AllowHeight:   526000, // June 6th, 2025 @ 6:00am UTC
+			RequireHeight: 530000, // July 4th, 2025 @ 2:00am UTC
+		},
 	}
-	n.HardforkDevAddr.Height = 10000
-	n.HardforkDevAddr.OldAddress = parseAddr("7d0c44f7664e2d34e53efde0661a6f628ec9264785ae8e3cd7c973e8d190c3c97b5e3ecbc567")
-	n.HardforkDevAddr.NewAddress = parseAddr("f371c70bce9eb8979cd5099f599ec4e4fcb14e0afcf31f9791e03e6496a4c0b358c98279730b")
-
-	n.HardforkTax.Height = 21000
-
-	n.HardforkStorageProof.Height = 100000
-
-	n.HardforkOak.Height = 135000
-	n.HardforkOak.FixHeight = 139000
-	n.HardforkOak.GenesisTimestamp = time.Unix(1433600000, 0) // June 6th, 2015 @ 2:13pm UTC
-
-	n.HardforkASIC.Height = 179000
-	n.HardforkASIC.OakTime = 120000 * time.Second
-	n.HardforkASIC.OakTarget = types.BlockID{8: 32}
-
-	n.HardforkFoundation.Height = 298000
-	n.HardforkFoundation.PrimaryAddress = parseAddr("053b2def3cbdd078c19d62ce2b4f0b1a3c5e0ffbeeff01280efb1f8969b2f5bb4fdc680f0807")
-	n.HardforkFoundation.FailsafeAddress = parseAddr("27c22a6c6e6645802a3b8fa0e5374657438ef12716d2205d3e866272de1b644dbabd53d6d560")
-
-	n.HardforkV2.AllowHeight = 526000   // June 6th, 2025 @ 6:00am UTC
-	n.HardforkV2.RequireHeight = 530000 // July 4th, 2025 @ 2:00am UTC
 
 	b := types.Block{
 		Timestamp: n.HardforkOak.GenesisTimestamp,
@@ -119,30 +157,67 @@ func TestnetZen() (*consensus.Network, types.Block) {
 		InitialTarget:   types.BlockID{3: 1},
 		BlockInterval:   10 * time.Minute,
 		MaturityDelay:   144,
+
+		HardforkDevAddr: struct {
+			Height     uint64        `json:"height"`
+			OldAddress types.Address `json:"oldAddress"`
+			NewAddress types.Address `json:"newAddress"`
+		}{
+			Height:     1,
+			OldAddress: types.Address{},
+			NewAddress: types.Address{},
+		},
+
+		HardforkTax: struct {
+			Height uint64 `json:"height"`
+		}{
+			Height: 2,
+		},
+
+		HardforkStorageProof: struct {
+			Height uint64 `json:"height"`
+		}{
+			Height: 5,
+		},
+
+		HardforkOak: struct {
+			Height           uint64    `json:"height"`
+			FixHeight        uint64    `json:"fixHeight"`
+			GenesisTimestamp time.Time `json:"genesisTimestamp"`
+		}{
+			Height:           10,
+			FixHeight:        12,
+			GenesisTimestamp: time.Unix(1673600000, 0), // January 13, 2023 @ 08:53 GMT
+		},
+
+		HardforkASIC: struct {
+			Height    uint64        `json:"height"`
+			OakTime   time.Duration `json:"oakTime"`
+			OakTarget types.BlockID `json:"oakTarget"`
+		}{
+			Height:    20,
+			OakTime:   10000 * time.Second, // 2 hours 46
+			OakTarget: types.BlockID{3: 1},
+		},
+
+		HardforkFoundation: struct {
+			Height          uint64        `json:"height"`
+			PrimaryAddress  types.Address `json:"primaryAddress"`
+			FailsafeAddress types.Address `json:"failsafeAddress"`
+		}{
+			Height:          30,
+			PrimaryAddress:  parseAddr("053b2def3cbdd078c19d62ce2b4f0b1a3c5e0ffbeeff01280efb1f8969b2f5bb4fdc680f0807"),
+			FailsafeAddress: types.VoidAddress,
+		},
+
+		HardforkV2: struct {
+			AllowHeight   uint64 `json:"allowHeight"`
+			RequireHeight uint64 `json:"requireHeight"`
+		}{
+			AllowHeight:   112000, // March 1, 2025 @ 7:00:00 UTC
+			RequireHeight: 114000, // ~ 2 weeks later
+		},
 	}
-
-	n.HardforkDevAddr.Height = 1
-	n.HardforkDevAddr.OldAddress = types.Address{}
-	n.HardforkDevAddr.NewAddress = types.Address{}
-
-	n.HardforkTax.Height = 2
-
-	n.HardforkStorageProof.Height = 5
-
-	n.HardforkOak.Height = 10
-	n.HardforkOak.FixHeight = 12
-	n.HardforkOak.GenesisTimestamp = time.Unix(1673600000, 0) // January 13, 2023 @ 08:53 GMT
-
-	n.HardforkASIC.Height = 20
-	n.HardforkASIC.OakTime = 10000 * time.Second
-	n.HardforkASIC.OakTarget = types.BlockID{3: 1}
-
-	n.HardforkFoundation.Height = 30
-	n.HardforkFoundation.PrimaryAddress = parseAddr("053b2def3cbdd078c19d62ce2b4f0b1a3c5e0ffbeeff01280efb1f8969b2f5bb4fdc680f0807")
-	n.HardforkFoundation.FailsafeAddress = types.VoidAddress
-
-	n.HardforkV2.AllowHeight = 112000   // March 1, 2025 @ 7:00:00 UTC
-	n.HardforkV2.RequireHeight = 114000 // ~ 2 weeks later
 
 	b := types.Block{
 		Timestamp: n.HardforkOak.GenesisTimestamp,

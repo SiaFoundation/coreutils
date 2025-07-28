@@ -12,7 +12,11 @@ linters:
     - revive
     - tagliatelle
     - whitespace
+    - exhaustruct
   settings:
+    exhaustruct:
+      include:
+        - 'go.sia.tech/core/consensus\.Network'
     gocritic:
       disabled-checks:
         - commentedOutCode
