@@ -75,8 +75,6 @@ func main() {
 		n, genesis = chain.Mainnet()
 	case "zen":
 		n, genesis = chain.TestnetZen()
-	case "anagami":
-		n, genesis = chain.TestnetAnagami()
 	default:
 		log.Panic("unknown network", zap.String("network", network))
 	}

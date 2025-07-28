@@ -102,9 +102,6 @@ func main() {
 	case "zen":
 		n, genesis = chain.TestnetZen()
 		bootstrapPeers = syncer.ZenBootstrapPeers
-	case "anagami":
-		n, genesis = chain.TestnetAnagami()
-		bootstrapPeers = syncer.AnagamiBootstrapPeers
 	default:
 		log.Panic("unknown network", zap.String("network", network))
 	}
