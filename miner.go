@@ -14,7 +14,7 @@ func FindBlockNonce(cs consensus.State, b *types.Block, timeout time.Duration) b
 	bh.Nonce = 0
 	factor := cs.NonceFactor()
 	startBlock := time.Now()
-	for bh.ID().CmpWork(cs.ChildTarget) < 0 {
+	for bh.ID().CmpWork(cs.PoWTarget()) < 0 {
 		bh.Nonce += factor
 		if time.Since(startBlock) > timeout {
 			return false

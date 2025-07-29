@@ -75,6 +75,7 @@ func TestV2MineBlocks(t *testing.T) {
 	n, genesisBlock := testutil.V2Network()
 	n.HardforkV2.AllowHeight = 5
 	n.HardforkV2.RequireHeight = 10
+	n.HardforkV2.FinalCutHeight = 15
 	n.InitialTarget = types.BlockID{0xFF}
 
 	genesisBlock.Transactions = []types.Transaction{{

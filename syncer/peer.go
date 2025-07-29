@@ -313,7 +313,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		bid := r.Header.ID()
 		if _, ok := s.cm.State(bid); ok {
 			return nil // already seen
-		} else if bid.CmpWork(cs.ChildTarget) < 0 {
+		} else if bid.CmpWork(cs.PoWTarget()) < 0 {
 			return s.ban(origin, errors.New("peer sent v2 header with insufficient work"))
 		} else if r.Header.ParentID != s.cm.Tip().ID {
 			// block extends a sidechain, which peer (if honest) believes to be the
@@ -342,7 +342,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		bid := r.Block.ID(cs)
 		if _, ok := s.cm.State(bid); ok {
 			return nil // already seen
-		} else if bid.CmpWork(cs.ChildTarget) < 0 {
+		} else if bid.CmpWork(cs.PoWTarget()) < 0 {
 			return s.ban(origin, errors.New("peer sent v2 outline with insufficient work"))
 		} else if r.Block.ParentID != s.cm.Tip().ID {
 			// block extends a sidechain, which peer (if honest) believes to be the
