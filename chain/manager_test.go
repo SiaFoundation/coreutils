@@ -21,7 +21,7 @@ func (m *Manager) ForceRevertTip() error {
 }
 
 func findBlockNonce(cs consensus.State, b *types.Block) {
-	for b.ID().CmpWork(cs.ChildTarget) < 0 {
+	for b.ID().CmpWork(cs.PoWTarget()) < 0 {
 		b.Nonce += cs.NonceFactor()
 		// ensure nonce meets factor requirement
 		for b.Nonce%cs.NonceFactor() != 0 {
