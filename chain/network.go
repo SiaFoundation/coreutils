@@ -80,11 +80,13 @@ func Mainnet() (*consensus.Network, types.Block) {
 		},
 
 		HardforkV2: struct {
-			AllowHeight   uint64 `json:"allowHeight"`
-			RequireHeight uint64 `json:"requireHeight"`
+			AllowHeight    uint64 `json:"allowHeight"`
+			RequireHeight  uint64 `json:"requireHeight"`
+			FinalCutHeight uint64 `json:"finalCutHeight"`
 		}{
-			AllowHeight:   526000, // June 6th, 2025 @ 6:00am UTC
-			RequireHeight: 530000, // July 4th, 2025 @ 2:00am UTC
+			AllowHeight:    526000, // June 6th, 2025 @ 6:00am UTC
+			RequireHeight:  530000, // July 4th, 2025 @ 2:00am UTC
+			FinalCutHeight: 600000,
 		},
 	}
 
@@ -211,11 +213,13 @@ func TestnetZen() (*consensus.Network, types.Block) {
 		},
 
 		HardforkV2: struct {
-			AllowHeight   uint64 `json:"allowHeight"`
-			RequireHeight uint64 `json:"requireHeight"`
+			AllowHeight    uint64 `json:"allowHeight"`
+			RequireHeight  uint64 `json:"requireHeight"`
+			FinalCutHeight uint64 `json:"finalCutHeight"`
 		}{
-			AllowHeight:   112000, // March 1, 2025 @ 7:00:00 UTC
-			RequireHeight: 114000, // ~ 2 weeks later
+			AllowHeight:    112000, // March 1, 2025 @ 7:00:00 UTC
+			RequireHeight:  114000, // ~ 2 weeks later
+			FinalCutHeight: 200000,
 		},
 	}
 
