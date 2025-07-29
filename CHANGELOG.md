@@ -1,3 +1,35 @@
+## 0.17.0 (2025-07-29)
+
+### Breaking Changes
+
+- Add method to get individual wallet event to `SingleAddressWallet`
+- Removed unsupported testnets.
+- Removed unused syncer interface from RHP4 server.
+
+#### Added RPCRefreshPartialRollover
+
+Previously, renters and hosts had to rollover all funds when refreshing a contract. With this change, renters can set their spendable allowance without forcing an increase and hosts only have to rollover their existing risked collateral and revenue. This change increases efficiency of refreshing without compromising the collateral guarantees of existing data or forcing hosts to lock additional collateral that won't be utilized.
+
+#### Remove persistence for locked UTXOs
+
+Now that the tpool is persisted, UTXOs that have been broadcast will be readded on startup. This should mean that locked UTXOs can be ephemeral again since their primary purpose is to prevent double spends during RPCs.
+
+#### Removed deprecated V1 Syncer RPCs
+
+Removed RPCSendBlocks and RPCSendBlk (made obsolete by RPCSendV2Blocks and RPCSendCheckpoint), as well as RPCRelayHeader and RPCSendTransactionSet (as no more v1 blocks or v1 transactions can be mined)
+
+### Features
+
+- Added RPCSendHeaders to sync by block headers
+- Added a check that consensus.Network is always exhaustive.
+- Fix RPCError code in RPCVerifySector
+- Periodically rebroadcast transactions created with SingleAddressWallet
+
+### Fixes
+
+- Remove leftover utxo locking code from EphemeralWalletStore
+- Return ErrNotAcceptingContracts in RPC form, renew, and refresh
+
 ## 0.16.5 (2025-07-07)
 
 ### Features
