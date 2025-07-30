@@ -18,7 +18,7 @@ import (
 const defaultStreamTimeout = 2 * time.Minute
 
 // The following constants define significant protocol versions for RHP4 with
-// descriptions on changes made to the protocol to conveniently compare again.
+// descriptions on changes made to the protocol to conveniently compare against.
 var (
 	// ProtocolVersion400 is the initial protocol version of RHP4 as introduced
 	// by the v2 hardfork.
