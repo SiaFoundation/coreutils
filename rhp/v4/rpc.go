@@ -17,6 +17,17 @@ import (
 
 const defaultStreamTimeout = 2 * time.Minute
 
+// The following constants define significant protocol versions for RHP4 with
+// descriptions on changes made to the protocol to conveniently compare against.
+var (
+	// ProtocolVersion400 is the initial protocol version of RHP4 as introduced
+	// by the v2 hardfork.
+	ProtocolVersion400 = rhp4.ProtocolVersion{4, 0, 0}
+
+	// ProtocolVersion500 added the RefreshContractPartialRollover RPC.
+	ProtocolVersion500 = rhp4.ProtocolVersion{5, 0, 0}
+)
+
 var (
 	// ErrInvalidRoot is returned when RPCWrite returns a sector root that does
 	// not match the expected value.
