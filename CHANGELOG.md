@@ -1,3 +1,9 @@
+## 0.17.1 (2025-08-04)
+
+### Features
+
+- Add ProtocolVersion constants to rhp package.
+
 ## 0.17.0 (2025-07-29)
 
 ### Breaking Changes
