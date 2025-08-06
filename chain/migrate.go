@@ -37,7 +37,7 @@ func (zl *zapMigrationLogger) SetProgress(percentage float64) {
 	if time.Since(zl.lastProgressReport) < 30*time.Second {
 		return
 	}
-	zl.logger.Info("migration progress", zap.Float64("progress", percentage))
+	zl.logger.Info("migration progress", zap.String("progress", fmt.Sprintf("%.1f%%", percentage)))
 	zl.lastProgressReport = time.Now()
 }
 
