@@ -3,6 +3,7 @@ package chain
 import (
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"go.sia.tech/core/consensus"
@@ -37,7 +38,7 @@ func (zl *zapMigrationLogger) SetProgress(percentage float64) {
 	if time.Since(zl.lastProgressReport) < 30*time.Second {
 		return
 	}
-	zl.logger.Info("migration progress", zap.Float64("progress", percentage))
+	zl.logger.Info("migration progress", zap.Float64("progress", math.Round(percentage*10)/10))
 	zl.lastProgressReport = time.Now()
 }
 
