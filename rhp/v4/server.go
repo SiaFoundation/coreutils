@@ -1150,7 +1150,7 @@ func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 		}
 	}()
 
-	stream.SetDeadline(time.Now().Add(30 * time.Second)) // set an initial timeout
+	stream.SetDeadline(time.Now().Add(5 * time.Minute)) // RPC timeout
 	rpcStart := time.Now()
 	id, err := rhp4.ReadID(stream)
 	if err != nil {
