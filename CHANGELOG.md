@@ -1,3 +1,19 @@
+## 0.18.0 (2025-08-18)
+
+### Breaking Changes
+
+- Reset Zen testnet.
+
+### Features
+
+- Add ProtocolVersion constants to rhp package.
+- Specify nonce factors for Mainnet and Zen.
+
+### Fixes
+
+- Display migration progress more human-friendly.
+- Increase default RHP4 RPC timeout to 3 minutes.
+
 ## 0.17.0 (2025-07-29)
 
 ### Breaking Changes
