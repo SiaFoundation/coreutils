@@ -60,13 +60,15 @@ func Mainnet() (*consensus.Network, types.Block) {
 		},
 
 		HardforkASIC: struct {
-			Height    uint64        `json:"height"`
-			OakTime   time.Duration `json:"oakTime"`
-			OakTarget types.BlockID `json:"oakTarget"`
+			Height      uint64        `json:"height"`
+			OakTime     time.Duration `json:"oakTime"`
+			OakTarget   types.BlockID `json:"oakTarget"`
+			NonceFactor uint64        `json:"nonceFactor"`
 		}{
-			Height:    179000,
-			OakTime:   120000 * time.Second, // 33 hours
-			OakTarget: types.BlockID{8: 32},
+			Height:      179000,
+			OakTime:     120000 * time.Second, // 33 hours
+			OakTarget:   types.BlockID{8: 32},
+			NonceFactor: 1009,
 		},
 
 		HardforkFoundation: struct {
@@ -193,13 +195,15 @@ func TestnetZen() (*consensus.Network, types.Block) {
 		},
 
 		HardforkASIC: struct {
-			Height    uint64        `json:"height"`
-			OakTime   time.Duration `json:"oakTime"`
-			OakTarget types.BlockID `json:"oakTarget"`
+			Height      uint64        `json:"height"`
+			OakTime     time.Duration `json:"oakTime"`
+			OakTarget   types.BlockID `json:"oakTarget"`
+			NonceFactor uint64        `json:"nonceFactor"`
 		}{
-			Height:    20,
-			OakTime:   10000 * time.Second, // 2.78 hours
-			OakTarget: types.BlockID{3: 1},
+			Height:      20,
+			OakTime:     10000 * time.Second, // 2.78 hours
+			OakTarget:   types.BlockID{3: 1},
+			NonceFactor: 100000 * 1009,
 		},
 
 		HardforkFoundation: struct {
