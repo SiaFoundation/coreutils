@@ -88,7 +88,7 @@ func Mainnet() (*consensus.Network, types.Block) {
 		}{
 			AllowHeight:    526000, // June 6th, 2025 @ 6:00am UTC
 			RequireHeight:  530000, // July 4th, 2025 @ 2:00am UTC
-			FinalCutHeight: 600000,
+			FinalCutHeight: 552100, // December 1st, 2025 @ 11:00am UTC
 		},
 	}
 
@@ -191,7 +191,7 @@ func TestnetZen() (*consensus.Network, types.Block) {
 		}{
 			Height:           10,
 			FixHeight:        12,
-			GenesisTimestamp: time.Unix(1673600000, 0), // January 13, 2023 @ 08:53 GMT
+			GenesisTimestamp: time.Date(2025, time.August, 15, 0, 0, 0, 0, time.UTC),
 		},
 
 		HardforkASIC: struct {
@@ -221,9 +221,9 @@ func TestnetZen() (*consensus.Network, types.Block) {
 			RequireHeight  uint64 `json:"requireHeight"`
 			FinalCutHeight uint64 `json:"finalCutHeight"`
 		}{
-			AllowHeight:    112000, // March 1, 2025 @ 7:00:00 UTC
-			RequireHeight:  114000, // ~ 2 weeks later
-			FinalCutHeight: 200000,
+			AllowHeight:    40,
+			RequireHeight:  50,
+			FinalCutHeight: 7 * 144, // 1 week after genesis
 		},
 	}
 
