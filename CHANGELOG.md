@@ -1,3 +1,9 @@
+## 0.18.1 (2025-08-21)
+
+### Fixes
+
+- Fix RPCAppendSectors and RPCSectorRoots not supporting MaxSectorBatchSize.
+
 ## 0.18.0 (2025-08-18)
 
 ### Breaking Changes
