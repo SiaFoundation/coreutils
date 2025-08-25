@@ -122,8 +122,23 @@ func (t *transport) AcceptStream() (net.Conn, error) {
 	return t.m.AcceptStream()
 }
 
+// ServeOption contains options for the Serve function.
+type ServeOption struct {
+	TCPKeepalivePeriod time.Duration
+}
+
+// WithTCPKeepalivePeriod sets the TCP keepalive period for accepted tcp connections.
+type WithTCPKeepalivePeriod func(time.Duration) func(*ServeOption)
+
 // Serve serves RHP4 connections on the listener l using the SiaMux transport.
-func Serve(l net.Listener, s *rhp4.Server, log *zap.Logger) {
+func Serve(l net.Listener, s *rhp4.Server, log *zap.Logger, opts ...func(*ServeOption)) {
+	so := ServeOption{
+		TCPKeepalivePeriod: 30 * time.Second,
+	}
+	for _, opt := range opts {
+		opt(&so)
+	}
+
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -133,6 +148,11 @@ func Serve(l net.Listener, s *rhp4.Server, log *zap.Logger) {
 			return
 		}
 		log := log.With(zap.Stringer("peerAddress", conn.RemoteAddr()))
+
+		if tcpConn, ok := conn.(*net.TCPConn); ok && so.TCPKeepalivePeriod > 0 {
+			tcpConn.SetKeepAlive(true)
+			tcpConn.SetKeepAlivePeriod(30 * time.Second)
+		}
 
 		go func() {
 			defer conn.Close()
