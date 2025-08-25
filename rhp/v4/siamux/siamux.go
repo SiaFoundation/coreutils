@@ -127,6 +127,7 @@ type serveOption struct {
 	TCPKeepalivePeriod time.Duration
 }
 
+// ServeOption is a functional parameter for the Serve function.
 type ServeOption func(*serveOption)
 
 // WithTCPKeepalivePeriod sets the TCP keepalive period for accepted tcp connections.
