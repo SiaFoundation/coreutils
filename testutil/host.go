@@ -410,7 +410,7 @@ func (esr *EphemeralSettingsReporter) Update(settings proto4.HostSettings) {
 }
 
 // ServeSiaMux starts a RHP4 host listening on a random port and returns the address.
-func ServeSiaMux(tb testing.TB, s *rhp4.Server, log *zap.Logger, opts ...func(*siamux.ServeOption)) string {
+func ServeSiaMux(tb testing.TB, s *rhp4.Server, log *zap.Logger, opts ...siamux.ServeOption) string {
 	l, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		tb.Fatal(err)

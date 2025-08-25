@@ -1249,6 +1249,32 @@ func TestRPCTimeout(t *testing.T) {
 	})
 }
 
+func TestKeepalivePeriod(t *testing.T) {
+	n, genesis := testutil.V2Network()
+	cm, w := startTestNode(t, n, genesis)
+
+	ss := testutil.NewEphemeralSectorStore()
+	c := testutil.NewEphemeralContractor(cm)
+
+	sr := &blockingSettingsReporter{blockChan: make(chan struct{})}
+
+	hostKey := types.GeneratePrivateKey()
+
+	rs := rhp4.NewServer(hostKey, cm, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
+	hostAddr := testutil.ServeSiaMux(t, rs, zap.NewNop(), siamux.WithTCPKeepalivePeriod(10*time.Millisecond))
+
+	transport, err := siamux.Dial(context.Background(), hostAddr, hostKey.PublicKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { transport.Close() })
+
+	_, err = rhp4.RPCSettings(context.Background(), transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSiamuxDialUpgradeTimeout(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	cm, w := startTestNode(t, n, genesis)
