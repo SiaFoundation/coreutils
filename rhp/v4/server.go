@@ -129,6 +129,7 @@ type (
 	Server struct {
 		hostKey            types.PrivateKey
 		priceTableValidity time.Duration
+		rpcTimeout         time.Duration
 
 		chain      ChainManager
 		wallet     Wallet
@@ -1150,7 +1151,7 @@ func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 		}
 	}()
 
-	stream.SetDeadline(time.Now().Add(3 * time.Minute)) // RPC timeout
+	stream.SetDeadline(time.Now().Add(s.rpcTimeout))
 	rpcStart := time.Now()
 	id, err := rhp4.ReadID(stream)
 	if err != nil {
@@ -1258,6 +1259,7 @@ func NewServer(pk types.PrivateKey, cm ChainManager, contracts Contractor, walle
 	s := &Server{
 		hostKey:            pk,
 		priceTableValidity: 30 * time.Minute,
+		rpcTimeout:         10 * time.Minute,
 
 		chain:      cm,
 		wallet:     wallet,

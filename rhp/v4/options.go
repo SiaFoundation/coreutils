@@ -13,3 +13,10 @@ func WithPriceTableValidity(validity time.Duration) ServerOption {
 		s.priceTableValidity = validity
 	}
 }
+
+// WithRPCTimeout sets the duration for which an RPC request is allowed to run.
+func WithRPCTimeout(timeout time.Duration) ServerOption {
+	return func(s *Server) {
+		s.rpcTimeout = timeout
+	}
+}
