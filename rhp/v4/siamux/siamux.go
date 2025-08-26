@@ -158,7 +158,7 @@ func Serve(l net.Listener, s *rhp4.Server, log *zap.Logger, opts ...ServeOption)
 
 		if tcpConn, ok := conn.(*net.TCPConn); ok && so.TCPKeepalivePeriod > 0 {
 			tcpConn.SetKeepAlive(true)
-			tcpConn.SetKeepAlivePeriod(30 * time.Second)
+			tcpConn.SetKeepAlivePeriod(so.TCPKeepalivePeriod)
 		}
 
 		go func() {
