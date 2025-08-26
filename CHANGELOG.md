@@ -1,3 +1,13 @@
+## 0.18.2 (2025-08-26)
+
+### Features
+
+- Make RPCTimeout configurable
+
+### Fixes
+
+- Set keepalive period for siamux tcp connections.
+
 ## 0.18.1 (2025-08-21)
 
 ### Fixes
