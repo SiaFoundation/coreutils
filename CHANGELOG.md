@@ -1,3 +1,9 @@
+## 0.18.3 (2025-09-02)
+
+### Fixes
+
+- Update core dependency from v0.17.3 to v0.17.5.
+
 ## 0.18.2 (2025-08-26)
 
 ### Features
