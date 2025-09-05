@@ -26,6 +26,10 @@ var (
 
 	// ProtocolVersion500 added the RefreshContractPartialRollover RPC.
 	ProtocolVersion500 = rhp4.ProtocolVersion{5, 0, 0}
+
+	// ProtocolVersion501 fixed hosts not accepting a pruning request for
+	// MaxSectorBatchSize.
+	ProtocolVersion501 = rhp4.ProtocolVersion{5, 0, 1}
 )
 
 var (
