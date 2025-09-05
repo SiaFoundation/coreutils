@@ -1,3 +1,9 @@
+## 0.18.4 (2025-09-05)
+
+### Features
+
+- Update protocolVersion to v5.0.1.
+
 ## 0.18.3 (2025-09-02)
 
 ### Fixes
