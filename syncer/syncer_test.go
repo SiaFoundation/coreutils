@@ -75,7 +75,7 @@ func TestSyncer(t *testing.T) {
 	// broadcast the tip from s1 to s2
 	s1.BroadcastV2Header(b.Header())
 
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if cm1.Tip() == cm2.Tip() {
 			break
 		}
@@ -125,7 +125,7 @@ func TestSendCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, cs, err := p.SendCheckpoint(cm1.Tip(), time.Second)
+	cs, b, err := p.SendCheckpoint(cm1.Tip(), cm1.TipState().Network, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	} else if b1, _ := cm1.Block(cm1.Tip().ID); !hashEq(types.V2Block(b), types.V2Block(b1)) {
