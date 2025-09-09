@@ -7,7 +7,7 @@ import (
 	"maps"
 	"net"
 	"slices"
-	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +30,7 @@ type ChainManager interface {
 	Block(id types.BlockID) (types.Block, bool)
 	State(id types.BlockID) (consensus.State, bool)
 	AddBlocks(blocks []types.Block) error
+	AddValidatedV2Blocks(blocks []types.Block, states []consensus.State) error
 	Tip() types.ChainIndex
 	TipState() consensus.State
 
@@ -98,12 +99,38 @@ type config struct {
 	RelayHeaderTimeout         time.Duration
 	RelayBlockOutlineTimeout   time.Duration
 	RelayTransactionSetTimeout time.Duration
+	SendHeadersTimeout         time.Duration
+	MaxSendHeaders             uint64
 	SendBlocksTimeout          time.Duration
 	MaxSendBlocks              uint64
 	PeerDiscoveryInterval      time.Duration
 	SyncInterval               time.Duration
 	BanDuration                time.Duration
 	Logger                     *zap.Logger
+}
+
+func defaultConfig() config {
+	return config{
+		MaxInboundPeers:            64,
+		MaxOutboundPeers:           16,
+		MaxInflightRPCs:            64,
+		ConnectTimeout:             10 * time.Second,
+		RPCTimeout:                 5 * time.Minute,
+		ShareNodesTimeout:          5 * time.Second,
+		SendBlockTimeout:           60 * time.Second,
+		SendTransactionsTimeout:    3 * time.Minute,
+		RelayHeaderTimeout:         5 * time.Second,
+		RelayBlockOutlineTimeout:   60 * time.Second,
+		RelayTransactionSetTimeout: 60 * time.Second,
+		SendHeadersTimeout:         30 * time.Second,
+		MaxSendHeaders:             10000,
+		SendBlocksTimeout:          120 * time.Second,
+		MaxSendBlocks:              100,
+		PeerDiscoveryInterval:      5 * time.Second,
+		SyncInterval:               5 * time.Second,
+		BanDuration:                24 * time.Hour,
+		Logger:                     zap.NewNop(),
+	}
 }
 
 // An Option modifies a Syncer's configuration.
@@ -157,7 +184,7 @@ func WithSendBlocksTimeout(d time.Duration) Option {
 }
 
 // WithMaxSendBlocks sets the maximum number of blocks requested per SendBlocks
-// RPC. The default is 10.
+// RPC. The default is 100.
 func WithMaxSendBlocks(n uint64) Option {
 	return func(c *config) { c.MaxSendBlocks = n }
 }
@@ -603,24 +630,6 @@ func (s *Syncer) peerLoop(ctx context.Context) error {
 }
 
 func (s *Syncer) syncLoop(ctx context.Context) error {
-	peersForSync := func() (peers []*Peer) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		for _, p := range s.peers {
-			if p.Synced() {
-				continue
-			}
-			peers = append(peers, p)
-		}
-		sort.Slice(peers, func(i, j int) bool {
-			// prefer syncing with outbound peers over
-			// inbound peers since they were explicitly
-			// connected to
-			return !peers[i].Inbound && peers[j].Inbound
-		})
-		return
-	}
-
 	ticker := time.NewTicker(s.config.SyncInterval)
 	defer ticker.Stop()
 	for {
@@ -629,83 +638,63 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 			return nil // note: context cancelled is not an error
 		case <-ticker.C:
 		}
-		for _, p := range peersForSync() {
-			history, err := s.cm.History()
-			if err != nil {
-				return err // generally fatal
-			}
-			log := s.log.Named("syncLoop").With(zap.Stringer("peer", p))
-			oldTip := s.cm.Tip()
-			oldTime := time.Now()
-			var lastPrint time.Time
-			startTime, startHeight := oldTime, oldTip.Height
-			var sentBlocks uint64
-			addBlocks := func(blocks []types.Block) error {
-				if err := s.cm.AddBlocks(blocks); err != nil {
-					return err
-				}
-				sentBlocks += uint64(len(blocks))
-				endTime, endHeight := time.Now(), s.cm.Tip().Height
-				err = s.pm.UpdatePeerInfo(p.t.Addr, func(info *PeerInfo) {
-					info.SyncedBlocks += endHeight - startHeight
-					info.SyncDuration += endTime.Sub(startTime)
-				})
-				if err != nil {
-					return fmt.Errorf("syncLoop: failed to update peer info: %w", err)
-				}
-				startTime, startHeight = endTime, endHeight
-				if time.Since(lastPrint) > 30*time.Second {
-					log.Debug("syncing with peer", zap.Stringer("peer", p), zap.Uint64("blocks", sentBlocks), zap.Duration("elapsed", endTime.Sub(oldTime)))
-					lastPrint = time.Now()
-				}
-				return nil
-			}
-			last := history[:]
-			err = func() error {
-				// cap the amount of time we will spend syncing
-				// with a single peer. This is so we don't get stuck
-				// syncing with a peer that is also syncing.
-				ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-				defer cancel()
-				for {
-					select {
-					case <-ctx.Done():
-						return ctx.Err()
-					default:
-					}
-					blocks, rem, err := p.SendV2Blocks(last, s.config.MaxSendBlocks, s.config.SendBlocksTimeout)
-					if err != nil {
-						return err
-					} else if err := addBlocks(blocks); err != nil {
-						return err
-					} else if rem == 0 {
-						return nil
-					}
-					last = []types.BlockID{blocks[len(blocks)-1].ID()}
-				}
-			}()
 
-			totalBlocks := s.cm.Tip().Height - oldTip.Height
-			if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-				log.Debug("syncing with peer failed", zap.Error(err), zap.Uint64("blocks", totalBlocks))
-				continue
-			} else if err == nil {
-				p.setSynced(true)
-				// as a fallback to ensure we never stop syncing prematurely, reset
-				// the sync status after 60-120 seconds
-				//
-				// NOTE: the AfterFuncs will be garbage collected after syncLoop
-				// returns. If we instead called defer Stop() on each of them, we
-				// would constantly accumulate defers, leaking memory until syncLoop
-				// returns.
-				resyncDelay := time.Duration(60+frand.Intn(60)) * time.Second
-				time.AfterFunc(resyncDelay, func() { p.setSynced(false) })
+		// fetch headers from each unsynced peer
+		s.mu.Lock()
+		var peers []*Peer
+		for _, p := range s.peers {
+			if p.Err() == nil && !p.Synced() {
+				peers = append(peers, p)
 			}
-
-			if newTip := s.cm.Tip(); newTip != oldTip {
-				log.Debug("finished syncing with peer", zap.Stringer("newTip", newTip), zap.Uint64("blocks", totalBlocks))
+		}
+		s.mu.Unlock()
+		type resp struct {
+			peer    *Peer
+			cs      consensus.State
+			headers []types.BlockHeader
+			err     error
+		}
+		respChan := make(chan resp, len(peers))
+		hist, err := s.cm.History()
+		if err != nil {
+			return err // generally fatal
+		}
+		for _, p := range peers {
+			go func(p *Peer) {
+				cs, headers, err := func() (consensus.State, []types.BlockHeader, error) {
+					for _, id := range hist {
+						cs, ok := s.cm.State(id)
+						if !ok {
+							return consensus.State{}, nil, errors.New("missing state for history")
+						}
+						headers, _, err := p.SendHeaders(cs, s.config.MaxSendHeaders, s.config.SendHeadersTimeout)
+						if err != nil && strings.Contains(err.Error(), "EOF") {
+							continue // probably "index is not on our best chain"
+						} else if err != nil {
+							return consensus.State{}, nil, err
+						}
+						return cs, headers, nil
+					}
+					return consensus.State{}, nil, errors.New("no common history")
+				}()
+				respChan <- resp{peer: p, cs: cs, headers: headers, err: err}
+			}(p)
+		}
+		// sync each set of headers as they arrive
+		seen := make(map[types.BlockID]bool)
+		for range peers {
+			if r := <-respChan; r.err != nil {
+				r.peer.setErr(r.err)
+			} else if len(r.headers) == 0 {
+				r.peer.setSynced(true)
+			} else if id := r.headers[len(r.headers)-1].ID(); seen[id] {
+				continue // already syncing these blocks from another peer
 			} else {
-				log.Debug("finished syncing with peer, tip unchanged", zap.Uint64("blocks", sentBlocks))
+				seen[id] = true
+				s.log.Info("syncing blocks", zap.Stringer("peer", r.peer), zap.Stringer("start", r.cs.Index), zap.Int("n", len(r.headers)))
+				if err := s.parallelSync(ctx, r.cs, r.headers); err != nil {
+					s.log.Warn("sync failed", zap.Stringer("peer", r.peer), zap.Error(err))
+				}
 			}
 		}
 	}
@@ -840,25 +829,7 @@ func (s *Syncer) Addr() string {
 
 // New returns a new Syncer.
 func New(l net.Listener, cm ChainManager, pm PeerStore, header gateway.Header, opts ...Option) *Syncer {
-	config := config{
-		MaxInboundPeers:            64,
-		MaxOutboundPeers:           16,
-		MaxInflightRPCs:            64,
-		ConnectTimeout:             10 * time.Second,
-		RPCTimeout:                 5 * time.Minute,
-		ShareNodesTimeout:          5 * time.Second,
-		SendBlockTimeout:           60 * time.Second,
-		SendTransactionsTimeout:    3 * time.Minute,
-		RelayHeaderTimeout:         5 * time.Second,
-		RelayBlockOutlineTimeout:   60 * time.Second,
-		RelayTransactionSetTimeout: 60 * time.Second,
-		SendBlocksTimeout:          120 * time.Second,
-		MaxSendBlocks:              10,
-		PeerDiscoveryInterval:      5 * time.Second,
-		SyncInterval:               5 * time.Second,
-		BanDuration:                24 * time.Hour,
-		Logger:                     zap.NewNop(),
-	}
+	config := defaultConfig()
 	for _, opt := range opts {
 		opt(&config)
 	}
