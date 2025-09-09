@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -95,6 +96,35 @@ func (p *Peer) callRPC(r gateway.Object, timeout time.Duration) error {
 	return nil
 }
 
+func (p *Peer) callRPCContext(ctx context.Context, r gateway.Object, timeout time.Duration) error {
+	s, err := p.t.DialStream()
+	if err != nil {
+		return fmt.Errorf("couldn't open stream: %w", err)
+	}
+	errChan := make(chan error)
+	go func() {
+		s.SetDeadline(time.Now().Add(timeout))
+		if err := s.WriteID(r); err != nil {
+			errChan <- fmt.Errorf("couldn't write RPC ID: %w", err)
+		} else if err := s.WriteRequest(r); err != nil {
+			errChan <- fmt.Errorf("couldn't write request: %w", err)
+		} else if err := s.ReadResponse(r); err != nil {
+			errChan <- fmt.Errorf("couldn't read response: %w", err)
+		} else {
+			errChan <- nil
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		s.Close()
+		<-errChan
+		return ctx.Err()
+	case err := <-errChan:
+		s.Close()
+		return err
+	}
+}
+
 // ShareNodes requests a list of potential peers from the peer.
 func (p *Peer) ShareNodes(timeout time.Duration) ([]string, error) {
 	r := &gateway.RPCShareNodes{}
@@ -135,10 +165,11 @@ func (p *Peer) SendTransactions(index types.ChainIndex, txnHashes []types.Hash25
 
 // SendCheckpoint requests a checkpoint from the peer. The checkpoint is
 // validated.
-func (p *Peer) SendCheckpoint(index types.ChainIndex, timeout time.Duration) (types.Block, consensus.State, error) {
+func (p *Peer) SendCheckpoint(index types.ChainIndex, n *consensus.Network, timeout time.Duration) (consensus.State, types.Block, error) {
 	r := &gateway.RPCSendCheckpoint{Index: index}
 	err := p.callRPC(r, timeout)
 	if err == nil {
+		r.State.Network = n
 		if r.Block.V2 == nil || len(r.Block.MinerPayouts) != 1 {
 			err = errors.New("checkpoint is not a v2 block")
 		} else if r.Block.ID() != index.ID {
@@ -147,7 +178,7 @@ func (p *Peer) SendCheckpoint(index types.ChainIndex, timeout time.Duration) (ty
 			err = errors.New("checkpoint has wrong commitment")
 		}
 	}
-	return r.Block, r.State, err
+	return r.State, r.Block, err
 }
 
 // RelayV2Header relays a v2 block header to the peer.
@@ -168,9 +199,9 @@ func (p *Peer) RelayV2TransactionSet(index types.ChainIndex, txns []types.V2Tran
 // SendV2Blocks requests up to n blocks from p, starting from the most recent
 // element of history known to p. The peer also returns the number of remaining
 // blocks left to sync.
-func (p *Peer) SendV2Blocks(history []types.BlockID, maxBlocks uint64, timeout time.Duration) ([]types.Block, uint64, error) {
+func (p *Peer) SendV2Blocks(ctx context.Context, history []types.BlockID, maxBlocks uint64, timeout time.Duration) ([]types.Block, uint64, error) {
 	r := &gateway.RPCSendV2Blocks{History: history, Max: maxBlocks}
-	err := p.callRPC(r, timeout)
+	err := p.callRPCContext(ctx, r, timeout)
 	return r.Blocks, r.Remaining, err
 }
 
@@ -228,8 +259,8 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		if err != nil {
 			return err
 		}
-		if r.Max > 10000 {
-			r.Max = 10000
+		if r.Max > s.config.MaxSendHeaders {
+			r.Max = s.config.MaxSendHeaders
 		}
 		r.Headers, r.Remaining, err = s.cm.Headers(r.Index, r.Max)
 		if err != nil {
@@ -244,8 +275,8 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		if err != nil {
 			return err
 		}
-		if r.Max > 100 {
-			r.Max = 100
+		if r.Max > s.config.MaxSendBlocks {
+			r.Max = s.config.MaxSendBlocks
 		}
 		r.Blocks, r.Remaining, err = s.cm.BlocksForHistory(r.History, r.Max)
 		if err != nil {
