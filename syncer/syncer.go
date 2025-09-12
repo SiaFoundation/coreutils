@@ -847,3 +847,42 @@ func New(l net.Listener, cm ChainManager, pm PeerStore, header gateway.Header, o
 	s.peerRemoved = sync.Cond{L: &s.mu}
 	return s
 }
+
+// SendCheckpoint connects to the specified peer and downloads the requested
+// checkpoint.
+func SendCheckpoint(ctx context.Context, addr string, index types.ChainIndex, n *consensus.Network, genesisID types.BlockID) (consensus.State, types.Block, error) {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return consensus.State{}, types.Block{}, err
+	}
+	errChan := make(chan error)
+	var cs consensus.State
+	var b types.Block
+	go func() {
+		t, err := gateway.Dial(conn, gateway.Header{
+			GenesisID:  genesisID,
+			UniqueID:   gateway.GenerateUniqueID(),
+			NetAddress: "ephemeral:0",
+		})
+		if err != nil {
+			errChan <- err
+			return
+		}
+		p := &Peer{
+			t:        t,
+			ConnAddr: conn.RemoteAddr().String(),
+			Inbound:  false,
+		}
+		cs, b, err = p.SendCheckpoint(index, n, 5*time.Second)
+		errChan <- err
+	}()
+	select {
+	case <-ctx.Done():
+		conn.Close()
+		<-errChan
+		return consensus.State{}, types.Block{}, ctx.Err()
+	case err := <-errChan:
+		conn.Close()
+		return cs, b, err
+	}
+}
