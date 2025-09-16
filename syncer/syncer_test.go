@@ -186,6 +186,47 @@ func TestSendCheckpoint(t *testing.T) {
 	}
 }
 
+func TestInstantSync(t *testing.T) {
+	n, genesis := testutil.Network()
+	log := zap.NewNop()
+
+	s, cm := newTestSyncer(t, "syncer", log)
+	defer s.Close()
+
+	// mine a few blocks above v2 hardfork height
+	testutil.MineBlocks(t, cm, types.VoidAddress, int(n.HardforkV2.AllowHeight+10))
+
+	// instant sync to 5 blocks below the tip
+	index, ok := cm.BestIndex(cm.Tip().Height - 5)
+	if !ok {
+		t.Fatal("failed to get index")
+	}
+	cs, b, err := syncer.SendCheckpoint(context.Background(), s.Addr(), index, n, genesis.ID())
+	if err != nil {
+		t.Fatal(err)
+	} else if cs.Index.ID != b.ParentID {
+		t.Fatalf("expected checkpoint state %v, got %v", b.ParentID, cs.Index.ID)
+	}
+	// initialize new manager at synced checkpoint
+	store, newTipState, err := chain.NewDBStoreAtCheckpoint(chain.NewMemDB(), cs, b, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm2 := chain.NewManager(store, newTipState)
+
+	if cm2.Tip() != index {
+		t.Fatalf("expected tip %v, got %v", index, cm2.Tip())
+	} else if b2, ok := cm2.Block(b.ID()); !ok {
+		t.Fatal("checkpoint block not stored")
+	} else if !hashEq(types.V2Block(b2), types.V2Block(b)) {
+		t.Fatalf("checkpoint block mismatch")
+	} else if cs2, ok := cm2.State(cs.Index.ID); !ok {
+		t.Fatal("parent state not stored")
+	} else if !hashEq(cs2, cs) {
+		t.Fatalf("parent state mismatch")
+	}
+}
+
 func TestSendHeaders(t *testing.T) {
 	log := zaptest.NewLogger(t)
 
