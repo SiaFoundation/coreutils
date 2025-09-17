@@ -30,7 +30,8 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 		err    error
 	}
 
-	const blocksPerReq = 100 // peers should never send fewer than this if available
+	// divide headers among requests, max 100 blocks per request
+	const blocksPerReq = 100
 	reqs := make([]Req, (len(headers)+blocksPerReq-1)/blocksPerReq)
 	for i := range reqs {
 		off := uint64(i) * blocksPerReq
@@ -77,8 +78,13 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 				return Resp{req: req, err: err}
 			} else if uint64(len(blocks)) != req.numBlocks {
 				return Resp{req: req, err: errors.New("peer returned wrong number of blocks")}
-			} else if blocks[len(blocks)-1].ID() != req.tip.ID {
-				return Resp{req: req, err: errors.New("peer returned wrong blocks")}
+			}
+			// verify that blocks match headers
+			headers := headers[req.base.Height-cs.Index.Height:][:req.numBlocks]
+			for i := range blocks {
+				if blocks[i].ID() != headers[i].ID() {
+					return Resp{req: req, err: errors.New("peer returned blocks that do not match header chain")}
+				}
 			}
 			resp.blocks = blocks
 		}
@@ -130,6 +136,7 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 	// orchestrate work
 	var wg sync.WaitGroup
 	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
 	seen := make(map[gateway.UniqueID]bool)
 	reqIndex := 0
 	queueRequest := func() {
