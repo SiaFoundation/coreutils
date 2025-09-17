@@ -87,6 +87,38 @@ func TestSyncer(t *testing.T) {
 	}
 }
 
+func TestParallelSync(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	s1, cm1 := newTestSyncer(t, "syncer1", log)
+	defer s1.Close()
+
+	s2, cm2 := newTestSyncer(t, "syncer2", log)
+	defer s2.Close()
+
+	// mine enough blocks to test both v1 and v2 regimes
+	testutil.MineBlocks(t, cm1, types.VoidAddress, int(cm1.TipState().Network.HardforkV2.RequireHeight+100))
+
+	if _, err := s1.Connect(context.Background(), s2.Addr()); err != nil {
+		t.Fatal(err)
+	}
+	b, ok := cm1.Block(cm1.Tip().ID)
+	if !ok {
+		t.Fatal("failed to get block")
+	}
+	s1.BroadcastV2Header(b.Header())
+
+	for range 100 {
+		if cm1.Tip() == cm2.Tip() {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if cm1.Tip() != cm2.Tip() {
+		t.Fatalf("tips are not equal: %v != %v", cm1.Tip(), cm2.Tip())
+	}
+}
+
 func TestSyncerConnectAfterClose(t *testing.T) {
 	log := zaptest.NewLogger(t)
 
