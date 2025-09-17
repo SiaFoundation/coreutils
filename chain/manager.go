@@ -309,6 +309,8 @@ func (m *Manager) AddValidatedV2Blocks(blocks []types.Block, states []consensus.
 	defer m.mu.Unlock()
 	if len(blocks) == 0 {
 		return nil
+	} else if len(states) != len(blocks) {
+		panic("chain: expected same number of blocks and states") // developer error
 	}
 	if _, ok := m.store.State(blocks[0].ParentID); !ok {
 		return fmt.Errorf("missing parent for block %v", blocks[0].ParentID)
