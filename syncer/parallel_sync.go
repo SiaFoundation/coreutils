@@ -100,23 +100,15 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 	respChan := make(chan Resp, 128)
 
 	// process results in a separate goroutine
-	finishCh := make(chan Resp, len(reqs))
-	errCh := make(chan error, 1)
 	resps := make([]*Resp, len(reqs))
+	finishCh := make(chan []*Resp, len(reqs))
+	errCh := make(chan error, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
-		i := 0
-		for i < len(resps) {
-			r, ok := <-finishCh
-			if !ok {
-				break
-			}
-			off := (r.req.base.Height - cs.Index.Height) / blocksPerReq
-			if resps[off] != nil {
-				continue // already completed by a faster worker
-			}
-			resps[off] = &r
-			for i < len(resps) && resps[i] != nil {
-				r := resps[i]
+		defer wg.Done()
+		for resps := range finishCh {
+			for _, r := range resps {
 				var err error
 				if r.req.base.Height >= cs.Network.HardforkV2.RequireHeight {
 					err = s.cm.AddValidatedV2Blocks(r.blocks, r.states)
@@ -127,18 +119,17 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 					errCh <- err
 					return
 				}
-				i++
 			}
 		}
 		errCh <- nil
 	}()
 
 	// orchestrate work
-	var wg sync.WaitGroup
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 	seen := make(map[gateway.UniqueID]bool)
 	reqIndex := 0
+	finished := 0
 	queueRequest := func() {
 		if reqIndex < len(reqs) {
 			reqChan <- reqs[reqIndex]
@@ -157,6 +148,7 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 		select {
 		case <-ctx.Done():
 			close(reqChan)
+			close(finishCh)
 			wg.Wait()
 			return ctx.Err()
 
@@ -186,11 +178,26 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 		case r := <-respChan:
 			// each time a request finishes, send a new one
 			if r.err != nil {
-				s.log.Warn("failed to fetch blocks", zap.Error(r.err))
+				s.log.Warn("failed to fetch blocks", zap.Error(r.err), zap.Stringer("base", r.req.base), zap.Stringer("tip", r.req.tip))
 				reqChan <- r.req // reassign to a different worker
 				continue
 			}
-			finishCh <- r
+
+			// send batch of responses to be finished
+			off := (r.req.base.Height - cs.Index.Height) / blocksPerReq
+			if resps[off] == nil {
+				resps[off] = &r
+			}
+			i := finished
+			for finished < len(resps) && resps[finished] != nil {
+				finished++
+			}
+			if batch := resps[i:finished]; len(batch) > 0 {
+				finishCh <- batch
+				if finished == len(resps) {
+					close(finishCh)
+				}
+			}
 			queueRequest()
 
 		case err := <-errCh:
