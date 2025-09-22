@@ -102,8 +102,8 @@ func (p *Peer) callRPCContext(ctx context.Context, r gateway.Object, timeout tim
 		return fmt.Errorf("couldn't open stream: %w", err)
 	}
 	errChan := make(chan error)
+	s.SetDeadline(time.Now().Add(timeout))
 	go func() {
-		s.SetDeadline(time.Now().Add(timeout))
 		if err := s.WriteID(r); err != nil {
 			errChan <- fmt.Errorf("couldn't write RPC ID: %w", err)
 		} else if err := s.WriteRequest(r); err != nil {
