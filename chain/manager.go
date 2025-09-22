@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -249,8 +250,9 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 		var ok bool
 		if err := m.invalidBlocks[bid]; err != nil {
 			return fmt.Errorf("block %v is invalid: %w", types.ChainIndex{Height: cs.Index.Height + 1, ID: bid}, err)
-		} else if cs, ok = m.store.State(bid); ok {
+		} else if _, bs, _ := m.store.Block(bid); bs != nil {
 			// already have this block
+			cs, _ = m.store.State(bid)
 			continue
 		} else if b.ParentID != cs.Index.ID {
 			if cs, ok = m.store.State(b.ParentID); !ok {
@@ -355,6 +357,9 @@ func (m *Manager) AddValidatedV2Blocks(blocks []types.Block, states []consensus.
 // markBadBlock marks a block as bad, so that we don't waste resources
 // re-validating it if we see it again.
 func (m *Manager) markBadBlock(bid types.BlockID, err error) {
+	if strings.Contains(err.Error(), "supplement") || strings.Contains(err.Error(), "commitment") {
+		return // error caused by data not covered by block ID
+	}
 	const maxInvalidBlocks = 1000
 	if len(m.invalidBlocks) >= maxInvalidBlocks {
 		// forget a random entry
@@ -404,8 +409,9 @@ func (m *Manager) revertTip() error {
 
 // applyTip adds a block to the current tip.
 func (m *Manager) applyTip(index types.ChainIndex) error {
+	var cs consensus.State
 	var cau consensus.ApplyUpdate
-	b, bs, cs, ok := blockAndChild(m.store, index.ID)
+	b, bs, ok := m.store.Block(index.ID)
 	if !ok {
 		return fmt.Errorf("%w %v", ErrMissingBlock, index)
 	} else if b.ParentID != m.tipState.Index.ID {
@@ -424,6 +430,8 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 			return fmt.Errorf("missing ancestor timestamp for block %v", b.ParentID)
 		}
 		cs, cau = consensus.ApplyBlock(m.tipState, b, *bs, ancestorTimestamp)
+		m.store.AddState(cs)
+		m.store.AddBlock(b, bs)
 	} else {
 		ancestorTimestamp, ok := m.store.AncestorTimestamp(b.ParentID)
 		if !ok {
@@ -433,8 +441,6 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 		}
 		cs, cau = consensus.ApplyBlock(m.tipState, b, *bs, ancestorTimestamp)
 	}
-	m.store.AddState(cs)
-	m.store.AddBlock(b, bs)
 	m.store.ApplyBlock(cs, cau)
 	m.applyPoolUpdate(cau, cs)
 	m.tipState = cs
