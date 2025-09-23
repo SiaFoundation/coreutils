@@ -13,6 +13,9 @@ type (
 		MaxDefragUTXOs      int
 		ReservationDuration time.Duration
 
+		MaxRebroadcastPeriod        time.Duration
+		RebroadcastDebounceInterval time.Duration
+
 		Log *zap.Logger
 	}
 
@@ -52,6 +55,29 @@ func WithReservationDuration(d time.Duration) Option {
 
 	return func(c *config) {
 		c.ReservationDuration = d
+	}
+}
+
+// WithDebounceInterval sets the debounce interval for rebroadcasting
+// transactions after a reorg.
+func WithDebounceInterval(d time.Duration) Option {
+	if d <= 0 {
+		panic("debounce interval must be positive") // developer error
+	}
+	return func(c *config) {
+		c.RebroadcastDebounceInterval = d
+	}
+}
+
+// WithMaxRebroadcastPeriod sets the maximum period of time a transaction set is
+// being rebroadcasted, after this period the broadcasted set is removed from
+// the store.
+func WithMaxRebroadcastPeriod(d time.Duration) Option {
+	if d <= 0 {
+		panic("max rebroadcast period must be positive") // developer error
+	}
+	return func(c *config) {
+		c.MaxRebroadcastPeriod = d
 	}
 }
 
