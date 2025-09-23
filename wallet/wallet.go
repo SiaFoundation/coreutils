@@ -51,6 +51,7 @@ type (
 		PoolTransactions() []types.Transaction
 		RecommendedFee() types.Currency
 		V2PoolTransactions() []types.V2Transaction
+		UpdateV2TransactionSet(txns []types.V2Transaction, from, to types.ChainIndex) ([]types.V2Transaction, error)
 		OnReorg(func(types.ChainIndex)) func()
 	}
 
@@ -1017,6 +1018,7 @@ func (sw *SingleAddressWallet) rebroadcastTransactions() error {
 		return fmt.Errorf("failed to get transactions to rebroadcast: %w", err)
 	}
 
+	basis := sw.cm.TipState().Index
 	for _, set := range sets {
 		if time.Since(set.BroadcastedAt) > sw.cfg.MaxRebroadcastPeriod {
 			sw.log.Debug("removing broadcasted set", zap.Time("broadcastedAt", set.BroadcastedAt))
@@ -1026,9 +1028,23 @@ func (sw *SingleAddressWallet) rebroadcastTransactions() error {
 			continue
 		}
 
-		if _, err := sw.cm.AddV2PoolTransactions(set.Basis, set.Transactions); err != nil {
+		// update the transaction set to reflect the current chain state
+		txns, err := sw.cm.UpdateV2TransactionSet(set.Transactions, set.Basis, basis)
+		if err != nil || len(txns) == 0 {
+			// remove the broadcasted set if it can no longer be updated
+			// or if all transactions in the set have been confirmed.
+			if err := sw.store.RemoveBroadcastedSet(set); err != nil {
+				sw.log.Debug("failed to remove broadcasted set", zap.Error(err))
+			}
+			if err != nil {
+				sw.log.Debug("failed to update transaction set", zap.Error(err))
+			}
+			continue
+		}
+		sw.log.Debug("updated transaction set for rebroadcast", zap.Int("txns", len(txns)), zap.Stringer("broadcastBasis", set.Basis), zap.Stringer("newBasis", basis))
+		if _, err := sw.cm.AddV2PoolTransactions(basis, txns); err != nil {
 			sw.log.Debug("failed to add transactions to pool", zap.Error(err))
-		} else if err := sw.syncer.BroadcastV2TransactionSet(set.Basis, set.Transactions); err != nil {
+		} else if err := sw.syncer.BroadcastV2TransactionSet(basis, txns); err != nil {
 			sw.log.Debug("failed to broadcast transaction set", zap.Error(err))
 		}
 	}

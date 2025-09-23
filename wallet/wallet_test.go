@@ -1872,6 +1872,9 @@ func (r *recommender) BestIndex(_ uint64) (types.ChainIndex, bool) {
 func (r *recommender) PoolTransactions() []types.Transaction     { return nil }
 func (r *recommender) RecommendedFee() types.Currency            { return r.fee }
 func (r *recommender) V2PoolTransactions() []types.V2Transaction { return nil }
+func (r *recommender) UpdateV2TransactionSet(_ []types.V2Transaction, _, _ types.ChainIndex) ([]types.V2Transaction, error) {
+	return nil, nil
+}
 func (r *recommender) OnReorg(func(types.ChainIndex)) func() {
 	return func() {}
 }
@@ -1922,7 +1925,7 @@ func TestRebroadcastTransaction(t *testing.T) {
 	// create wallet
 	l := zaptest.NewLogger(t)
 	s := &testutil.MockSyncer{}
-	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, s, wallet.WithLogger(l.Named("wallet")))
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, s, wallet.WithLogger(l.Named("wallet")), wallet.WithDebounceInterval(time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2014,13 +2017,13 @@ func TestRebroadcastTransaction(t *testing.T) {
 		ParentID:  cs.Index.ID,
 		Timestamp: types.CurrentTimestamp(),
 		MinerPayouts: []types.SiacoinOutput{{
-			Value:   cs.BlockReward().Add(poolTxns[1].MinerFee),
+			Value:   cs.BlockReward().Add(txn2.MinerFee),
 			Address: types.VoidAddress,
 		}},
 		V2: &types.V2BlockData{
 			Height:       cs.Index.Height + 1,
-			Transactions: []types.V2Transaction{poolTxns[1]},
-			Commitment:   cs.Commitment(types.VoidAddress, nil, []types.V2Transaction{poolTxns[1]}),
+			Transactions: []types.V2Transaction{txn2},
+			Commitment:   cs.Commitment(types.VoidAddress, nil, []types.V2Transaction{txn2}),
 		},
 	}
 
@@ -2032,11 +2035,13 @@ func TestRebroadcastTransaction(t *testing.T) {
 	}
 	time.Sleep(100 * time.Millisecond)
 
-	// assert the set was rebroadcasted
-	if calls := s.BroadcastCalls(); len(calls) == 2 {
+	// assert only the first transaction was rebroadcast
+	if calls := s.BroadcastCalls(); len(calls) != 3 {
 		t.Fatal("expected set to have been rebroadcasted")
-	} else if len(calls[len(calls)-1].Txns) != 1 || calls[len(calls)-1].Txns[0].ID() != txn2.ID() {
+	} else if len(calls[len(calls)-1].Txns) != 1 {
 		t.Fatal("expected only to have rebroadcasted a single transaction")
+	} else if calls[len(calls)-1].Txns[0].ID() != txn1.ID() {
+		t.Fatalf("expected rebroadcasted transaction to be %v, got %v", txn1.ID(), calls[len(calls)-1].Txns[0].ID())
 	}
 
 	// mine a block
@@ -2075,7 +2080,7 @@ func TestReloadBroadcastedSets(t *testing.T) {
 	// create wallet
 	l := zaptest.NewLogger(t)
 	s := &testutil.MockSyncer{}
-	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, s, wallet.WithLogger(l.Named("wallet")))
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, s, wallet.WithLogger(l.Named("wallet")), wallet.WithDebounceInterval(time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2107,7 +2112,7 @@ func TestReloadBroadcastedSets(t *testing.T) {
 	}
 
 	// recreate the wallet
-	w, err = wallet.NewSingleAddressWallet(pk, cm, ws, s, wallet.WithLogger(l.Named("wallet")))
+	w, err = wallet.NewSingleAddressWallet(pk, cm, ws, s, wallet.WithLogger(l.Named("wallet")), wallet.WithDebounceInterval(time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
