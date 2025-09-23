@@ -17,7 +17,7 @@ import (
 	"lukechampine.com/frand"
 )
 
-var protocolVersion = ProtocolVersion501
+var protocolVersion = ProtocolVersion600
 
 type (
 	// A TransportMux is a generic multiplexer for incoming streams.
@@ -75,12 +75,12 @@ type (
 
 	// A Sectors is an interface for reading and writing sectors.
 	Sectors interface {
-		// HasSector returns true if the sector is stored.
-		HasSector(root types.Hash256) (bool, error)
+		// SectorLength returns the metadata for a sector.
+		SectorLength(root types.Hash256) (uint64, error)
 		// ReadSector retrieves a sector by its root
-		ReadSector(root types.Hash256) (*[rhp4.SectorSize]byte, error)
+		ReadSector(root types.Hash256) ([]byte, error)
 		// StoreSector writes a sector to disk
-		StoreSector(root types.Hash256, data *[rhp4.SectorSize]byte, expiration uint64) error
+		StoreSector(root types.Hash256, data []byte, expiration uint64) error
 	}
 
 	// A RevisionState pairs a contract revision with its sector roots.
@@ -163,52 +163,93 @@ func (s *Server) handleRPCSettings(stream net.Conn) error {
 	})
 }
 
-func (s *Server) handleRPCReadSector(stream net.Conn, log *zap.Logger) error {
-	st := time.Now()
-	lap := func(context string) {
-		log.Debug(context, zap.Duration("elapsed", time.Since(st)))
-		st = time.Now()
-	}
+func (s *Server) handleRPCReadSector(stream net.Conn) error {
 	var req rhp4.RPCReadSectorRequest
 	if err := rhp4.ReadRequest(stream, &req); err != nil {
 		return errorDecodingError("failed to read request: %v", err)
 	}
-	lap("read request")
 
 	if err := req.Validate(s.hostKey.PublicKey()); err != nil {
 		return errorBadRequest("request invalid: %v", err)
 	}
 	prices, token := req.Prices, req.Token
-	lap("validate request")
 
-	if exists, err := s.sectors.HasSector(req.Root); err != nil {
-		return fmt.Errorf("failed to check sector: %w", err)
-	} else if !exists {
-		return rhp4.ErrSectorNotFound
-	}
-	lap("check sector")
-
-	err := s.contractor.DebitAccount(token.Account, prices.RPCReadSectorCost(req.Length))
+	sectorLength, err := s.sectors.SectorLength(req.Root)
 	if err != nil {
+		return fmt.Errorf("failed to check sector: %w", err)
+	} else if sectorLength != rhp4.SectorSize {
+		return errorBadRequest("variable length sectors are not supported")
+	}
+	readLength := min(sectorLength, req.Length)
+
+	if req.Offset+readLength > sectorLength {
+		return errorBadRequest("offset %d + length %d exceeds sector size %d", req.Offset, readLength, sectorLength)
+	}
+
+	if err = s.contractor.DebitAccount(token.Account, prices.RPCReadSectorCost(readLength)); err != nil {
 		return fmt.Errorf("failed to debit account: %w", err)
 	}
-	lap("debit account")
 
 	sector, err := s.sectors.ReadSector(req.Root)
 	if err != nil {
 		return fmt.Errorf("failed to read sector: %w", err)
 	}
-	lap("read sector")
 
-	segment := sector[req.Offset : req.Offset+req.Length]
+	segment := sector[req.Offset : req.Offset+readLength]
 	start := req.Offset / rhp4.LeafSize
-	end := (req.Offset + req.Length + rhp4.LeafSize - 1) / rhp4.LeafSize
+	end := (req.Offset + readLength + rhp4.LeafSize - 1) / rhp4.LeafSize
 	proof := rhp4.BuildSectorProof(sector, start, end)
-	lap("build proof")
 
 	if err := rhp4.WriteResponse(stream, &rhp4.RPCReadSectorResponse{
 		Proof:      proof,
 		DataLength: uint64(len(segment)),
+	}); err != nil {
+		return fmt.Errorf("failed to write response: %w", err)
+	} else if _, err := stream.Write(segment); err != nil {
+		return fmt.Errorf("failed to write sector data: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) handleRPCReadSectorVariable(stream net.Conn) error {
+	var req rhp4.RPCReadSectorRequest
+	if err := rhp4.ReadRequest(stream, &req); err != nil {
+		return errorDecodingError("failed to read request: %v", err)
+	}
+
+	if err := req.Validate(s.hostKey.PublicKey()); err != nil {
+		return errorBadRequest("request invalid: %v", err)
+	}
+	prices, token := req.Prices, req.Token
+
+	sectorLength, err := s.sectors.SectorLength(req.Root)
+	if err != nil {
+		return fmt.Errorf("failed to check sector: %w", err)
+	}
+	readLength := min(sectorLength, req.Length)
+
+	if req.Offset+readLength > sectorLength {
+		return errorBadRequest("offset %d + length %d exceeds sector size %d", req.Offset, readLength, sectorLength)
+	}
+
+	if err = s.contractor.DebitAccount(token.Account, prices.RPCReadSectorCost(readLength)); err != nil {
+		return fmt.Errorf("failed to debit account: %w", err)
+	}
+
+	sector, err := s.sectors.ReadSector(req.Root)
+	if err != nil {
+		return fmt.Errorf("failed to read sector: %w", err)
+	}
+
+	segment := sector[req.Offset : req.Offset+readLength]
+	start := req.Offset / rhp4.LeafSize
+	end := (req.Offset + readLength + rhp4.LeafSize - 1) / rhp4.LeafSize
+	proof := rhp4.BuildSectorProof(sector, start, end)
+
+	if err := rhp4.WriteResponse(stream, &rhp4.RPCReadVariableSectorResponse{
+		Proof:        proof,
+		SectorLength: sectorLength,
+		DataLength:   uint64(len(segment)),
 	}); err != nil {
 		return fmt.Errorf("failed to write response: %w", err)
 	} else if _, err := stream.Write(segment); err != nil {
@@ -226,7 +267,7 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 	}
 	prices := req.Prices
 
-	var sector [rhp4.SectorSize]byte
+	sector := make([]byte, rhp4.SectorSize)
 	sr := io.LimitReader(stream, int64(req.DataLength))
 	if req.DataLength < rhp4.SectorSize {
 		// if the data is less than a full sector, the reader needs to be padded
@@ -245,7 +286,40 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 		return fmt.Errorf("failed to debit account: %w", err)
 	}
 
-	if err := s.sectors.StoreSector(root, &sector, prices.TipHeight+rhp4.TempSectorDuration); err != nil {
+	if err := s.sectors.StoreSector(root, sector[:], prices.TipHeight+rhp4.TempSectorDuration); err != nil {
+		return fmt.Errorf("failed to store sector: %w", err)
+	}
+	return rhp4.WriteResponse(stream, &rhp4.RPCWriteSectorResponse{
+		Root: root,
+	})
+}
+
+func (s *Server) handleRPCWriteSectorVariable(stream net.Conn) error {
+	var req rhp4.RPCWriteSectorRequest
+	if err := rhp4.ReadRequest(stream, &req); err != nil {
+		return errorDecodingError("failed to read request: %v", err)
+	} else if err := req.Validate(s.hostKey.PublicKey()); err != nil {
+		return errorBadRequest("request invalid: %v", err)
+	}
+	prices := req.Prices
+
+	if req.DataLength%rhp4.LeafSize != 0 {
+		return errorBadRequest("data length must be multiple of %v", rhp4.LeafSize)
+	}
+
+	root, data, err := rhp4.ReadVariableSector(stream, req.DataLength)
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return errorBadRequest("sector data is not %v bytes", req.DataLength)
+	} else if err != nil {
+		return fmt.Errorf("failed to read sector data: %w", err)
+	}
+
+	usage := prices.RPCWriteSectorCost(req.DataLength)
+	if err = s.contractor.DebitAccount(req.Token.Account, usage); err != nil {
+		return fmt.Errorf("failed to debit account: %w", err)
+	}
+
+	if err := s.sectors.StoreSector(root, data, prices.TipHeight+rhp4.TempSectorDuration); err != nil {
 		return fmt.Errorf("failed to store sector: %w", err)
 	}
 	return rhp4.WriteResponse(stream, &rhp4.RPCWriteSectorResponse{
@@ -355,10 +429,10 @@ func (s *Server) handleRPCAppendSectors(stream net.Conn) error {
 	accepted := make([]bool, len(req.Sectors))
 	var appended uint64
 	for i, root := range req.Sectors {
-		if ok, err := s.sectors.HasSector(root); err != nil {
-			return fmt.Errorf("failed to check sector: %w", err)
-		} else if !ok {
+		if _, err := s.sectors.SectorLength(root); errors.Is(err, rhp4.ErrSectorNotFound) {
 			continue
+		} else if err != nil {
+			return fmt.Errorf("failed to check sector: %w", err)
 		}
 		accepted[i] = true
 		roots = append(roots, root)
@@ -1119,10 +1193,11 @@ func (s *Server) handleRPCVerifySector(stream net.Conn) error {
 	}
 	prices, token := req.Prices, req.Token
 
-	if exists, err := s.sectors.HasSector(req.Root); err != nil {
+	length, err := s.sectors.SectorLength(req.Root)
+	if err != nil {
 		return fmt.Errorf("failed to check sector: %w", err)
-	} else if !exists {
-		return rhp4.ErrSectorNotFound
+	} else if length != rhp4.SectorSize {
+		return errorBadRequest("variable length sectors are not supported")
 	}
 
 	if err := s.contractor.DebitAccount(token.Account, prices.RPCVerifySectorCost()); err != nil {
@@ -1138,6 +1213,52 @@ func (s *Server) handleRPCVerifySector(stream net.Conn) error {
 	resp := rhp4.RPCVerifySectorResponse{
 		Proof: proof,
 		Leaf:  ([64]byte)(sector[rhp4.LeafSize*req.LeafIndex:]),
+	}
+	return rhp4.WriteResponse(stream, &resp)
+}
+
+func (s *Server) handleRPCVerifySectorVariable(stream net.Conn) error {
+	var req rhp4.RPCVerifySectorVariableRequest
+	if err := rhp4.ReadRequest(stream, &req); err != nil {
+		return errorDecodingError("failed to read request: %v", err)
+	} else if err := req.Validate(s.hostKey.PublicKey()); err != nil {
+		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
+	}
+	prices, token := req.Prices, req.Token
+
+	length, err := s.sectors.SectorLength(req.Root)
+	if err != nil {
+		return fmt.Errorf("failed to check sector: %w", err)
+	}
+
+	err = rhp4.WriteResponse(stream, &rhp4.RPCVerifySectorVariableResponse{
+		SectorLength: length,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to send sector length: %w", err)
+	}
+
+	leaves := length / rhp4.LeafSize
+	var leafResp rhp4.RPCVerifySectorVariableSecondResponse
+	if err = rhp4.ReadResponse(stream, &leafResp); err != nil {
+		return errorDecodingError("failed to read request: %v", err)
+	} else if leafResp.LeafIndex > leaves {
+		return errorBadRequest("leaf index %v out of range for sector with %v leaves", leafResp.LeafIndex, leaves)
+	}
+
+	if err := s.contractor.DebitAccount(token.Account, prices.RPCVerifySectorCost()); err != nil {
+		return fmt.Errorf("failed to debit account: %w", err)
+	}
+
+	sector, err := s.sectors.ReadSector(req.Root)
+	if err != nil {
+		return fmt.Errorf("failed to read sector: %w", err)
+	}
+
+	proof := rhp4.BuildSectorProof(sector, leafResp.LeafIndex, leafResp.LeafIndex+1)
+	resp := rhp4.RPCVerifySectorResponse{
+		Proof: proof,
+		Leaf:  ([64]byte)(sector[rhp4.LeafSize*leafResp.LeafIndex:]),
 	}
 	return rhp4.WriteResponse(stream, &resp)
 }
@@ -1189,11 +1310,17 @@ func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 	case rhp4.RPCAppendSectorsID:
 		err = s.handleRPCAppendSectors(stream)
 	case rhp4.RPCReadSectorID:
-		err = s.handleRPCReadSector(stream, log.Named("RPCReadSector"))
+		err = s.handleRPCReadSector(stream)
+	case rhp4.RPCReadSectorVariableID:
+		err = s.handleRPCReadSectorVariable(stream)
 	case rhp4.RPCWriteSectorID:
 		err = s.handleRPCWriteSector(stream)
+	case rhp4.RPCWriteSectorVariableID:
+		err = s.handleRPCWriteSectorVariable(stream)
 	case rhp4.RPCVerifySectorID:
 		err = s.handleRPCVerifySector(stream)
+	case rhp4.RPCVerifySectorVariableID:
+		err = s.handleRPCVerifySectorVariable(stream)
 	default:
 		log.Debug("unrecognized RPC", zap.Stringer("rpc", id))
 		rhp4.WriteResponse(stream, &rhp4.RPCError{Code: rhp4.ErrorCodeBadRequest, Description: "unrecognized RPC"})
