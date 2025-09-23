@@ -1162,7 +1162,11 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		return nil, fmt.Errorf("reorg path from %v to %v is too long (-%v +%v)", from, to, len(revert), len(apply))
 	}
 
-	updated = slices.Clone(txns)
+	// work on a deep copy of the transactions
+	updated = make([]types.V2Transaction, 0, len(txns))
+	for _, txn := range txns {
+		updated = append(updated, txn.DeepCopy())
+	}
 	for _, index := range revert {
 		b, bs, cs, ok := blockAndParent(m.store, index.ID)
 		if !ok {
