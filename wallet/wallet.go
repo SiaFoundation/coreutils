@@ -22,11 +22,6 @@ const (
 	// redistributeBatchSize is the number of outputs to redistribute per txn to
 	// avoid creating a txn that is too large.
 	redistributeBatchSize = 10
-
-	// maxRebroadcastPeriod is the maximum period of time a transaction set is
-	// being rebroadcasted, after this period the broadcasted set is removed
-	// from the store
-	maxRebroadcastPeriod = 7 * 24 * time.Hour // 1 week
 )
 
 var (
@@ -929,11 +924,15 @@ func SumOutputs(outputs []types.SiacoinElement) (sum types.Currency) {
 // private key and store.
 func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store SingleAddressStore, syncer Syncer, opts ...Option) (*SingleAddressWallet, error) {
 	cfg := config{
-		DefragThreshold:     30,
-		MaxInputsForDefrag:  30,
-		MaxDefragUTXOs:      10,
-		ReservationDuration: 3 * time.Hour,
-		Log:                 zap.NewNop(),
+		DefragThreshold:      30,
+		MaxInputsForDefrag:   30,
+		MaxDefragUTXOs:       10,
+		ReservationDuration:  3 * time.Hour,
+		MaxRebroadcastPeriod: 48 * time.Hour,
+		// Minimum time between reorgs before transactions
+		// are rebroadcast
+		RebroadcastDebounceInterval: 15 * time.Second,
+		Log:                         zap.NewNop(),
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -963,7 +962,7 @@ func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store Single
 		return nil, fmt.Errorf("failed to get broadcasted sets: %w", err)
 	}
 	for _, set := range sets {
-		if time.Since(set.BroadcastedAt) < maxRebroadcastPeriod {
+		if time.Since(set.BroadcastedAt) < cfg.MaxRebroadcastPeriod {
 			if _, err := cm.AddV2PoolTransactions(set.Basis, set.Transactions); err != nil {
 				sw.log.Debug("failed to add broadcasted transactions to pool", zap.Error(err))
 			}
@@ -992,11 +991,16 @@ func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store Single
 		}
 		defer cancel()
 
+		// debounce rebroadcasting during heavy syncing
+		debounce := time.NewTimer(cfg.RebroadcastDebounceInterval)
+		debounce.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-reorgCh:
+				debounce.Reset(cfg.RebroadcastDebounceInterval)
+			case <-debounce.C:
 				if err := sw.rebroadcastTransactions(); err != nil && !errors.Is(err, context.Canceled) {
 					sw.log.Debug("failed to rebroadcast transactions", zap.Error(err))
 				}
@@ -1008,40 +1012,24 @@ func NewSingleAddressWallet(priv types.PrivateKey, cm ChainManager, store Single
 }
 
 func (sw *SingleAddressWallet) rebroadcastTransactions() error {
-	inPool := make(map[types.TransactionID]struct{})
-	for _, txn := range sw.cm.V2PoolTransactions() {
-		inPool[txn.ID()] = struct{}{}
-	}
-
 	sets, err := sw.store.BroadcastedSets()
 	if err != nil {
 		return fmt.Errorf("failed to get transactions to rebroadcast: %w", err)
 	}
 
 	for _, set := range sets {
-		if time.Since(set.BroadcastedAt) > maxRebroadcastPeriod {
+		if time.Since(set.BroadcastedAt) > sw.cfg.MaxRebroadcastPeriod {
 			sw.log.Debug("removing broadcasted set", zap.Time("broadcastedAt", set.BroadcastedAt))
 			if err := sw.store.RemoveBroadcastedSet(set); err != nil {
 				sw.log.Debug("failed to remove broadcasted set", zap.Error(err))
 			}
 			continue
 		}
-		missing := make([]types.V2Transaction, 0, len(set.Transactions))
-		for _, txn := range set.Transactions {
-			if _, ok := inPool[txn.ID()]; !ok {
-				missing = append(missing, txn)
-			}
-		}
-		if len(missing) == len(set.Transactions) {
-			if err := sw.store.RemoveBroadcastedSet(set); err != nil {
-				sw.log.Debug("failed to remove old broadcasted set", zap.Error(err))
-			}
-		} else if len(missing) > 0 {
-			if _, err := sw.cm.AddV2PoolTransactions(set.Basis, missing); err != nil {
-				sw.log.Debug("failed to add transactions to pool", zap.Error(err))
-			} else if err := sw.syncer.BroadcastV2TransactionSet(set.Basis, missing); err != nil {
-				sw.log.Debug("failed to broadcast transaction set", zap.Error(err))
-			}
+
+		if _, err := sw.cm.AddV2PoolTransactions(set.Basis, set.Transactions); err != nil {
+			sw.log.Debug("failed to add transactions to pool", zap.Error(err))
+		} else if err := sw.syncer.BroadcastV2TransactionSet(set.Basis, set.Transactions); err != nil {
+			sw.log.Debug("failed to broadcast transaction set", zap.Error(err))
 		}
 	}
 	return nil
