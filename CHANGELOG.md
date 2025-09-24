@@ -1,3 +1,9 @@
+## 0.18.5 (2025-09-24)
+
+### Fixes
+
+- Fixed an edge-case where transactions make it into the local pool causing them to not be broadcast.
+
 ## 0.18.4 (2025-09-05)
 
 ### Features
