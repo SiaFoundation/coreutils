@@ -75,7 +75,7 @@ func TestSyncer(t *testing.T) {
 	// broadcast the tip from s1 to s2
 	s1.BroadcastV2Header(b.Header())
 
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if cm1.Tip() == cm2.Tip() {
 			break
 		}
@@ -125,13 +125,54 @@ func TestSendCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, cs, err := p.SendCheckpoint(cm1.Tip(), time.Second)
+	cs, b, err := p.SendCheckpoint(cm1.Tip(), cm1.TipState().Network, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	} else if b1, _ := cm1.Block(cm1.Tip().ID); !hashEq(types.V2Block(b), types.V2Block(b1)) {
 		t.Fatalf("expected block %v, got %v", b1, b)
 	} else if cs1, _ := cm1.State(cs.Index.ID); !hashEq(cs, cs1) {
 		t.Fatalf("expected checkpoint %v, got %v", cs1, cs)
+	}
+}
+
+func TestInstantSync(t *testing.T) {
+	n, genesis := testutil.Network()
+	log := zap.NewNop()
+
+	s, cm := newTestSyncer(t, "syncer", log)
+	defer s.Close()
+
+	// mine a few blocks above v2 hardfork height
+	testutil.MineBlocks(t, cm, types.VoidAddress, int(n.HardforkV2.AllowHeight+10))
+
+	// instant sync to 5 blocks below the tip
+	index, ok := cm.BestIndex(cm.Tip().Height - 5)
+	if !ok {
+		t.Fatal("failed to get index")
+	}
+	cs, b, err := syncer.SendCheckpoint(context.Background(), s.Addr(), index, n, genesis.ID())
+	if err != nil {
+		t.Fatal(err)
+	} else if cs.Index.ID != b.ParentID {
+		t.Fatalf("expected checkpoint state %v, got %v", b.ParentID, cs.Index.ID)
+	}
+	// initialize new manager at synced checkpoint
+	store, newTipState, err := chain.NewDBStoreAtCheckpoint(chain.NewMemDB(), cs, b, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm2 := chain.NewManager(store, newTipState)
+
+	if cm2.Tip() != index {
+		t.Fatalf("expected tip %v, got %v", index, cm2.Tip())
+	} else if b2, ok := cm2.Block(b.ID()); !ok {
+		t.Fatal("checkpoint block not stored")
+	} else if !hashEq(types.V2Block(b2), types.V2Block(b)) {
+		t.Fatalf("checkpoint block mismatch")
+	} else if cs2, ok := cm2.State(cs.Index.ID); !ok {
+		t.Fatal("parent state not stored")
+	} else if !hashEq(cs2, cs) {
+		t.Fatalf("parent state mismatch")
 	}
 }
 
