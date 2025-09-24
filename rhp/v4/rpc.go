@@ -30,6 +30,10 @@ var (
 	// ProtocolVersion501 fixed hosts not accepting a pruning request for
 	// MaxSectorBatchSize.
 	ProtocolVersion501 = rhp4.ProtocolVersion{5, 0, 1}
+
+	// ProtocolVersion600 changed RPCWriteSector to support variable
+	// length sectors.
+	ProtocolVersion600 = rhp4.ProtocolVersion{6, 0, 0}
 )
 
 var (
@@ -39,15 +43,6 @@ var (
 	// ErrInvalidProof is returned when an RPC returns an invalid Merkle proof.
 	ErrInvalidProof = errors.New("invalid proof")
 )
-
-var zeros = zeroReader{}
-
-type zeroReader struct{}
-
-func (r zeroReader) Read(p []byte) (int, error) {
-	clear(p)
-	return len(p), nil
-}
 
 type timeoutConn struct {
 	net.Conn
@@ -424,13 +419,16 @@ func RPCSettings(ctx context.Context, t TransportClient) (rhp4.HostSettings, err
 }
 
 // RPCReadSector reads a sector from the host.
-func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, w io.Writer, root types.Hash256, offset, length uint64) (RPCReadSectorResult, error) {
+//
+// Deprecated: This function only supports fixed-size sectors. Use
+// [RPCReadSectorVariable] when interacting with hosts that support [rhp4.ProtocolVersion600].
+func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, w io.Writer, root types.Hash256, offset, limit uint64) (RPCReadSectorResult, error) {
 	req := &rhp4.RPCReadSectorRequest{
 		Prices: prices,
 		Token:  token,
 		Root:   root,
 		Offset: offset,
-		Length: length,
+		Length: limit,
 	}
 	if err := req.Validate(t.PeerKey()); err != nil {
 		return RPCReadSectorResult{}, fmt.Errorf("invalid request: %w", err)
@@ -449,39 +447,92 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 	var resp rhp4.RPCReadSectorResponse
 	if err := rhp4.ReadResponse(s, &resp); err != nil {
 		return RPCReadSectorResult{}, fmt.Errorf("failed to read response: %w", err)
+	} else if resp.DataLength > req.Length {
+		return RPCReadSectorResult{}, fmt.Errorf("host returned %d bytes, exceeding requested length %d", resp.DataLength, req.Length)
 	}
 
 	start := req.Offset / rhp4.LeafSize
-	end := (req.Offset + req.Length + rhp4.LeafSize - 1) / rhp4.LeafSize
+	end := (req.Offset + resp.DataLength + rhp4.LeafSize - 1) / rhp4.LeafSize
 	rpv := rhp4.NewRangeProofVerifier(start, end)
 	if n, err := rpv.ReadFrom(io.TeeReader(io.LimitReader(s, int64(resp.DataLength)), w)); err != nil {
 		return RPCReadSectorResult{}, fmt.Errorf("failed to read data: %w", err)
-	} else if !rpv.Verify(resp.Proof, root) {
+	} else if !rpv.Verify(resp.Proof, root, rhp4.LeavesPerSector) {
 		return RPCReadSectorResult{}, ErrInvalidProof
 	} else if n != int64(resp.DataLength) {
 		return RPCReadSectorResult{}, io.ErrUnexpectedEOF
 	}
 	return RPCReadSectorResult{
-		Usage: prices.RPCReadSectorCost(length),
+		Usage: prices.RPCReadSectorCost(resp.DataLength),
+	}, nil
+}
+
+// RPCReadSectorVariable reads a variably-lengthed sector from the host.
+func RPCReadSectorVariable(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, w io.Writer, root types.Hash256, offset, limit uint64) (RPCReadSectorResult, error) {
+	req := &rhp4.RPCReadSectorRequest{
+		Prices: prices,
+		Token:  token,
+		Root:   root,
+		Offset: offset,
+		Length: limit,
+	}
+	if err := req.Validate(t.PeerKey()); err != nil {
+		return RPCReadSectorResult{}, fmt.Errorf("invalid request: %w", err)
+	}
+
+	s, err := openStream(ctx, t, defaultStreamTimeout)
+	if err != nil {
+		return RPCReadSectorResult{}, fmt.Errorf("failed to dial stream: %w", err)
+	}
+	defer s.Close()
+
+	if err := rhp4.WriteRequest(s, rhp4.RPCReadSectorVariableID, req); err != nil {
+		return RPCReadSectorResult{}, fmt.Errorf("failed to write request: %w", err)
+	}
+
+	var resp rhp4.RPCReadVariableSectorResponse
+	if err := rhp4.ReadResponse(s, &resp); err != nil {
+		return RPCReadSectorResult{}, fmt.Errorf("failed to read response: %w", err)
+	} else if resp.DataLength > req.Length {
+		return RPCReadSectorResult{}, fmt.Errorf("host returned %d bytes, exceeding requested length %d", resp.DataLength, req.Length)
+	}
+
+	leaves := resp.SectorLength / rhp4.LeafSize
+	start := req.Offset / rhp4.LeafSize
+	end := (req.Offset + resp.DataLength + rhp4.LeafSize - 1) / rhp4.LeafSize
+	rpv := rhp4.NewRangeProofVerifier(start, end)
+	if n, err := rpv.ReadFrom(io.TeeReader(io.LimitReader(s, int64(resp.DataLength)), w)); err != nil {
+		return RPCReadSectorResult{}, fmt.Errorf("failed to read data: %w", err)
+	} else if !rpv.Verify(resp.Proof, root, leaves) {
+		return RPCReadSectorResult{}, ErrInvalidProof
+	} else if n != int64(resp.DataLength) {
+		return RPCReadSectorResult{}, io.ErrUnexpectedEOF
+	}
+	return RPCReadSectorResult{
+		Usage: prices.RPCReadSectorCost(resp.DataLength),
 	}, nil
 }
 
 // RPCWriteSector writes a sector to the host.
-func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, data io.Reader, length uint64) (RPCWriteSectorResult, error) {
-	if length == 0 {
+func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, data []byte) (RPCWriteSectorResult, error) {
+	if len(data) == 0 {
 		return RPCWriteSectorResult{}, errors.New("cannot write zero-length sector")
-	} else if length > rhp4.SectorSize {
-		return RPCWriteSectorResult{}, fmt.Errorf("sector length %d exceeds maximum %d", length, rhp4.SectorSize)
+	} else if len(data) > rhp4.SectorSize {
+		return RPCWriteSectorResult{}, fmt.Errorf("sector length %d exceeds maximum %d", len(data), rhp4.SectorSize)
 	}
 	req := rhp4.RPCWriteSectorRequest{
 		Prices:     prices,
 		Token:      token,
-		DataLength: length,
+		DataLength: uint64(len(data)),
 	}
 
 	if err := req.Validate(t.PeerKey()); err != nil {
 		return RPCWriteSectorResult{}, fmt.Errorf("invalid request: %w", err)
 	}
+
+	rootCh := make(chan types.Hash256)
+	go func() {
+		rootCh <- rhp4.SectorRoot(data)
+	}()
 
 	s, err := openStream(ctx, t, defaultStreamTimeout)
 	if err != nil {
@@ -493,23 +544,13 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 
 	if err := rhp4.WriteRequest(bw, rhp4.RPCWriteSectorID, &req); err != nil {
 		return RPCWriteSectorResult{}, fmt.Errorf("failed to write request: %w", err)
-	}
-
-	sr := io.LimitReader(data, int64(req.DataLength))
-	tr := io.TeeReader(sr, bw)
-	if req.DataLength < rhp4.SectorSize {
-		// if the data is less than a full sector, the reader needs to be padded
-		// with zeros to calculate the sector root
-		tr = io.MultiReader(tr, io.LimitReader(zeros, int64(rhp4.SectorSize-req.DataLength)))
-	}
-
-	root, err := rhp4.ReaderRoot(tr)
-	if err != nil {
-		return RPCWriteSectorResult{}, fmt.Errorf("failed to calculate root: %w", err)
+	} else if _, err := bw.Write(data); err != nil {
+		return RPCWriteSectorResult{}, fmt.Errorf("failed to write data: %w", err)
 	} else if err := bw.Flush(); err != nil {
 		return RPCWriteSectorResult{}, fmt.Errorf("failed to flush: %w", err)
 	}
 
+	root := <-rootCh
 	var resp rhp4.RPCWriteSectorResponse
 	if err := rhp4.ReadResponse(s, &resp); err != nil {
 		return RPCWriteSectorResult{}, fmt.Errorf("failed to read response: %w", err)
@@ -519,11 +560,69 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 
 	return RPCWriteSectorResult{
 		Root:  resp.Root,
-		Usage: prices.RPCWriteSectorCost(uint64(length)),
+		Usage: prices.RPCWriteSectorCost(uint64(len(data))),
+	}, nil
+}
+
+// RPCWriteSectorVariable writes a sector to the host.
+func RPCWriteSectorVariable(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, data []byte) (RPCWriteSectorResult, error) {
+	if len(data) == 0 {
+		return RPCWriteSectorResult{}, errors.New("cannot write zero-length sector")
+	} else if len(data) > rhp4.SectorSize {
+		return RPCWriteSectorResult{}, fmt.Errorf("sector length %d exceeds maximum %d", len(data), rhp4.SectorSize)
+	}
+	req := rhp4.RPCWriteSectorRequest{
+		Prices:     prices,
+		Token:      token,
+		DataLength: uint64(len(data)),
+	}
+
+	if err := req.Validate(t.PeerKey()); err != nil {
+		return RPCWriteSectorResult{}, fmt.Errorf("invalid request: %w", err)
+	}
+
+	rootCh := make(chan types.Hash256)
+	go func() {
+		rootCh <- rhp4.SectorRoot(data)
+	}()
+
+	s, err := openStream(ctx, t, defaultStreamTimeout)
+	if err != nil {
+		return RPCWriteSectorResult{}, fmt.Errorf("failed to dial stream: %w", err)
+	}
+	defer s.Close()
+
+	bw := bufio.NewWriterSize(s, t.FrameSize())
+
+	if err := rhp4.WriteRequest(bw, rhp4.RPCWriteSectorVariableID, &req); err != nil {
+		return RPCWriteSectorResult{}, fmt.Errorf("failed to write request: %w", err)
+	} else if _, err := bw.Write(data); err != nil {
+		return RPCWriteSectorResult{}, fmt.Errorf("failed to write data: %w", err)
+	} else if err := bw.Flush(); err != nil {
+		return RPCWriteSectorResult{}, fmt.Errorf("failed to flush data: %w", err)
+	}
+
+	var resp rhp4.RPCWriteSectorResponse
+	if err := rhp4.ReadResponse(s, &resp); err != nil {
+		return RPCWriteSectorResult{}, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	root := <-rootCh
+	if resp.Root != root {
+		return RPCWriteSectorResult{}, ErrInvalidRoot
+	}
+
+	return RPCWriteSectorResult{
+		Root:  resp.Root,
+		Usage: prices.RPCWriteSectorCost(uint64(len(data))),
 	}, nil
 }
 
 // RPCVerifySector verifies that the host is properly storing a sector
+//
+// Deprecated: This function only supports fixed-size sectors. Use
+// [RPCVerifySectorVariable] when interacting with hosts that support
+// [rhp4.ProtocolVersion600].
 func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256) (RPCVerifySectorResult, error) {
 	req := rhp4.RPCVerifySectorRequest{
 		Prices:    prices,
@@ -535,10 +634,55 @@ func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPri
 	var resp rhp4.RPCVerifySectorResponse
 	if err := callSingleRoundtripRPC(ctx, t, rhp4.RPCVerifySectorID, &req, &resp); err != nil {
 		return RPCVerifySectorResult{}, err
-	} else if !rhp4.VerifyLeafProof(resp.Proof, resp.Leaf, req.LeafIndex, root) {
+	} else if !rhp4.VerifyLeafProof(resp.Proof, resp.Leaf, rhp4.LeavesPerSector, req.LeafIndex, root) {
 		return RPCVerifySectorResult{}, ErrInvalidProof
 	}
 
+	return RPCVerifySectorResult{
+		Usage: prices.RPCVerifySectorCost(),
+	}, nil
+}
+
+// RPCVerifySectorVariable verifies that the host is properly storing a sector
+func RPCVerifySectorVariable(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256) (RPCVerifySectorResult, error) {
+	req := rhp4.RPCVerifySectorVariableRequest{
+		Prices: prices,
+		Token:  token,
+		Root:   root,
+	}
+	if err := req.Validate(t.PeerKey()); err != nil {
+		return RPCVerifySectorResult{}, fmt.Errorf("invalid request: %w", err)
+	}
+
+	stream, err := openStream(ctx, t, defaultStreamTimeout)
+	if err != nil {
+		return RPCVerifySectorResult{}, fmt.Errorf("failed to dial stream: %w", err)
+	}
+	defer stream.Close()
+
+	if err := rhp4.WriteRequest(stream, rhp4.RPCVerifySectorVariableID, &req); err != nil {
+		return RPCVerifySectorResult{}, fmt.Errorf("failed to write request: %w", err)
+	}
+
+	var lengthResp rhp4.RPCVerifySectorVariableResponse
+	if err := rhp4.ReadResponse(stream, &lengthResp); err != nil {
+		return RPCVerifySectorResult{}, fmt.Errorf("failed to read response: %w", err)
+	}
+	leaves := lengthResp.SectorLength / rhp4.LeafSize
+	leafIndex := frand.Uint64n(lengthResp.SectorLength / rhp4.LeafSize)
+	leafResp := rhp4.RPCVerifySectorVariableSecondResponse{
+		LeafIndex: leafIndex,
+	}
+	if err := rhp4.WriteResponse(stream, &leafResp); err != nil {
+		return RPCVerifySectorResult{}, fmt.Errorf("failed to write response: %w", err)
+	}
+
+	var resp rhp4.RPCVerifySectorResponse
+	if err := rhp4.ReadResponse(stream, &resp); err != nil {
+		return RPCVerifySectorResult{}, fmt.Errorf("failed to read response: %w", err)
+	} else if !rhp4.VerifyLeafProof(resp.Proof, resp.Leaf, leaves, leafIndex, root) {
+		return RPCVerifySectorResult{}, ErrInvalidProof
+	}
 	return RPCVerifySectorResult{
 		Usage: prices.RPCVerifySectorCost(),
 	}, nil
@@ -604,6 +748,70 @@ func RPCFreeSectors(ctx context.Context, t TransportClient, signer ContractSigne
 
 // RPCAppendSectors appends sectors a host is storing to a contract.
 func RPCAppendSectors(ctx context.Context, t TransportClient, signer ContractSigner, cs consensus.State, prices rhp4.HostPrices, contract ContractRevision, roots []types.Hash256) (RPCAppendSectorsResult, error) {
+	req := rhp4.RPCAppendSectorsRequest{
+		Prices:     prices,
+		Sectors:    roots,
+		ContractID: contract.ID,
+	}
+	req.ChallengeSignature = signer.SignHash(req.ChallengeSigHash(contract.Revision.RevisionNumber + 1))
+
+	s, err := openStream(ctx, t, defaultStreamTimeout)
+	if err != nil {
+		return RPCAppendSectorsResult{}, fmt.Errorf("failed to dial stream: %w", err)
+	}
+	defer s.Close()
+
+	if err := rhp4.WriteRequest(s, rhp4.RPCAppendSectorsID, &req); err != nil {
+		return RPCAppendSectorsResult{}, fmt.Errorf("failed to write request: %w", err)
+	}
+
+	var resp rhp4.RPCAppendSectorsResponse
+	if err := rhp4.ReadResponse(s, &resp); err != nil {
+		return RPCAppendSectorsResult{}, fmt.Errorf("failed to read response: %w", err)
+	} else if len(resp.Accepted) != len(roots) {
+		return RPCAppendSectorsResult{}, errors.New("host returned less roots")
+	}
+	appended := make([]types.Hash256, 0, len(roots))
+	for i := range resp.Accepted {
+		if resp.Accepted[i] {
+			appended = append(appended, roots[i])
+		}
+	}
+	numSectors := (contract.Revision.Filesize + rhp4.SectorSize - 1) / rhp4.SectorSize
+	if !rhp4.VerifyAppendSectorsProof(numSectors, resp.SubtreeRoots, appended, contract.Revision.FileMerkleRoot, resp.NewMerkleRoot) {
+		return RPCAppendSectorsResult{}, ErrInvalidProof
+	}
+
+	revision, usage, err := rhp4.ReviseForAppendSectors(contract.Revision, prices, resp.NewMerkleRoot, uint64(len(appended)))
+	if err != nil {
+		return RPCAppendSectorsResult{}, fmt.Errorf("failed to revise contract: %w", err)
+	}
+	sigHash := cs.ContractSigHash(revision)
+	revision.RenterSignature = signer.SignHash(sigHash)
+
+	signatureResp := rhp4.RPCAppendSectorsSecondResponse{
+		RenterSignature: revision.RenterSignature,
+	}
+	if err := rhp4.WriteResponse(s, &signatureResp); err != nil {
+		return RPCAppendSectorsResult{}, fmt.Errorf("failed to write signature response: %w", err)
+	}
+
+	var hostSignature rhp4.RPCAppendSectorsThirdResponse
+	if err := rhp4.ReadResponse(s, &hostSignature); err != nil {
+		return RPCAppendSectorsResult{}, fmt.Errorf("failed to read host signatures: %w", err)
+	} else if !contract.Revision.HostPublicKey.VerifyHash(sigHash, hostSignature.HostSignature) {
+		return RPCAppendSectorsResult{}, rhp4.ErrInvalidSignature
+	}
+	revision.HostSignature = hostSignature.HostSignature
+	return RPCAppendSectorsResult{
+		Revision: revision,
+		Usage:    usage,
+		Sectors:  appended,
+	}, nil
+}
+
+// RPCAppendSectorsVariable appends sectors a host is storing to a contract.
+func RPCAppendSectorsVariable(ctx context.Context, t TransportClient, signer ContractSigner, cs consensus.State, prices rhp4.HostPrices, contract ContractRevision, roots []types.Hash256) (RPCAppendSectorsResult, error) {
 	req := rhp4.RPCAppendSectorsRequest{
 		Prices:     prices,
 		Sectors:    roots,
