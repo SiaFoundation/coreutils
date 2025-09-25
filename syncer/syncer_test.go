@@ -96,7 +96,7 @@ func TestSyncWithBadPeer(t *testing.T) {
 	defer s2.Close()
 
 	// mine enough blocks to test both v1 and v2 regimes
-	testutil.MineBlocks(t, cm1, types.VoidAddress, int(cm1.TipState().Network.HardforkV2.RequireHeight+50))
+	testutil.MineBlocks(t, cm1, types.VoidAddress, int(cm1.TipState().Network.HardforkV2.RequireHeight+100))
 
 	// simulate another peer, one that returns invalid blocks
 	_, genesis := testutil.Network()
@@ -104,9 +104,10 @@ func TestSyncWithBadPeer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	badID := gateway.GenerateUniqueID()
 	s3 := syncer.New(l, evilManager{cm1}, testutil.NewEphemeralPeerStore(), gateway.Header{
 		GenesisID:  genesis.ID(),
-		UniqueID:   gateway.GenerateUniqueID(),
+		UniqueID:   badID,
 		NetAddress: l.Addr().String(),
 	})
 	go s3.Run()
@@ -118,11 +119,6 @@ func TestSyncWithBadPeer(t *testing.T) {
 	if _, err := s3.Connect(context.Background(), s2.Addr()); err != nil {
 		t.Fatal(err)
 	}
-	b, ok := cm1.Block(cm1.Tip().ID)
-	if !ok {
-		t.Fatal("failed to get block")
-	}
-	s1.BroadcastV2Header(b.Header())
 
 	// sync should (eventually) complete despite the bad peer
 	for range 100 {
@@ -133,6 +129,12 @@ func TestSyncWithBadPeer(t *testing.T) {
 	}
 	if cm1.Tip() != cm2.Tip() {
 		t.Fatalf("tips are not equal: %v != %v", cm1.Tip(), cm2.Tip())
+	}
+	// bad peer should be banned
+	if peers := s2.Peers(); len(peers) != 1 {
+		t.Fatalf("expected 1 peer, got %v", peers)
+	} else if peers[0].UniqueID() == badID {
+		t.Fatalf("should not be connected to bad peer")
 	}
 }
 
