@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -76,14 +75,6 @@ func blockAndParent(s Store, id types.BlockID) (types.Block, *consensus.V1BlockS
 	return b, bs, cs, ok && ok2
 }
 
-// blockAndChild returns the block with the specified ID, along with its child
-// state.
-func blockAndChild(s Store, id types.BlockID) (types.Block, *consensus.V1BlockSupplement, consensus.State, bool) {
-	b, bs, ok := s.Block(id)
-	cs, ok2 := s.State(id)
-	return b, bs, cs, ok && ok2
-}
-
 // A Manager tracks multiple blockchains and identifies the best valid
 // chain.
 type Manager struct {
@@ -91,7 +82,6 @@ type Manager struct {
 	tipState                  consensus.State
 	onReorg                   map[[16]byte]func(types.ChainIndex)
 	onPool                    map[[16]byte]func()
-	invalidBlocks             map[types.BlockID]error
 	expiringFileContractOrder map[types.BlockID][]types.FileContractID
 
 	// configuration options
@@ -248,9 +238,7 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 	for _, b := range blocks {
 		bid := b.ID()
 		var ok bool
-		if err := m.invalidBlocks[bid]; err != nil {
-			return fmt.Errorf("block %v is invalid: %w", types.ChainIndex{Height: cs.Index.Height + 1, ID: bid}, err)
-		} else if _, bs, _ := m.store.Block(bid); bs != nil {
+		if _, bs, _ := m.store.Block(bid); bs != nil {
 			// already have this block
 			cs, _ = m.store.State(bid)
 			continue
@@ -262,7 +250,6 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 		if b.Timestamp.After(cs.MaxFutureTimestamp(time.Now())) {
 			return ErrFutureBlock
 		} else if err := consensus.ValidateOrphan(cs, b); err != nil {
-			m.markBadBlock(bid, err)
 			return fmt.Errorf("block %v is invalid: %w", types.ChainIndex{Height: cs.Index.Height + 1, ID: bid}, err)
 		}
 		ancestorTimestamp, ok := m.store.AncestorTimestamp(b.ParentID)
@@ -312,14 +299,14 @@ func (m *Manager) AddValidatedV2Blocks(blocks []types.Block, states []consensus.
 	if len(blocks) == 0 {
 		return nil
 	} else if len(states) != len(blocks) {
-		panic("chain: expected same number of blocks and states") // developer error
+		return errors.New("chain: expected same number of blocks and states")
 	}
 	if _, ok := m.store.State(blocks[0].ParentID); !ok {
 		return fmt.Errorf("missing parent for block %v", blocks[0].ParentID)
 	}
 	for i := range blocks {
 		if blocks[i].V2 == nil {
-			return fmt.Errorf("only v2 blocks can be pre-validated")
+			return errors.New("only v2 blocks can be pre-validated")
 		}
 		m.store.AddBlock(blocks[i], &consensus.V1BlockSupplement{})
 		m.store.AddState(states[i])
@@ -352,23 +339,6 @@ func (m *Manager) AddValidatedV2Blocks(blocks []types.Block, states []consensus.
 		m.mu.Lock()
 	}
 	return nil
-}
-
-// markBadBlock marks a block as bad, so that we don't waste resources
-// re-validating it if we see it again.
-func (m *Manager) markBadBlock(bid types.BlockID, err error) {
-	if strings.Contains(err.Error(), "supplement") || strings.Contains(err.Error(), "commitment") {
-		return // error caused by data not covered by block ID
-	}
-	const maxInvalidBlocks = 1000
-	if len(m.invalidBlocks) >= maxInvalidBlocks {
-		// forget a random entry
-		for bid := range m.invalidBlocks {
-			delete(m.invalidBlocks, bid)
-			break
-		}
-	}
-	m.invalidBlocks[bid] = err
 }
 
 func (m *Manager) overwriteExpirations(b types.Block, bs *consensus.V1BlockSupplement) error {
@@ -422,7 +392,6 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 		if err := m.overwriteExpirations(b, bs); err != nil {
 			return fmt.Errorf("failed to overwrite expiring file contract order in block %v: %w", index, err)
 		} else if err := consensus.ValidateBlock(m.tipState, b, *bs); err != nil {
-			m.markBadBlock(index.ID, err)
 			return fmt.Errorf("block %v is invalid: %w", index, err)
 		}
 		ancestorTimestamp, ok := m.store.AncestorTimestamp(b.ParentID)
@@ -1439,12 +1408,11 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 // NewManager returns a Manager initialized with the provided Store and State.
 func NewManager(store Store, cs consensus.State, opts ...ManagerOption) *Manager {
 	m := &Manager{
-		log:           zap.NewNop(),
-		store:         store,
-		tipState:      cs,
-		onReorg:       make(map[[16]byte]func(types.ChainIndex)),
-		onPool:        make(map[[16]byte]func()),
-		invalidBlocks: make(map[types.BlockID]error),
+		log:      zap.NewNop(),
+		store:    store,
+		tipState: cs,
+		onReorg:  make(map[[16]byte]func(types.ChainIndex)),
+		onPool:   make(map[[16]byte]func()),
 
 		expiringFileContractOrder: defaultExpiringFileContractOrder,
 	}
