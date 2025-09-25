@@ -3,6 +3,7 @@ package syncer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -27,6 +28,7 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 		blocks []types.Block
 		states []consensus.State
 		req    Req
+		peer   *Peer
 		err    error
 	}
 
@@ -49,25 +51,27 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 
 	workFn := func(p *Peer, req Req) (resp Resp) {
 		resp.req = req
+		resp.peer = p
 		startTime := time.Now()
 		if req.base.Height >= cs.Network.HardforkV2.RequireHeight {
 			cs, b, err := p.SendCheckpoint(req.base, cs.Network, s.config.SendBlockTimeout)
 			if err != nil {
-				return Resp{req: req, err: err}
+				return Resp{req: req, peer: p, err: err}
 			}
 			cs, _ = consensus.ApplyBlock(cs, b, consensus.V1BlockSupplement{}, time.Time{})
 			blocks, _, err := p.SendV2Blocks(ctx, []types.BlockID{cs.Index.ID}, req.numBlocks, s.config.SendBlocksTimeout)
 			if err != nil {
-				return Resp{req: req, err: err}
+				return Resp{req: req, peer: p, err: err}
 			} else if uint64(len(blocks)) != req.numBlocks {
-				return Resp{req: req, err: errors.New("peer returned wrong number of blocks")}
+				return Resp{req: req, peer: p, err: errors.New("peer returned wrong number of blocks")}
 			} else if blocks[len(blocks)-1].ID() != req.tip.ID {
-				return Resp{req: req, err: errors.New("peer returned wrong blocks")}
+				return Resp{req: req, peer: p, err: errors.New("peer returned wrong blocks")}
 			}
 			resp.blocks = blocks
 			for _, b := range blocks {
 				if err := consensus.ValidateBlock(cs, b, consensus.V1BlockSupplement{}); err != nil {
-					return Resp{req: req, err: err}
+					s.ban(p, fmt.Errorf("sent invalid block %v: %w", b.ID(), err))
+					return Resp{req: req, peer: p, err: err}
 				}
 				cs, _ = consensus.ApplyBlock(cs, b, consensus.V1BlockSupplement{}, time.Time{})
 				resp.states = append(resp.states, cs)
@@ -75,15 +79,16 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 		} else {
 			blocks, _, err := p.SendV2Blocks(ctx, []types.BlockID{req.base.ID}, req.numBlocks, s.config.SendBlocksTimeout)
 			if err != nil {
-				return Resp{req: req, err: err}
+				return Resp{req: req, peer: p, err: err}
 			} else if uint64(len(blocks)) != req.numBlocks {
-				return Resp{req: req, err: errors.New("peer returned wrong number of blocks")}
+				return Resp{req: req, peer: p, err: errors.New("peer returned wrong number of blocks")}
 			}
 			// verify that blocks match headers
 			headers := headers[req.base.Height-cs.Index.Height:][:req.numBlocks]
 			for i := range blocks {
 				if blocks[i].ID() != headers[i].ID() {
-					return Resp{req: req, err: errors.New("peer returned blocks that do not match header chain")}
+					s.ban(p, errors.New("sent blocks that do not match header chain"))
+					return Resp{req: req, peer: p, err: errors.New("peer returned blocks that do not match header chain")}
 				}
 			}
 			resp.blocks = blocks
@@ -116,6 +121,7 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 					err = s.cm.AddBlocks(r.blocks)
 				}
 				if err != nil {
+					s.ban(r.peer, fmt.Errorf("peer sent invalid blocks: %w", err))
 					errCh <- err
 					return
 				}
