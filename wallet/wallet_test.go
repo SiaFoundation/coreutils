@@ -1925,7 +1925,7 @@ func TestRebroadcastTransaction(t *testing.T) {
 	// create wallet
 	l := zaptest.NewLogger(t)
 	s := &testutil.MockSyncer{}
-	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, s, wallet.WithLogger(l.Named("wallet")), wallet.WithDebounceInterval(time.Millisecond))
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, s, wallet.WithLogger(l.Named("wallet")), wallet.WithDebounceInterval(50*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
