@@ -37,7 +37,7 @@ func newTestSyncer(t testing.TB, name string, log *zap.Logger) (*syncer.Syncer, 
 		GenesisID:  genesis.ID(),
 		UniqueID:   gateway.GenerateUniqueID(),
 		NetAddress: l.Addr().String(),
-	}, syncer.WithLogger(log.Named(name)))
+	}, syncer.WithLogger(log.Named(name)), syncer.WithSyncInterval(100*time.Millisecond))
 	go s.Run()
 	return s, cm
 }
@@ -51,39 +51,90 @@ func TestSyncer(t *testing.T) {
 	s2, cm2 := newTestSyncer(t, "syncer2", log)
 	defer s2.Close()
 
-	// mine a few blocks on cm1
-	testutil.MineBlocks(t, cm1, types.VoidAddress, 10)
-	// mine less blocks on cm2
-	testutil.MineBlocks(t, cm2, types.VoidAddress, 5)
+	// mine enough blocks to test both v1 and v2 regimes
+	testutil.MineBlocks(t, cm1, types.VoidAddress, int(cm1.TipState().Network.HardforkV2.RequireHeight+100))
 
-	if cm1.Tip().Height != 10 {
-		t.Fatalf("expected cm1 tip height to be 10, got %v", cm1.Tip().Height)
-	} else if cm2.Tip().Height != 5 {
-		t.Fatalf("expected cm2 tip height to be 5, got %v", cm2.Tip().Height)
-	}
-
-	// connect the syncers
 	if _, err := s1.Connect(context.Background(), s2.Addr()); err != nil {
 		t.Fatal(err)
 	}
-	// broadcast blocks from s1
 	b, ok := cm1.Block(cm1.Tip().ID)
 	if !ok {
 		t.Fatal("failed to get block")
 	}
-
-	// broadcast the tip from s1 to s2
 	s1.BroadcastV2Header(b.Header())
 
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if cm1.Tip() == cm2.Tip() {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-
 	if cm1.Tip() != cm2.Tip() {
 		t.Fatalf("tips are not equal: %v != %v", cm1.Tip(), cm2.Tip())
+	}
+}
+
+type evilManager struct {
+	*chain.Manager
+}
+
+func (es evilManager) BlocksForHistory(history []types.BlockID, maxBlocks uint64) ([]types.Block, uint64, error) {
+	blocks, rem, err := es.Manager.BlocksForHistory(history, maxBlocks)
+	if len(blocks) > 0 && blocks[len(blocks)-1].V2 != nil {
+		blocks[len(blocks)-1].Transactions = []types.Transaction{{ArbitraryData: [][]byte{[]byte("oops")}}}
+	}
+	return blocks, rem, err
+}
+
+func TestSyncWithBadPeer(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	s1, cm1 := newTestSyncer(t, "syncer1", log)
+	defer s1.Close()
+
+	s2, cm2 := newTestSyncer(t, "syncer2", log)
+	defer s2.Close()
+
+	// mine enough blocks to test both v1 and v2 regimes
+	testutil.MineBlocks(t, cm1, types.VoidAddress, int(cm1.TipState().Network.HardforkV2.RequireHeight+100))
+
+	// simulate another peer, one that returns invalid blocks
+	_, genesis := testutil.Network()
+	l, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	badID := gateway.GenerateUniqueID()
+	s3 := syncer.New(l, evilManager{cm1}, testutil.NewEphemeralPeerStore(), gateway.Header{
+		GenesisID:  genesis.ID(),
+		UniqueID:   badID,
+		NetAddress: l.Addr().String(),
+	})
+	go s3.Run()
+	defer s3.Close()
+
+	if _, err := s1.Connect(context.Background(), s2.Addr()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s3.Connect(context.Background(), s2.Addr()); err != nil {
+		t.Fatal(err)
+	}
+
+	// sync should (eventually) complete despite the bad peer
+	for range 100 {
+		if cm1.Tip() == cm2.Tip() {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if cm1.Tip() != cm2.Tip() {
+		t.Fatalf("tips are not equal: %v != %v", cm1.Tip(), cm2.Tip())
+	}
+	// bad peer should be banned
+	if peers := s2.Peers(); len(peers) != 1 {
+		t.Fatalf("expected 1 peer, got %v", peers)
+	} else if peers[0].UniqueID() == badID {
+		t.Fatalf("should not be connected to bad peer")
 	}
 }
 
@@ -125,7 +176,7 @@ func TestSendCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, cs, err := p.SendCheckpoint(cm1.Tip(), time.Second)
+	cs, b, err := p.SendCheckpoint(cm1.Tip(), cm1.TipState().Network, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	} else if b1, _ := cm1.Block(cm1.Tip().ID); !hashEq(types.V2Block(b), types.V2Block(b1)) {

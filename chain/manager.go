@@ -75,14 +75,6 @@ func blockAndParent(s Store, id types.BlockID) (types.Block, *consensus.V1BlockS
 	return b, bs, cs, ok && ok2
 }
 
-// blockAndChild returns the block with the specified ID, along with its child
-// state.
-func blockAndChild(s Store, id types.BlockID) (types.Block, *consensus.V1BlockSupplement, consensus.State, bool) {
-	b, bs, ok := s.Block(id)
-	cs, ok2 := s.State(id)
-	return b, bs, cs, ok && ok2
-}
-
 // A Manager tracks multiple blockchains and identifies the best valid
 // chain.
 type Manager struct {
@@ -90,7 +82,6 @@ type Manager struct {
 	tipState                  consensus.State
 	onReorg                   map[[16]byte]func(types.ChainIndex)
 	onPool                    map[[16]byte]func()
-	invalidBlocks             map[types.BlockID]error
 	expiringFileContractOrder map[types.BlockID][]types.FileContractID
 
 	// configuration options
@@ -168,7 +159,7 @@ func (m *Manager) History() ([32]types.BlockID, error) {
 	for i := range history {
 		index, ok := m.store.BestIndex(histHeight(i))
 		if !ok {
-			return history, fmt.Errorf("missing best index at height %v", histHeight(i))
+			break
 		}
 		history[i] = index.ID
 	}
@@ -219,7 +210,10 @@ func (m *Manager) BlocksForHistory(history []types.BlockID, maxBlocks uint64) ([
 	}
 	blocks := make([]types.Block, maxBlocks)
 	for i := range blocks {
-		index, _ := m.store.BestIndex(attachHeight + uint64(i) + 1)
+		index, ok := m.store.BestIndex(attachHeight + uint64(i) + 1)
+		if !ok {
+			return nil, 0, fmt.Errorf("unknown block at height %v", attachHeight+uint64(i)+1)
+		}
 		b, _, ok := m.store.Block(index.ID)
 		if !ok {
 			return nil, 0, fmt.Errorf("missing block %v", index)
@@ -229,8 +223,8 @@ func (m *Manager) BlocksForHistory(history []types.BlockID, maxBlocks uint64) ([
 	return blocks, m.tipState.Index.Height - (attachHeight + maxBlocks), nil
 }
 
-// AddBlocks adds a sequence of blocks to a tracked chain. If the blocks are
-// valid, the chain may become the new best chain, triggering a reorg.
+// AddBlocks ingests a chain of blocks. If the blocks are valid, the chain they
+// belong to may become the new best chain, triggering a reorg.
 func (m *Manager) AddBlocks(blocks []types.Block) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -244,10 +238,9 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 	for _, b := range blocks {
 		bid := b.ID()
 		var ok bool
-		if err := m.invalidBlocks[bid]; err != nil {
-			return fmt.Errorf("block %v is invalid: %w", types.ChainIndex{Height: cs.Index.Height + 1, ID: bid}, err)
-		} else if cs, ok = m.store.State(bid); ok {
+		if _, bs, _ := m.store.Block(bid); bs != nil {
 			// already have this block
+			cs, _ = m.store.State(bid)
 			continue
 		} else if b.ParentID != cs.Index.ID {
 			if cs, ok = m.store.State(b.ParentID); !ok {
@@ -257,7 +250,6 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 		if b.Timestamp.After(cs.MaxFutureTimestamp(time.Now())) {
 			return ErrFutureBlock
 		} else if err := consensus.ValidateOrphan(cs, b); err != nil {
-			m.markBadBlock(bid, err)
 			return fmt.Errorf("block %v is invalid: %w", types.ChainIndex{Height: cs.Index.Height + 1, ID: bid}, err)
 		}
 		ancestorTimestamp, ok := m.store.AncestorTimestamp(b.ParentID)
@@ -298,18 +290,55 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 	return nil
 }
 
-// markBadBlock marks a block as bad, so that we don't waste resources
-// re-validating it if we see it again.
-func (m *Manager) markBadBlock(bid types.BlockID, err error) {
-	const maxInvalidBlocks = 1000
-	if len(m.invalidBlocks) >= maxInvalidBlocks {
-		// forget a random entry
-		for bid := range m.invalidBlocks {
-			delete(m.invalidBlocks, bid)
-			break
-		}
+// AddValidatedV2Blocks ingests a chain of v2 blocks. The blocks must already be
+// validated, and the first block's parent must be known. If the chain has
+// sufficient work, it may become the new best chain, triggering a reorg.
+func (m *Manager) AddValidatedV2Blocks(blocks []types.Block, states []consensus.State) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(blocks) == 0 {
+		return nil
+	} else if len(states) != len(blocks) {
+		return errors.New("chain: expected same number of blocks and states")
 	}
-	m.invalidBlocks[bid] = err
+	if _, ok := m.store.State(blocks[0].ParentID); !ok {
+		return fmt.Errorf("missing parent for block %v", blocks[0].ParentID)
+	}
+	for i := range blocks {
+		if blocks[i].V2 == nil {
+			return errors.New("only v2 blocks can be pre-validated")
+		}
+		m.store.AddBlock(blocks[i], &consensus.V1BlockSupplement{})
+		m.store.AddState(states[i])
+	}
+
+	// if this chain is now the best chain, trigger a reorg
+	cs := states[len(states)-1]
+	if cs.SufficientlyHeavierThan(m.tipState) {
+		oldTip := m.tipState.Index
+		m.log.Debug("reorging", zap.Stringer("current", oldTip), zap.Stringer("target", cs.Index))
+		if err := m.reorgTo(cs.Index); err != nil {
+			if err := m.reorgTo(oldTip); err != nil {
+				return fmt.Errorf("failed to revert failed reorg: %w", err)
+			}
+			return fmt.Errorf("reorg failed: %w", err)
+		}
+		// release lock while notifying listeners
+		tip := m.tipState.Index
+		fns := make([]func(), 0, len(m.onReorg)+len(m.onPool))
+		for _, fn := range m.onReorg {
+			fns = append(fns, func() { fn(tip) })
+		}
+		for _, fn := range m.onPool {
+			fns = append(fns, fn)
+		}
+		m.mu.Unlock()
+		for _, fn := range fns {
+			fn()
+		}
+		m.mu.Lock()
+	}
+	return nil
 }
 
 func (m *Manager) overwriteExpirations(b types.Block, bs *consensus.V1BlockSupplement) error {
@@ -350,8 +379,9 @@ func (m *Manager) revertTip() error {
 
 // applyTip adds a block to the current tip.
 func (m *Manager) applyTip(index types.ChainIndex) error {
+	var cs consensus.State
 	var cau consensus.ApplyUpdate
-	b, bs, cs, ok := blockAndChild(m.store, index.ID)
+	b, bs, ok := m.store.Block(index.ID)
 	if !ok {
 		return fmt.Errorf("%w %v", ErrMissingBlock, index)
 	} else if b.ParentID != m.tipState.Index.ID {
@@ -362,7 +392,6 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 		if err := m.overwriteExpirations(b, bs); err != nil {
 			return fmt.Errorf("failed to overwrite expiring file contract order in block %v: %w", index, err)
 		} else if err := consensus.ValidateBlock(m.tipState, b, *bs); err != nil {
-			m.markBadBlock(index.ID, err)
 			return fmt.Errorf("block %v is invalid: %w", index, err)
 		}
 		ancestorTimestamp, ok := m.store.AncestorTimestamp(b.ParentID)
@@ -370,6 +399,8 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 			return fmt.Errorf("missing ancestor timestamp for block %v", b.ParentID)
 		}
 		cs, cau = consensus.ApplyBlock(m.tipState, b, *bs, ancestorTimestamp)
+		m.store.AddState(cs)
+		m.store.AddBlock(b, bs)
 	} else {
 		ancestorTimestamp, ok := m.store.AncestorTimestamp(b.ParentID)
 		if !ok {
@@ -379,8 +410,6 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 		}
 		cs, cau = consensus.ApplyBlock(m.tipState, b, *bs, ancestorTimestamp)
 	}
-	m.store.AddState(cs)
-	m.store.AddBlock(b, bs)
 	m.store.ApplyBlock(cs, cau)
 	m.applyPoolUpdate(cau, cs)
 	m.tipState = cs
@@ -395,14 +424,12 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 
 func (m *Manager) reorgPath(a, b types.ChainIndex) (revert, apply []types.ChainIndex, err error) {
 	// helper function for "rewinding" to the parent index
-	rewind := func(index *types.ChainIndex) (ok bool) {
-		// if we're on the best chain, we can be a bit more efficient
-		if bi, _ := m.store.BestIndex(index.Height); bi.ID == index.ID {
-			*index, ok = m.store.BestIndex(index.Height - 1)
+	rewind := func(index *types.ChainIndex) bool {
+		bh, ok := m.store.Header(index.ID)
+		if !ok {
+			err = fmt.Errorf("%w %v", ErrMissingBlock, *index)
 		} else {
-			var b types.Block
-			b, _, ok = m.store.Block(index.ID)
-			*index = types.ChainIndex{Height: index.Height - 1, ID: b.ParentID}
+			*index = types.ChainIndex{Height: index.Height - 1, ID: bh.ParentID}
 		}
 		return ok
 	}
@@ -436,11 +463,7 @@ func (m *Manager) reorgPath(a, b types.ChainIndex) (revert, apply []types.ChainI
 		}
 	}
 
-	// reverse the apply path
-	for i := 0; i < len(apply)/2; i++ {
-		j := len(apply) - i - 1
-		apply[i], apply[j] = apply[j], apply[i]
-	}
+	slices.Reverse(apply)
 	return
 }
 
@@ -1385,12 +1408,11 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 // NewManager returns a Manager initialized with the provided Store and State.
 func NewManager(store Store, cs consensus.State, opts ...ManagerOption) *Manager {
 	m := &Manager{
-		log:           zap.NewNop(),
-		store:         store,
-		tipState:      cs,
-		onReorg:       make(map[[16]byte]func(types.ChainIndex)),
-		onPool:        make(map[[16]byte]func()),
-		invalidBlocks: make(map[types.BlockID]error),
+		log:      zap.NewNop(),
+		store:    store,
+		tipState: cs,
+		onReorg:  make(map[[16]byte]func(types.ChainIndex)),
+		onPool:   make(map[[16]byte]func()),
 
 		expiringFileContractOrder: defaultExpiringFileContractOrder,
 	}
