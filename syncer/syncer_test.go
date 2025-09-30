@@ -225,6 +225,32 @@ func TestInstantSync(t *testing.T) {
 	} else if !hashEq(cs2, cs) {
 		t.Fatalf("parent state mismatch")
 	}
+
+	// sync to tip
+	l, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	s2 := syncer.New(l, cm2, testutil.NewEphemeralPeerStore(), gateway.Header{
+		GenesisID:  genesis.ID(),
+		UniqueID:   gateway.GenerateUniqueID(),
+		NetAddress: l.Addr().String(),
+	}, syncer.WithSyncInterval(100*time.Millisecond))
+	defer s2.Close()
+	if _, err := s2.Connect(context.Background(), s.Addr()); err != nil {
+		t.Fatal(err)
+	}
+	go s2.Run()
+	for range 100 {
+		if cm.Tip() == cm2.Tip() {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if cm.Tip() != cm2.Tip() {
+		t.Fatalf("tips are not equal: %v != %v", cm.Tip(), cm2.Tip())
+	}
 }
 
 func TestSendHeaders(t *testing.T) {
