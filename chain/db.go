@@ -1002,7 +1002,7 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 		if logger == nil {
 			logger = noopLogger{}
 		}
-		if err := migrateDB(dbs, n, logger); err != nil {
+		if err := migrateDB(dbs, logger); err != nil {
 			return nil, consensus.State{}, fmt.Errorf("failed to migrate database: %w", err)
 		}
 	}
@@ -1025,4 +1025,68 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 	index, _ := dbs.BestIndex(dbs.getHeight())
 	cs, _ := dbs.State(index.ID)
 	return dbs, cs, err
+}
+
+// NewDBStoreAtCheckpoint creates a new DBStore initialized at the provided
+// checkpoint. The checkpoint must be a v2 block. The DB will be automatically
+// migrated if necessary. The provided logger may be nil.
+func NewDBStoreAtCheckpoint(db DB, cs consensus.State, b types.Block, logger MigrationLogger) (_ *DBStore, _ consensus.State, err error) {
+	// during initialization, we should return an error instead of panicking
+	defer func() {
+		if r := recover(); r != nil {
+			db.Cancel()
+			err = fmt.Errorf("panic during database initialization: %v", r)
+		}
+	}()
+
+	// don't accidentally overwrite a siad database
+	if db.Bucket([]byte("ChangeLog")) != nil {
+		return nil, consensus.State{}, errors.New("detected siad database, refusing to proceed")
+	}
+
+	dbs := &DBStore{
+		db: db,
+		n:  cs.Network,
+	}
+
+	// if the db is empty, initialize it
+	if version := dbs.bucket(bVersion).getRaw(bVersion); len(version) != 1 {
+		for _, bucket := range [][]byte{
+			bVersion,
+			bMainChain,
+			bStates,
+			bBlocks,
+			bFileContractElements,
+			bSiacoinElements,
+			bSiafundElements,
+			bTree,
+		} {
+			if _, err := db.CreateBucket(bucket); err != nil {
+				panic(err)
+			}
+		}
+		dbs.bucket(bVersion).putRaw(bVersion, []byte{4})
+
+		dbs.putState(cs)
+		bs := consensus.V1BlockSupplement{Transactions: make([]consensus.V1TransactionSupplement, len(b.Transactions))}
+		cs, cau := consensus.ApplyBlock(cs, b, bs, time.Time{})
+		dbs.putBlock(b.Header(), &b, &bs)
+		dbs.putState(cs)
+		dbs.ApplyBlock(cs, cau)
+		if err := dbs.Flush(); err != nil {
+			return nil, consensus.State{}, err
+		}
+	} else if version[0] != 4 {
+		if logger == nil {
+			logger = noopLogger{}
+		}
+		if err := migrateDB(dbs, logger); err != nil {
+			return nil, consensus.State{}, fmt.Errorf("failed to migrate database: %w", err)
+		}
+	}
+
+	// load tip state
+	index, _ := dbs.BestIndex(dbs.getHeight())
+	tipState, _ := dbs.State(index.ID)
+	return dbs, tipState, err
 }

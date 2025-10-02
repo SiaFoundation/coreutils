@@ -48,7 +48,7 @@ func NewZapMigrationLogger(log *zap.Logger) MigrationLogger {
 	return &zapMigrationLogger{logger: log.Named("chainMigration")}
 }
 
-func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
+func migrateDB(dbs *DBStore, l MigrationLogger) error {
 	version := dbs.bucket(bVersion).getRaw(bVersion)
 	switch version[0] {
 	case 1, 2, 3:
@@ -83,8 +83,8 @@ func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 		}
 
 		l.Printf("Recomputing main chain")
-		v1Blocks := min(dbs.getHeight(), n.HardforkV2.RequireHeight) + 1
-		cs := n.GenesisState()
+		v1Blocks := min(dbs.getHeight(), dbs.n.HardforkV2.RequireHeight) + 1
+		cs := dbs.n.GenesisState()
 		for height := range v1Blocks {
 			index, _ := dbs.BestIndex(height)
 			_, b, _, _ := dbs.getBlock(index.ID)
@@ -94,7 +94,7 @@ func migrateDB(dbs *DBStore, n *consensus.Network, l MigrationLogger) error {
 			bs := dbs.SupplementTipBlock(*b)
 			dbs.putBlock(b.Header(), b, &bs)
 			// v2 blocks may be invalid
-			if height >= n.HardforkV2.AllowHeight {
+			if height >= dbs.n.HardforkV2.AllowHeight {
 				if err := consensus.ValidateBlock(cs, *b, bs); err != nil && index.Height > 0 {
 					l.Printf("Block %v is invalid (%v), removing it and all subsequent blocks", index, err)
 					for ; height < v1Blocks; height++ {
