@@ -584,7 +584,7 @@ func TestRPCRefreshPartialRollover(t *testing.T) {
 
 		// upload data
 		at := proto4.NewAccountToken(renterKey, hostKey.PublicKey())
-		wRes, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, at, bytes.NewReader(bytes.Repeat([]byte{1}, proto4.LeafSize)), proto4.LeafSize)
+		wRes, err := rhp4.RPCWriteSectorVariable(context.Background(), transport, settings.Prices, at, bytes.Repeat([]byte{1}, proto4.LeafSize))
 		if err != nil {
 			t.Fatal("write sector failed:", err)
 		}
@@ -909,7 +909,7 @@ func TestRPCRefreshFullRollover(t *testing.T) {
 
 		// upload data
 		at := proto4.NewAccountToken(renterKey, hostKey.PublicKey())
-		wRes, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, at, bytes.NewReader(bytes.Repeat([]byte{1}, proto4.LeafSize)), proto4.LeafSize)
+		wRes, err := rhp4.RPCWriteSectorVariable(context.Background(), transport, settings.Prices, at, bytes.Repeat([]byte{1}, proto4.LeafSize))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1063,7 +1063,7 @@ func TestRPCRenew(t *testing.T) {
 
 		// upload data
 		at := proto4.NewAccountToken(renterKey, hostKey.PublicKey())
-		wRes, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, at, bytes.NewReader(bytes.Repeat([]byte{1}, proto4.LeafSize)), proto4.LeafSize)
+		wRes, err := rhp4.RPCWriteSectorVariable(context.Background(), transport, settings.Prices, at, bytes.Repeat([]byte{1}, proto4.LeafSize))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1544,7 +1544,7 @@ func TestAccounts(t *testing.T) {
 
 	cs := cm.TipState()
 
-	var sector *[proto4.SectorSize]byte
+	sector := bytes.Repeat([]byte{1}, proto4.SectorSize)
 	if err := ss.StoreSector(types.Hash256{1}, sector, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -1678,18 +1678,17 @@ func TestReadWriteSector(t *testing.T) {
 	}
 	revision.Revision = fundResult.Revision
 	token := proto4.NewAccountToken(renterKey, hostKey.PublicKey())
-	data := frand.Bytes(1024)
+	var sector [proto4.SectorSize]byte
+	frand.Read(sector[:1024])
 
 	// store the sector
-	writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(data), uint64(len(data)))
+	writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, sector[:])
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// verify the sector root
-	var sector [proto4.SectorSize]byte
-	copy(sector[:], data)
-	if writeResult.Root != proto4.SectorRoot(&sector) {
+	if writeResult.Root != proto4.SectorRoot(sector[:]) {
 		t.Fatal("root mismatch")
 	}
 
@@ -1698,7 +1697,92 @@ func TestReadWriteSector(t *testing.T) {
 	_, err = rhp4.RPCReadSector(context.Background(), transport, settings.Prices, token, buf, writeResult.Root, 0, 64)
 	if err != nil {
 		t.Fatal(err)
-	} else if !bytes.Equal(buf.Bytes(), data[:64]) {
+	} else if !bytes.Equal(buf.Bytes(), sector[:64]) {
+		t.Fatal("data mismatch")
+	}
+}
+
+func TestReadWriteVariableSector(t *testing.T) {
+	n, genesis := testutil.V2Network()
+	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
+
+	cm, w := startTestNode(t, n, genesis)
+
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
+
+	sr := testutil.NewEphemeralSettingsReporter()
+	sr.Update(proto4.HostSettings{
+		Release:             "test",
+		AcceptingContracts:  true,
+		WalletAddress:       w.Address(),
+		MaxCollateral:       types.Siacoins(10000),
+		MaxContractDuration: 1000,
+		RemainingStorage:    100 * proto4.SectorSize,
+		TotalStorage:        100 * proto4.SectorSize,
+		Prices: proto4.HostPrices{
+			ContractPrice: types.Siacoins(1).Div64(5), // 0.2 SC
+			StoragePrice:  types.NewCurrency64(100),   // 100 H / byte / block
+			IngressPrice:  types.NewCurrency64(100),   // 100 H / byte
+			EgressPrice:   types.NewCurrency64(100),   // 100 H / byte
+			Collateral:    types.NewCurrency64(200),
+		},
+	})
+	ss := testutil.NewEphemeralSectorStore()
+	c := testutil.NewEphemeralContractor(cm)
+
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, w, c, sr, ss, zap.NewNop())
+
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fundAndSign := &fundAndSign{w, renterKey}
+	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
+	formResult, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+		RenterPublicKey: renterKey.PublicKey(),
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := formResult.Contract
+
+	cs := cm.TipState()
+	account := proto4.Account(renterKey.PublicKey())
+
+	accountFundAmount := types.Siacoins(25)
+	fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
+		{Account: account, Amount: accountFundAmount},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision.Revision = fundResult.Revision
+	token := proto4.NewAccountToken(renterKey, hostKey.PublicKey())
+	sector := frand.Bytes(1024)
+
+	// store the sector
+	writeResult, err := rhp4.RPCWriteSectorVariable(context.Background(), transport, settings.Prices, token, sector)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// verify the sector root
+	if writeResult.Root != proto4.SectorRoot(sector[:]) {
+		t.Fatal("root mismatch")
+	}
+
+	// read the sector back
+	buf := bytes.NewBuffer(nil)
+	_, err = rhp4.RPCReadSectorVariable(context.Background(), transport, settings.Prices, token, buf, writeResult.Root, 0, 64)
+	if err != nil {
+		t.Fatal(err)
+	} else if !bytes.Equal(buf.Bytes(), sector[:64]) {
 		t.Fatal("data mismatch")
 	}
 }
@@ -1801,11 +1885,10 @@ func TestAppendSectors(t *testing.T) {
 	// store random sectors
 	roots := make([]types.Hash256, 0, 10)
 	for i := 0; i < 10; i++ {
-		var sector [proto4.SectorSize]byte
-		frand.Read(sector[:])
-		root := proto4.SectorRoot(&sector)
+		sector := frand.Bytes(proto4.SectorSize)
+		root := proto4.SectorRoot(sector)
 
-		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(sector[:]), proto4.SectorSize)
+		writeResult, err := rhp4.RPCWriteSectorVariable(context.Background(), transport, settings.Prices, token, sector)
 		if err != nil {
 			t.Fatal(err)
 		} else if writeResult.Root != root {
@@ -1845,10 +1928,10 @@ func TestAppendSectors(t *testing.T) {
 	for _, root := range roots {
 		buf.Reset()
 
-		_, err = rhp4.RPCReadSector(context.Background(), transport, settings.Prices, token, buf, root, 0, proto4.SectorSize)
+		_, err = rhp4.RPCReadSectorVariable(context.Background(), transport, settings.Prices, token, buf, root, 0, proto4.SectorSize)
 		if err != nil {
 			t.Fatal(err)
-		} else if proto4.SectorRoot((*[proto4.SectorSize]byte)(buf.Bytes())) != root {
+		} else if proto4.SectorRoot(buf.Bytes()) != root {
 			t.Fatal("data mismatch")
 		}
 	}
@@ -1916,23 +1999,104 @@ func TestVerifySector(t *testing.T) {
 	}
 	revision.Revision = fundResult.Revision
 	token := proto4.NewAccountToken(renterKey, hostKey.PublicKey())
-	data := frand.Bytes(1024)
+	var sector [proto4.SectorSize]byte
+	frand.Read(sector[:1024])
 
 	// store the sector
-	writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(data), uint64(len(data)))
+	writeResult, err := rhp4.RPCWriteSectorVariable(context.Background(), transport, settings.Prices, token, sector[:])
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// verify the sector root
-	var sector [proto4.SectorSize]byte
-	copy(sector[:], data)
-	if writeResult.Root != proto4.SectorRoot(&sector) {
+	if writeResult.Root != proto4.SectorRoot(sector[:]) {
 		t.Fatal("root mismatch")
 	}
 
 	// verify the host is storing the sector
 	_, err = rhp4.RPCVerifySector(context.Background(), transport, settings.Prices, token, writeResult.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVerifySectorVariable(t *testing.T) {
+	n, genesis := testutil.V2Network()
+	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
+
+	cm, w := startTestNode(t, n, genesis)
+
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
+
+	sr := testutil.NewEphemeralSettingsReporter()
+	sr.Update(proto4.HostSettings{
+		Release:             "test",
+		AcceptingContracts:  true,
+		WalletAddress:       w.Address(),
+		MaxCollateral:       types.Siacoins(10000),
+		MaxContractDuration: 1000,
+		RemainingStorage:    100 * proto4.SectorSize,
+		TotalStorage:        100 * proto4.SectorSize,
+		Prices: proto4.HostPrices{
+			ContractPrice: types.Siacoins(1).Div64(5), // 0.2 SC
+			StoragePrice:  types.NewCurrency64(100),   // 100 H / byte / block
+			IngressPrice:  types.NewCurrency64(100),   // 100 H / byte
+			EgressPrice:   types.NewCurrency64(100),   // 100 H / byte
+			Collateral:    types.NewCurrency64(200),
+		},
+	})
+	ss := testutil.NewEphemeralSectorStore()
+	c := testutil.NewEphemeralContractor(cm)
+
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, w, c, sr, ss, zap.NewNop())
+
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fundAndSign := &fundAndSign{w, renterKey}
+	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
+	formResult, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+		RenterPublicKey: renterKey.PublicKey(),
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := formResult.Contract
+
+	cs := cm.TipState()
+	account := proto4.Account(renterKey.PublicKey())
+
+	accountFundAmount := types.Siacoins(25)
+	fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
+		{Account: account, Amount: accountFundAmount},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision.Revision = fundResult.Revision
+	token := proto4.NewAccountToken(renterKey, hostKey.PublicKey())
+	data := frand.Bytes(1024)
+
+	// store the sector
+	writeResult, err := rhp4.RPCWriteSectorVariable(context.Background(), transport, settings.Prices, token, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// verify the sector root
+	if writeResult.Root != proto4.SectorRoot(data) {
+		t.Fatal("root mismatch")
+	}
+
+	// verify the host is storing the sector
+	_, err = rhp4.RPCVerifySectorVariable(context.Background(), transport, settings.Prices, token, writeResult.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2010,7 +2174,7 @@ func TestRPCFreeSectors(t *testing.T) {
 		data := frand.Bytes(1024)
 
 		// store the sector
-		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(data), uint64(len(data)))
+		writeResult, err := rhp4.RPCWriteSectorVariable(context.Background(), transport, settings.Prices, token, data)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2160,7 +2324,7 @@ func TestRPCSectorRoots(t *testing.T) {
 		data := frand.Bytes(1024)
 
 		// store the sector
-		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(data), uint64(len(data)))
+		writeResult, err := rhp4.RPCWriteSectorVariable(context.Background(), transport, settings.Prices, token, data)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2252,7 +2416,7 @@ func TestMaxSectorBatchSize(t *testing.T) {
 		data := frand.Bytes(1024)
 
 		// store the sector
-		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(data), uint64(len(data)))
+		writeResult, err := rhp4.RPCWriteSectorVariable(context.Background(), transport, settings.Prices, token, data)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2395,7 +2559,7 @@ func BenchmarkWrite(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		// store the sector
-		_, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(sectors[i][:]), proto4.SectorSize)
+		_, err := rhp4.RPCWriteSectorVariable(context.Background(), transport, settings.Prices, token, sectors[i][:])
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -2473,7 +2637,7 @@ func BenchmarkRead(b *testing.B) {
 		sectors = append(sectors, sector)
 
 		// store the sector
-		writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(sectors[i][:]), proto4.SectorSize)
+		writeResult, err := rhp4.RPCWriteSectorVariable(context.Background(), transport, settings.Prices, token, sectors[i][:])
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -2488,7 +2652,7 @@ func BenchmarkRead(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		buf.Reset()
 		// store the sector
-		_, err = rhp4.RPCReadSector(context.Background(), transport, settings.Prices, token, buf, roots[i], 0, proto4.SectorSize)
+		_, err = rhp4.RPCReadSectorVariable(context.Background(), transport, settings.Prices, token, buf, roots[i], 0, proto4.SectorSize)
 		if err != nil {
 			b.Fatal(err)
 		} else if !bytes.Equal(buf.Bytes(), sectors[i][:]) {
@@ -2560,13 +2724,12 @@ func BenchmarkContractUpload(b *testing.B) {
 	revision.Revision = fundResult.Revision
 	token := proto4.NewAccountToken(renterKey, hostKey.PublicKey())
 
-	var sectors [][proto4.SectorSize]byte
+	var sectors [][]byte
 	roots := make([]types.Hash256, 0, b.N)
 	for i := 0; i < b.N; i++ {
-		var sector [proto4.SectorSize]byte
-		frand.Read(sector[:256])
+		sector := frand.Bytes(proto4.SectorSize)
 		sectors = append(sectors, sector)
-		roots = append(roots, proto4.SectorRoot(&sector))
+		roots = append(roots, proto4.SectorRoot(sector))
 	}
 
 	b.ResetTimer()
@@ -2578,7 +2741,7 @@ func BenchmarkContractUpload(b *testing.B) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(sectors[i][:]), proto4.SectorSize)
+			writeResult, err := rhp4.RPCWriteSectorVariable(context.Background(), transport, settings.Prices, token, sectors[i])
 			if err != nil {
 				b.Error(err)
 			} else if writeResult.Root != roots[i] {

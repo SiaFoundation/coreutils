@@ -51,7 +51,7 @@ func (ec *EphemeralCertManager) GetCertificate(*tls.ClientHelloInfo) (*tls.Certi
 // An EphemeralSectorStore is an in-memory minimal rhp4.SectorStore for testing.
 type EphemeralSectorStore struct {
 	mu      sync.Mutex
-	sectors map[types.Hash256]*[proto4.SectorSize]byte
+	sectors map[types.Hash256][]byte
 }
 
 var _ rhp4.Sectors = (*EphemeralSectorStore)(nil)
@@ -67,16 +67,20 @@ func (es *EphemeralSectorStore) DeleteSector(root types.Hash256) error {
 	return nil
 }
 
-// HasSector checks if a sector is stored in the store.
-func (es *EphemeralSectorStore) HasSector(root types.Hash256) (bool, error) {
+// SectorLength return the length of a sector in the EphemeralSectorStore.
+// If the sector is not found, it return [proto4.ErrSectorNotFound].
+func (es *EphemeralSectorStore) SectorLength(root types.Hash256) (uint64, error) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
-	_, ok := es.sectors[root]
-	return ok, nil
+	sector, ok := es.sectors[root]
+	if !ok {
+		return 0, proto4.ErrSectorNotFound
+	}
+	return uint64(len(sector)), nil
 }
 
 // ReadSector reads a sector from the EphemeralSectorStore.
-func (es *EphemeralSectorStore) ReadSector(root types.Hash256) (*[proto4.SectorSize]byte, error) {
+func (es *EphemeralSectorStore) ReadSector(root types.Hash256) ([]byte, error) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
 	sector, ok := es.sectors[root]
@@ -87,7 +91,7 @@ func (es *EphemeralSectorStore) ReadSector(root types.Hash256) (*[proto4.SectorS
 }
 
 // StoreSector stores a sector in the EphemeralSectorStore.
-func (es *EphemeralSectorStore) StoreSector(root types.Hash256, sector *[proto4.SectorSize]byte, _ uint64) error {
+func (es *EphemeralSectorStore) StoreSector(root types.Hash256, sector []byte, _ uint64) error {
 	es.mu.Lock()
 	defer es.mu.Unlock()
 	es.sectors[root] = sector
@@ -451,7 +455,7 @@ func NewEphemeralSettingsReporter() *EphemeralSettingsReporter {
 // NewEphemeralSectorStore creates an EphemeralSectorStore for testing.
 func NewEphemeralSectorStore() *EphemeralSectorStore {
 	return &EphemeralSectorStore{
-		sectors: make(map[types.Hash256]*[proto4.SectorSize]byte),
+		sectors: make(map[types.Hash256][]byte),
 	}
 }
 
