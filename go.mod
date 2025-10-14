@@ -3,7 +3,7 @@ module go.sia.tech/coreutils // v0.18.5
 go 1.24.0
 
 require (
-	github.com/quic-go/quic-go v0.54.1
+	github.com/quic-go/quic-go v0.55.0
 	github.com/quic-go/webtransport-go v0.9.0
 	go.etcd.io/bbolt v1.4.3
 	go.sia.tech/core v0.17.5
@@ -16,7 +16,6 @@ require (
 
 require (
 	github.com/quic-go/qpack v0.5.1 // indirect
-	go.uber.org/mock v0.5.2 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/mod v0.28.0 // indirect
 	golang.org/x/sync v0.17.0 // indirect
