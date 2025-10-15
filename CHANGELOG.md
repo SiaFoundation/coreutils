@@ -1,3 +1,10 @@
+## 0.18.6 (2025-10-15)
+
+### Fixes
+
+- Updated optimal SiaMux frame size to match v2 padding.
+- Updated core to v0.18.0
+
 ## 0.18.5 (2025-09-24)
 
 ### Fixes
