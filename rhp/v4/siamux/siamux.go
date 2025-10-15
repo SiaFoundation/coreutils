@@ -45,8 +45,10 @@ func (c *client) Close() error {
 	return c.m.Close()
 }
 
+// FrameSize implements the [TransportClient] interface.
 func (c *client) FrameSize() int {
-	return 1440 * 3 // from SiaMux handshake.go
+	// 4320 is the max frame size for SiaMux - 16 byte chacha20 poly1305 overhead - 8 byte length prefix
+	return 4296 // from SiaMux handshake.go
 }
 
 func (c *client) PeerKey() types.PublicKey {
