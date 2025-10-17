@@ -142,7 +142,7 @@ func WithTCPKeepalivePeriod(d time.Duration) ServeOption {
 // Serve serves RHP4 connections on the listener l using the SiaMux transport.
 func Serve(l net.Listener, s *rhp4.Server, log *zap.Logger, opts ...ServeOption) {
 	so := serveOption{
-		TCPKeepalivePeriod: 30 * time.Second,
+		TCPKeepalivePeriod: 10 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(&so)
@@ -159,8 +159,15 @@ func Serve(l net.Listener, s *rhp4.Server, log *zap.Logger, opts ...ServeOption)
 		log := log.With(zap.Stringer("peerAddress", conn.RemoteAddr()))
 
 		if tcpConn, ok := conn.(*net.TCPConn); ok && so.TCPKeepalivePeriod > 0 {
-			tcpConn.SetKeepAlive(true)
-			tcpConn.SetKeepAlivePeriod(so.TCPKeepalivePeriod)
+			err := tcpConn.SetKeepAliveConfig(net.KeepAliveConfig{
+				Enable:   true,
+				Idle:     so.TCPKeepalivePeriod, // send first probe after TCPKeepalivePeriod of idle time
+				Interval: 5 * time.Second,       // 5 seconds between probes
+				Count:    6,                     // consider the connection dead after 6 failed probes
+			})
+			if err != nil {
+				log.Error("failed to set TCP keepalive config", zap.Error(err))
+			}
 		}
 
 		go func() {
