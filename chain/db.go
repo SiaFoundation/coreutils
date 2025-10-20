@@ -959,6 +959,10 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 		}
 	}()
 
+	if err := sanityCheckNetwork(n); err != nil {
+		return nil, consensus.State{}, fmt.Errorf("invalid network: %w", err)
+	}
+
 	// don't accidentally overwrite a siad database
 	if db.Bucket([]byte("ChangeLog")) != nil {
 		return nil, consensus.State{}, errors.New("detected siad database, refusing to proceed")
@@ -1038,6 +1042,10 @@ func NewDBStoreAtCheckpoint(db DB, cs consensus.State, b types.Block, logger Mig
 			err = fmt.Errorf("panic during database initialization: %v", r)
 		}
 	}()
+
+	if err := sanityCheckNetwork(cs.Network); err != nil {
+		return nil, consensus.State{}, fmt.Errorf("invalid network: %w", err)
+	}
 
 	// don't accidentally overwrite a siad database
 	if db.Bucket([]byte("ChangeLog")) != nil {

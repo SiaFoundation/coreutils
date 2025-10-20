@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"fmt"
 	"time"
 
 	"go.sia.tech/core/consensus"
@@ -242,4 +243,37 @@ func TestnetZen() (*consensus.Network, types.Block) {
 	}
 
 	return n, b
+}
+
+func sanityCheckNetwork(n *consensus.Network) error {
+	switch {
+	case n.Name == "":
+		return fmt.Errorf("network name cannot be empty")
+	case n.InitialTarget == types.BlockID{}:
+		return fmt.Errorf("impossible initial target")
+	case n.BlockInterval <= 0:
+		return fmt.Errorf("block interval must be positive")
+	case n.HardforkOak.GenesisTimestamp.IsZero():
+		return fmt.Errorf("genesis timestamp must not be zero")
+	case n.HardforkTax.Height < n.HardforkDevAddr.Height:
+		return fmt.Errorf("tax hardfork must not precede dev address hardfork")
+	case n.HardforkStorageProof.Height < n.HardforkTax.Height:
+		return fmt.Errorf("storage proof hardfork must not precede tax hardfork")
+	case n.HardforkOak.Height < n.HardforkStorageProof.Height:
+		return fmt.Errorf("Oak hardfork must not precede storage proof hardfork")
+	case n.HardforkOak.FixHeight < n.HardforkOak.Height:
+		return fmt.Errorf("Oak hardfork fix height must not precede Oak hardfork height")
+	case n.HardforkASIC.Height < n.HardforkOak.Height:
+		return fmt.Errorf("ASIC hardfork must not precede Oak hardfork")
+	case n.HardforkFoundation.Height < n.HardforkASIC.Height:
+		return fmt.Errorf("Foundation hardfork must not precede ASIC hardfork")
+	case n.HardforkV2.AllowHeight < n.HardforkFoundation.Height:
+		return fmt.Errorf("v2 hardfork must not precede Foundation hardfork")
+	case n.HardforkV2.RequireHeight < n.HardforkV2.AllowHeight:
+		return fmt.Errorf("v2 require height must not precede v2 allow height")
+	case n.HardforkV2.FinalCutHeight < n.HardforkV2.RequireHeight:
+		return fmt.Errorf("v2 final cut height must not precede v2 require height")
+	default:
+		return nil
+	}
 }

@@ -236,6 +236,13 @@ func TestUpdateV2TransactionSet(t *testing.T) {
 	n, genesisBlock := TestnetZen()
 
 	n.InitialTarget = types.BlockID{0xFF}
+	n.HardforkDevAddr.Height = 0
+	n.HardforkTax.Height = 0
+	n.HardforkStorageProof.Height = 0
+	n.HardforkOak.Height = 0
+	n.HardforkOak.FixHeight = 0
+	n.HardforkASIC.Height = 0
+	n.HardforkFoundation.Height = 0
 	n.HardforkV2.AllowHeight = 0
 
 	giftPrivateKey := types.GeneratePrivateKey()
