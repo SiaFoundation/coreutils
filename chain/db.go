@@ -1031,9 +1031,10 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 	return dbs, cs, err
 }
 
-// NewDBStoreAtCheckpoint creates a new DBStore initialized at the provided
-// checkpoint. The checkpoint must be a v2 block. The DB will be automatically
-// migrated if necessary. The provided logger may be nil.
+// NewDBStoreAtCheckpoint creates a DBStore initialized at the provided
+// checkpoint. The checkpoint must be a v2 block. If the DB already exists, the
+// checkpoint will be set as its new tip. The DB will be automatically migrated
+// if necessary. The provided logger may be nil.
 func NewDBStoreAtCheckpoint(db DB, cs consensus.State, b types.Block, logger MigrationLogger) (_ *DBStore, _ consensus.State, err error) {
 	// during initialization, we should return an error instead of panicking
 	defer func() {
@@ -1074,16 +1075,6 @@ func NewDBStoreAtCheckpoint(db DB, cs consensus.State, b types.Block, logger Mig
 			}
 		}
 		dbs.bucket(bVersion).putRaw(bVersion, []byte{4})
-
-		dbs.putState(cs)
-		bs := consensus.V1BlockSupplement{Transactions: make([]consensus.V1TransactionSupplement, len(b.Transactions))}
-		cs, cau := consensus.ApplyBlock(cs, b, bs, time.Time{})
-		dbs.putBlock(b.Header(), &b, &bs)
-		dbs.putState(cs)
-		dbs.ApplyBlock(cs, cau)
-		if err := dbs.Flush(); err != nil {
-			return nil, consensus.State{}, err
-		}
 	} else if version[0] != 4 {
 		if logger == nil {
 			logger = noopLogger{}
@@ -1093,8 +1084,14 @@ func NewDBStoreAtCheckpoint(db DB, cs consensus.State, b types.Block, logger Mig
 		}
 	}
 
-	// load tip state
-	index, _ := dbs.BestIndex(dbs.getHeight())
-	tipState, _ := dbs.State(index.ID)
-	return dbs, tipState, err
+	dbs.putState(cs)
+	bs := consensus.V1BlockSupplement{Transactions: make([]consensus.V1TransactionSupplement, len(b.Transactions))}
+	cs, cau := consensus.ApplyBlock(cs, b, bs, time.Time{})
+	dbs.putBlock(b.Header(), &b, &bs)
+	dbs.putState(cs)
+	dbs.ApplyBlock(cs, cau)
+	if err := dbs.Flush(); err != nil {
+		return nil, consensus.State{}, err
+	}
+	return dbs, cs, nil
 }
