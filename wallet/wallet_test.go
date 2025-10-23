@@ -1393,6 +1393,7 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 	network, genesisBlock := testutil.V2Network()
 	// raise the require height to test v1 events
 	network.HardforkV2.RequireHeight = 100
+	network.HardforkV2.FinalCutHeight = 200
 	store, genesisState, err := chain.NewDBStore(bdb, network, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
