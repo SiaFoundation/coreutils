@@ -941,13 +941,14 @@ func (sw *SingleAddressWallet) SplitUTXO(n int, minAmount types.Currency) (types
 	remainder := n - above + 1 // exclude the largest UTXO from the count
 
 	// check if the largest UTXO can be split
-	per := largest.SiacoinOutput.Value.Sub(minerFee).Div64(uint64(remainder))
+	input := largest.SiacoinOutput.Value.Sub(minerFee)
+	per := input.Div64(uint64(remainder))
 	if per.Cmp(minAmount) < 0 {
 		return types.V2Transaction{}, fmt.Errorf("largest UTXO %s is too small to split into %d outputs of at least %s", largest.SiacoinOutput.Value.String(), remainder, minAmount.String())
 	}
 
 	// create the split transaction
-	var outputSum types.Currency
+	var output types.Currency
 	txn := types.V2Transaction{
 		MinerFee: minerFee,
 		SiacoinInputs: []types.V2SiacoinInput{
@@ -964,11 +965,11 @@ func (sw *SingleAddressWallet) SplitUTXO(n int, minAmount types.Currency) (types
 			Value:   per,
 			Address: sw.addr,
 		})
-		outputSum = outputSum.Add(per)
+		output = output.Add(per)
 	}
-	if largest.SiacoinOutput.Value.Sub(minerFee).Cmp(outputSum) > 0 {
+	if input.Cmp(output) > 0 {
 		txn.SiacoinOutputs = append(txn.SiacoinOutputs, types.SiacoinOutput{
-			Value:   largest.SiacoinOutput.Value.Sub(outputSum),
+			Value:   input.Sub(output),
 			Address: sw.addr,
 		})
 	}

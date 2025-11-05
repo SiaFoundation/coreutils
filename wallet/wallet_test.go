@@ -2162,10 +2162,10 @@ func TestSplitUTXO(t *testing.T) {
 	// fund the wallet
 	mineAndSync(t, cm, ws, w, w.Address(), 1)
 
-	max := largestUTXO.Div64(5)
+	minValue := largestUTXO.Div64(5)
 
-	// try to split the mined UTXO into 10 outputs, but max per output is too high
-	if _, err := w.SplitUTXO(10, max); err == nil {
+	// try to split the mined UTXO into 10 outputs, but minValue is too high
+	if _, err := w.SplitUTXO(10, minValue); err == nil {
 		t.Fatal("expected error when max per output is too high, got nil")
 	}
 
@@ -2200,15 +2200,15 @@ func TestSplitUTXO(t *testing.T) {
 	// UTXOs into one. The goal is to leave one large unconfirmed UTXO in the
 	// wallet and one small confirmed UTXO.
 	var sum types.Currency
-	min := utxos[0].SiacoinOutput.Value
+	minValue = utxos[0].SiacoinOutput.Value
 	for _, u := range utxos {
-		if u.SiacoinOutput.Value.Cmp(min) < 0 {
-			min = u.SiacoinOutput.Value
+		if u.SiacoinOutput.Value.Cmp(minValue) < 0 {
+			minValue = u.SiacoinOutput.Value
 		}
 		sum = sum.Add(u.SiacoinOutput.Value)
 	}
 
-	amount := sum.Sub(min)
+	amount := sum.Sub(minValue)
 	recombineTxn := types.V2Transaction{
 		SiacoinOutputs: []types.SiacoinOutput{
 			{Address: w.Address(), Value: amount},
