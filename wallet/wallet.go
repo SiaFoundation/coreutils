@@ -52,6 +52,7 @@ type (
 		RecommendedFee() types.Currency
 		V2PoolTransactions() []types.V2Transaction
 		UpdateV2TransactionSet(txns []types.V2Transaction, from, to types.ChainIndex) ([]types.V2Transaction, error)
+		V2TransactionSet(basis types.ChainIndex, txn types.V2Transaction) (types.ChainIndex, []types.V2Transaction, error)
 		OnReorg(func(types.ChainIndex)) func()
 	}
 
@@ -846,6 +847,146 @@ func (sw *SingleAddressWallet) RecommendedFee() types.Currency {
 		fee = maxFee
 	}
 	return fee
+}
+
+// SplitUTXO splits the largest unspent UTXO into `n` smaller UTXOs with at
+// least `minAmount` value each. It returns the transaction that performs the
+// split. Unconfirmed UTXOs will also be considered when counting existing
+// UTXOs.
+//
+// If there are at least `n` UTXOs with at least `minAmount` already, no
+// transaction is created and an (types.V2Transaction{}, nil) is returned.
+func (sw *SingleAddressWallet) SplitUTXO(n int, minAmount types.Currency) (types.V2Transaction, error) {
+	if sw.cfg.DefragThreshold < n {
+		return types.V2Transaction{}, fmt.Errorf("split amount (%d) exceeds defrag threshold (%d)", n, sw.cfg.DefragThreshold)
+	}
+
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+
+	tip, utxos, err := sw.store.UnspentSiacoinElements()
+	if err != nil {
+		return types.V2Transaction{}, fmt.Errorf("failed to get unspent outputs: %w", err)
+	} else if len(utxos) == 0 {
+		return types.V2Transaction{}, errors.New("wallet has no unspent outputs")
+	}
+
+	if minAmount.IsZero() {
+		return types.V2Transaction{}, errors.New("minAmount must be greater than zero")
+	}
+
+	tpoolSpent := make(map[types.SiacoinOutputID]bool)
+	tpoolUtxos := make(map[types.SiacoinOutputID]types.SiacoinElement)
+	for _, txn := range sw.cm.PoolTransactions() {
+		for _, sci := range txn.SiacoinInputs {
+			tpoolSpent[sci.ParentID] = true
+			delete(tpoolUtxos, sci.ParentID)
+		}
+		for i, sco := range txn.SiacoinOutputs {
+			tpoolUtxos[txn.SiacoinOutputID(i)] = types.SiacoinElement{
+				ID:            txn.SiacoinOutputID(i),
+				StateElement:  types.StateElement{LeafIndex: types.UnassignedLeafIndex},
+				SiacoinOutput: sco,
+			}
+		}
+	}
+	for _, txn := range sw.cm.V2PoolTransactions() {
+		for _, sci := range txn.SiacoinInputs {
+			tpoolSpent[sci.Parent.ID] = true
+			delete(tpoolUtxos, sci.Parent.ID)
+		}
+		for i := range txn.SiacoinOutputs {
+			sce := txn.EphemeralSiacoinOutput(i)
+			tpoolUtxos[sce.ID] = sce.Move()
+		}
+	}
+
+	// remove immature, locked and spent outputs
+	var above int
+	var largest types.SiacoinElement
+	for _, sce := range utxos {
+		if used := sw.isLocked(sce.ID) || tpoolSpent[sce.ID]; used {
+			continue
+		} else if tip.Height < sce.MaturityHeight {
+			continue
+		} else if sce.SiacoinOutput.Value.Cmp(minAmount) < 0 {
+			continue
+		}
+		above++
+		if sce.SiacoinOutput.Value.Cmp(largest.SiacoinOutput.Value) > 0 {
+			largest = sce.Share()
+		}
+	}
+
+	// get tpool UTXOs too
+	for _, sce := range tpoolUtxos {
+		if sce.SiacoinOutput.Address != sw.addr || sw.isLocked(sce.ID) || sce.SiacoinOutput.Value.Cmp(minAmount) < 0 {
+			continue
+		}
+		above++
+		if sce.SiacoinOutput.Value.Cmp(largest.SiacoinOutput.Value) > 0 {
+			largest = sce.Share()
+		}
+	}
+
+	minerFee := sw.RecommendedFee().Mul64(2000) // estimate for a split txn
+	if largest.SiacoinOutput.Value.Cmp(minerFee) <= 0 {
+		return types.V2Transaction{}, errors.New("largest UTXO is too small to cover miner fee for split transaction")
+	}
+
+	// check if we need to split
+	if above >= n {
+		return types.V2Transaction{}, nil
+	}
+	remainder := n - above + 1 // exclude the largest UTXO from the count
+
+	// check if the largest UTXO can be split
+	per := largest.SiacoinOutput.Value.Sub(minerFee).Div64(uint64(remainder))
+	if per.Cmp(minAmount) < 0 {
+		return types.V2Transaction{}, fmt.Errorf("largest UTXO %s is too small to split into %d outputs of at least %s", largest.SiacoinOutput.Value.String(), remainder, minAmount.String())
+	}
+
+	// create the split transaction
+	var outputSum types.Currency
+	txn := types.V2Transaction{
+		MinerFee: minerFee,
+		SiacoinInputs: []types.V2SiacoinInput{
+			{
+				Parent: largest.Copy(),
+				SatisfiedPolicy: types.SatisfiedPolicy{
+					Policy: sw.SpendPolicy(),
+				},
+			},
+		},
+	}
+	for range remainder {
+		txn.SiacoinOutputs = append(txn.SiacoinOutputs, types.SiacoinOutput{
+			Value:   per,
+			Address: sw.addr,
+		})
+		outputSum = outputSum.Add(per)
+	}
+	if largest.SiacoinOutput.Value.Sub(minerFee).Cmp(outputSum) > 0 {
+		txn.SiacoinOutputs = append(txn.SiacoinOutputs, types.SiacoinOutput{
+			Value:   largest.SiacoinOutput.Value.Sub(outputSum),
+			Address: sw.addr,
+		})
+	}
+
+	txn.SiacoinInputs[0].SatisfiedPolicy.Signatures = []types.Signature{
+		sw.SignHash(sw.cm.TipState().InputSigHash(txn)),
+	}
+	sw.lockUTXOs([]types.SiacoinOutputID{largest.ID})
+
+	basis, txnset, err := sw.cm.V2TransactionSet(tip, txn)
+	if err != nil {
+		return types.V2Transaction{}, fmt.Errorf("failed to create split transaction set: %w", err)
+	} else if len(txnset) == 0 {
+		return types.V2Transaction{}, errors.New("no transactions created for split")
+	} else if err := sw.BroadcastV2TransactionSet(basis, txnset); err != nil {
+		return types.V2Transaction{}, fmt.Errorf("failed to broadcast split transaction: %w", err)
+	}
+	return txnset[len(txnset)-1], nil
 }
 
 // IsRelevantTransaction returns true if the v1 transaction is relevant to the
