@@ -145,6 +145,23 @@ var (
 	ErrEventNotFound = errors.New("event not found")
 )
 
+// releaseInputs is a helper function that releases the inputs of txn for use in
+// other transactions. It should only be called on transactions that are invalid
+// or will never be broadcast. It is expected that the caller will hold sw.mu.
+func (sw *SingleAddressWallet) releaseInputs(txns []types.Transaction, v2txns []types.V2Transaction) {
+	for _, txn := range txns {
+		for _, in := range txn.SiacoinInputs {
+			delete(sw.locked, in.ParentID)
+		}
+	}
+	for _, txn := range v2txns {
+		for _, in := range txn.SiacoinInputs {
+			delete(sw.locked, in.Parent.ID)
+		}
+	}
+	sw.cleanLockedUTXOs()
+}
+
 // Close closes the wallet
 func (sw *SingleAddressWallet) Close() error {
 	sw.tg.Stop()
@@ -804,17 +821,7 @@ func (sw *SingleAddressWallet) ReleaseInputs(txns []types.Transaction, v2txns []
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
-	for _, txn := range txns {
-		for _, in := range txn.SiacoinInputs {
-			delete(sw.locked, in.ParentID)
-		}
-	}
-	for _, txn := range v2txns {
-		for _, in := range txn.SiacoinInputs {
-			delete(sw.locked, in.Parent.ID)
-		}
-	}
-	sw.cleanLockedUTXOs()
+	sw.releaseInputs(txns, v2txns)
 }
 
 // isLocked returns true if the siacoin output with given id is locked, this
@@ -857,8 +864,12 @@ func (sw *SingleAddressWallet) RecommendedFee() types.Currency {
 // If there are at least `n` UTXOs with at least `minAmount` already, no
 // transaction is created and an (types.V2Transaction{}, nil) is returned.
 func (sw *SingleAddressWallet) SplitUTXO(n int, minAmount types.Currency) (types.V2Transaction, error) {
+	const estimatedTxnSize = 2000 // estimated size of the split transaction in bytes
+
 	if sw.cfg.DefragThreshold < n {
 		return types.V2Transaction{}, fmt.Errorf("split amount (%d) exceeds defrag threshold (%d)", n, sw.cfg.DefragThreshold)
+	} else if minAmount.IsZero() {
+		return types.V2Transaction{}, errors.New("minAmount must be greater than zero")
 	}
 
 	sw.mu.Lock()
@@ -871,10 +882,6 @@ func (sw *SingleAddressWallet) SplitUTXO(n int, minAmount types.Currency) (types
 		return types.V2Transaction{}, errors.New("wallet has no unspent outputs")
 	}
 
-	if minAmount.IsZero() {
-		return types.V2Transaction{}, errors.New("minAmount must be greater than zero")
-	}
-
 	tpoolSpent := make(map[types.SiacoinOutputID]bool)
 	tpoolUtxos := make(map[types.SiacoinOutputID]types.SiacoinElement)
 	for _, txn := range sw.cm.PoolTransactions() {
@@ -883,6 +890,9 @@ func (sw *SingleAddressWallet) SplitUTXO(n int, minAmount types.Currency) (types
 			delete(tpoolUtxos, sci.ParentID)
 		}
 		for i, sco := range txn.SiacoinOutputs {
+			if sco.Address != sw.addr {
+				continue
+			}
 			tpoolUtxos[txn.SiacoinOutputID(i)] = types.SiacoinElement{
 				ID:            txn.SiacoinOutputID(i),
 				StateElement:  types.StateElement{LeafIndex: types.UnassignedLeafIndex},
@@ -895,7 +905,10 @@ func (sw *SingleAddressWallet) SplitUTXO(n int, minAmount types.Currency) (types
 			tpoolSpent[sci.Parent.ID] = true
 			delete(tpoolUtxos, sci.Parent.ID)
 		}
-		for i := range txn.SiacoinOutputs {
+		for i, sco := range txn.SiacoinOutputs {
+			if sco.Address != sw.addr {
+				continue
+			}
 			sce := txn.EphemeralSiacoinOutput(i)
 			tpoolUtxos[sce.ID] = sce.Move()
 		}
@@ -929,7 +942,7 @@ func (sw *SingleAddressWallet) SplitUTXO(n int, minAmount types.Currency) (types
 		}
 	}
 
-	minerFee := sw.RecommendedFee().Mul64(2000) // estimate for a split txn
+	minerFee := sw.RecommendedFee().Mul64(estimatedTxnSize) // estimate for a split txn
 	if largest.SiacoinOutput.Value.Cmp(minerFee) <= 0 {
 		return types.V2Transaction{}, errors.New("largest UTXO is too small to cover miner fee for split transaction")
 	}
@@ -938,7 +951,7 @@ func (sw *SingleAddressWallet) SplitUTXO(n int, minAmount types.Currency) (types
 	if above >= n {
 		return types.V2Transaction{}, nil
 	}
-	remainder := n - above + 1 // exclude the largest UTXO from the count
+	remainder := n - above + 1 // +1 because we are splitting the largest UTXO into 'n' parts
 
 	// check if the largest UTXO can be split
 	input := largest.SiacoinOutput.Value.Sub(minerFee)
@@ -977,14 +990,15 @@ func (sw *SingleAddressWallet) SplitUTXO(n int, minAmount types.Currency) (types
 	txn.SiacoinInputs[0].SatisfiedPolicy.Signatures = []types.Signature{
 		sw.SignHash(sw.cm.TipState().InputSigHash(txn)),
 	}
-	sw.lockUTXOs([]types.SiacoinOutputID{largest.ID})
 
+	sw.lockUTXOs([]types.SiacoinOutputID{largest.ID})
 	basis, txnset, err := sw.cm.V2TransactionSet(tip, txn)
 	if err != nil {
 		return types.V2Transaction{}, fmt.Errorf("failed to create split transaction set: %w", err)
 	} else if len(txnset) == 0 {
 		return types.V2Transaction{}, errors.New("no transactions created for split")
 	} else if err := sw.BroadcastV2TransactionSet(basis, txnset); err != nil {
+		sw.releaseInputs(nil, []types.V2Transaction{txn})
 		return types.V2Transaction{}, fmt.Errorf("failed to broadcast split transaction: %w", err)
 	}
 	return txnset[len(txnset)-1], nil

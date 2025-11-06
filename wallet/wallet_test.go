@@ -2135,6 +2135,8 @@ func TestReloadBroadcastedSets(t *testing.T) {
 }
 
 func TestSplitUTXO(t *testing.T) {
+	const estimatedTxnSize = 2000 // estimated transaction size in bytes
+
 	network, genesis := testutil.V2Network()
 	network.MaturityDelay = 0
 
@@ -2158,7 +2160,7 @@ func TestSplitUTXO(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	largestUTXO := cm.TipState().BlockReward().Sub(w.RecommendedFee().Mul64(2000)) // miner fee is subtracted
+	largestUTXO := cm.TipState().BlockReward().Sub(w.RecommendedFee().Mul64(estimatedTxnSize)) // miner fee is subtracted
 	// fund the wallet
 	mineAndSync(t, cm, ws, w, w.Address(), 1)
 
@@ -2224,7 +2226,7 @@ func TestSplitUTXO(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	largestUTXO = recombineTxn.SiacoinOutputs[0].Value.Sub(w.RecommendedFee().Mul64(2000)) // miner fee is subtracted
+	largestUTXO = recombineTxn.SiacoinOutputs[0].Value.Sub(w.RecommendedFee().Mul64(estimatedTxnSize)) // miner fee is subtracted
 	per = largestUTXO.Div64(5)
 
 	// split the unconfirmed UTXO
