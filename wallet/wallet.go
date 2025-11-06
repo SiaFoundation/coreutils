@@ -145,23 +145,6 @@ var (
 	ErrEventNotFound = errors.New("event not found")
 )
 
-// unlockUTXOs is a helper function that releases the inputs of txn for use in
-// other transactions. It should only be called on transactions that are invalid
-// or will never be broadcast. It is expected that the caller will hold sw.mu.
-func (sw *SingleAddressWallet) unlockUTXOs(txns []types.Transaction, v2txns []types.V2Transaction) {
-	for _, txn := range txns {
-		for _, in := range txn.SiacoinInputs {
-			delete(sw.locked, in.ParentID)
-		}
-	}
-	for _, txn := range v2txns {
-		for _, in := range txn.SiacoinInputs {
-			delete(sw.locked, in.Parent.ID)
-		}
-	}
-	sw.cleanLockedUTXOs()
-}
-
 // Close closes the wallet
 func (sw *SingleAddressWallet) Close() error {
 	sw.tg.Stop()
@@ -821,7 +804,17 @@ func (sw *SingleAddressWallet) ReleaseInputs(txns []types.Transaction, v2txns []
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
-	sw.unlockUTXOs(txns, v2txns)
+	for _, txn := range txns {
+		for _, in := range txn.SiacoinInputs {
+			delete(sw.locked, in.ParentID)
+		}
+	}
+	for _, txn := range v2txns {
+		for _, in := range txn.SiacoinInputs {
+			delete(sw.locked, in.Parent.ID)
+		}
+	}
+	sw.cleanLockedUTXOs()
 }
 
 // isLocked returns true if the siacoin output with given id is locked, this
@@ -870,6 +863,8 @@ func (sw *SingleAddressWallet) SplitUTXO(n int, minAmount types.Currency) (types
 		return types.V2Transaction{}, fmt.Errorf("split amount (%d) exceeds defrag threshold (%d)", n, sw.cfg.DefragThreshold)
 	} else if minAmount.IsZero() {
 		return types.V2Transaction{}, errors.New("minAmount must be greater than zero")
+	} else if n <= 1 {
+		return types.V2Transaction{}, errors.New("n must be greater than 1")
 	}
 
 	sw.mu.Lock()
@@ -981,26 +976,24 @@ func (sw *SingleAddressWallet) SplitUTXO(n int, minAmount types.Currency) (types
 		output = output.Add(per)
 	}
 	if input.Cmp(output) > 0 {
-		txn.SiacoinOutputs = append(txn.SiacoinOutputs, types.SiacoinOutput{
-			Value:   input.Sub(output),
-			Address: sw.addr,
-		})
+		// add the change to the last output instead of creating a separate change output
+		change := input.Sub(output)
+		txn.SiacoinOutputs[len(txn.SiacoinOutputs)-1].Value = txn.SiacoinOutputs[len(txn.SiacoinOutputs)-1].Value.Add(change)
 	}
 
 	txn.SiacoinInputs[0].SatisfiedPolicy.Signatures = []types.Signature{
 		sw.SignHash(sw.cm.TipState().InputSigHash(txn)),
 	}
 
-	sw.lockUTXOs([]types.SiacoinOutputID{largest.ID})
 	basis, txnset, err := sw.cm.V2TransactionSet(tip, txn)
 	if err != nil {
 		return types.V2Transaction{}, fmt.Errorf("failed to create split transaction set: %w", err)
 	} else if len(txnset) == 0 {
 		return types.V2Transaction{}, errors.New("no transactions created for split")
 	} else if err := sw.BroadcastV2TransactionSet(basis, txnset); err != nil {
-		sw.unlockUTXOs(nil, []types.V2Transaction{txn})
 		return types.V2Transaction{}, fmt.Errorf("failed to broadcast split transaction: %w", err)
 	}
+	sw.lockUTXOs([]types.SiacoinOutputID{largest.ID})
 	return txnset[len(txnset)-1], nil
 }
 

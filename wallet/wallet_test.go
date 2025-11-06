@@ -2168,7 +2168,7 @@ func TestSplitUTXO(t *testing.T) {
 
 	// try to split the mined UTXO into 10 outputs, but minValue is too high
 	if _, err := w.SplitUTXO(10, minValue); err == nil {
-		t.Fatal("expected error when max per output is too high, got nil")
+		t.Fatal("expected error when minValue is too high, got nil")
 	}
 
 	per := largestUTXO.Div64(10)
