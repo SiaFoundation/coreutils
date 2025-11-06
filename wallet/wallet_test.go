@@ -1876,6 +1876,9 @@ func (r *recommender) V2PoolTransactions() []types.V2Transaction { return nil }
 func (r *recommender) UpdateV2TransactionSet(_ []types.V2Transaction, _, _ types.ChainIndex) ([]types.V2Transaction, error) {
 	return nil, nil
 }
+func (r *recommender) V2TransactionSet(basis types.ChainIndex, txn types.V2Transaction) (types.ChainIndex, []types.V2Transaction, error) {
+	return basis, []types.V2Transaction{txn}, nil
+}
 func (r *recommender) OnReorg(func(types.ChainIndex)) func() {
 	return func() {}
 }
@@ -2128,5 +2131,124 @@ func TestReloadBroadcastedSets(t *testing.T) {
 		t.Fatal(err)
 	} else if len(sets) != 0 {
 		t.Fatalf("expected no broadcasted sets, got %v", len(sets))
+	}
+}
+
+func TestSplitUTXO(t *testing.T) {
+	const estimatedTxnSize = 2000 // estimated transaction size in bytes
+
+	network, genesis := testutil.V2Network()
+	network.MaturityDelay = 0
+
+	pk := types.GeneratePrivateKey()
+	ws := testutil.NewEphemeralWalletStore()
+
+	// create chain store
+	dbs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// create chain manager and subscribe the wallet
+	cm := chain.NewManager(dbs, genesisState)
+
+	// create wallet
+	l := zaptest.NewLogger(t)
+	s := &testutil.MockSyncer{}
+	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, s, wallet.WithLogger(l.Named("wallet")), wallet.WithDebounceInterval(time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	largestUTXO := cm.TipState().BlockReward().Sub(w.RecommendedFee().Mul64(estimatedTxnSize)) // miner fee is subtracted
+	// fund the wallet
+	mineAndSync(t, cm, ws, w, w.Address(), 1)
+
+	minValue := largestUTXO.Div64(5)
+
+	// try to split the mined UTXO into 10 outputs, but minValue is too high
+	if _, err := w.SplitUTXO(10, minValue); err == nil {
+		t.Fatal("expected error when minValue is too high, got nil")
+	}
+
+	per := largestUTXO.Div64(10)
+	// split the UTXO into 10 outputs
+	txn, err := w.SplitUTXO(10, types.Siacoins(1))
+	if err != nil {
+		t.Fatal(err)
+	} else if len(txn.SiacoinOutputs) != 10 {
+		t.Fatalf("expected 10 outputs, got %v", len(txn.SiacoinOutputs))
+	}
+	for _, sco := range txn.SiacoinOutputs {
+		if sco.Address != w.Address() {
+			t.Fatalf("expected output address to be %v, got %v", w.Address(), sco.Address)
+		} else if !sco.Value.Equals(per) {
+			t.Fatalf("expected output value to be %v, got %v", per, sco.Value)
+		}
+	}
+
+	// mine to confirm the split transaction
+	mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
+	if _, err := w.Event(types.Hash256(txn.ID())); err != nil {
+		t.Fatal(err)
+	}
+
+	utxos, err := w.SpendableOutputs()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// broadcast a transaction that combines most of the wallet's
+	// UTXOs into one. The goal is to leave one large unconfirmed UTXO in the
+	// wallet and one small confirmed UTXO.
+	var sum types.Currency
+	minValue = utxos[0].SiacoinOutput.Value
+	for _, u := range utxos {
+		if u.SiacoinOutput.Value.Cmp(minValue) < 0 {
+			minValue = u.SiacoinOutput.Value
+		}
+		sum = sum.Add(u.SiacoinOutput.Value)
+	}
+
+	amount := sum.Sub(minValue)
+	recombineTxn := types.V2Transaction{
+		SiacoinOutputs: []types.SiacoinOutput{
+			{Address: w.Address(), Value: amount},
+		},
+	}
+	basis, toSign, err := w.FundV2Transaction(&recombineTxn, amount, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SignV2Inputs(&recombineTxn, toSign)
+
+	if err := w.BroadcastV2TransactionSet(basis, []types.V2Transaction{recombineTxn}); err != nil {
+		t.Fatal(err)
+	}
+
+	largestUTXO = recombineTxn.SiacoinOutputs[0].Value.Sub(w.RecommendedFee().Mul64(estimatedTxnSize)) // miner fee is subtracted
+	per = largestUTXO.Div64(5)
+
+	// split the unconfirmed UTXO
+	splitUnconfirmedTxn, err := w.SplitUTXO(5, per)
+	if err != nil {
+		t.Fatal(err)
+	} else if len(splitUnconfirmedTxn.SiacoinOutputs) != 5 {
+		t.Fatalf("expected 5 outputs, got %v", len(splitUnconfirmedTxn.SiacoinOutputs))
+	} else if splitUnconfirmedTxn.SiacoinInputs[0].Parent.StateElement.LeafIndex != types.UnassignedLeafIndex {
+		t.Fatal("expected input to be ephemeral UTXO")
+	}
+	for _, sco := range splitUnconfirmedTxn.SiacoinOutputs {
+		if sco.Address != w.Address() {
+			t.Fatalf("expected output address to be %v, got %v", w.Address(), sco.Address)
+		} else if !sco.Value.Equals(per) {
+			t.Fatalf("expected output value to be %v, got %v", per, sco.Value)
+		}
+	}
+
+	// mine to confirm the parent and split transaction
+	mineAndSync(t, cm, ws, w, types.VoidAddress, 1)
+	if _, err := w.Event(types.Hash256(splitUnconfirmedTxn.ID())); err != nil {
+		t.Fatal(err)
 	}
 }
