@@ -145,10 +145,10 @@ var (
 	ErrEventNotFound = errors.New("event not found")
 )
 
-// releaseInputs is a helper function that releases the inputs of txn for use in
+// unlockUTXOs is a helper function that releases the inputs of txn for use in
 // other transactions. It should only be called on transactions that are invalid
 // or will never be broadcast. It is expected that the caller will hold sw.mu.
-func (sw *SingleAddressWallet) releaseInputs(txns []types.Transaction, v2txns []types.V2Transaction) {
+func (sw *SingleAddressWallet) unlockUTXOs(txns []types.Transaction, v2txns []types.V2Transaction) {
 	for _, txn := range txns {
 		for _, in := range txn.SiacoinInputs {
 			delete(sw.locked, in.ParentID)
@@ -821,7 +821,7 @@ func (sw *SingleAddressWallet) ReleaseInputs(txns []types.Transaction, v2txns []
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
-	sw.releaseInputs(txns, v2txns)
+	sw.unlockUTXOs(txns, v2txns)
 }
 
 // isLocked returns true if the siacoin output with given id is locked, this
@@ -998,7 +998,7 @@ func (sw *SingleAddressWallet) SplitUTXO(n int, minAmount types.Currency) (types
 	} else if len(txnset) == 0 {
 		return types.V2Transaction{}, errors.New("no transactions created for split")
 	} else if err := sw.BroadcastV2TransactionSet(basis, txnset); err != nil {
-		sw.releaseInputs(nil, []types.V2Transaction{txn})
+		sw.unlockUTXOs(nil, []types.V2Transaction{txn})
 		return types.V2Transaction{}, fmt.Errorf("failed to broadcast split transaction: %w", err)
 	}
 	return txnset[len(txnset)-1], nil
