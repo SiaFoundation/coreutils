@@ -30,6 +30,10 @@ var (
 	// ProtocolVersion501 fixed hosts not accepting a pruning request for
 	// MaxSectorBatchSize.
 	ProtocolVersion501 = rhp4.ProtocolVersion{5, 0, 1}
+
+	// ProtocolVersion502 fixed hosts performing invalid MaxCollateral
+	// validation on partial rollover refreshes.
+	ProtocolVersion502 = rhp4.ProtocolVersion{5, 0, 2}
 )
 
 var (

@@ -621,6 +621,36 @@ func TestRPCRefreshPartialRollover(t *testing.T) {
 		}
 	})
 
+	t.Run("beyond max collateral", func(t *testing.T) {
+		revision := formContractUploadSector(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+
+		// refresh the contract with 1H over max collateral
+		collateral := settings.MaxCollateral.Sub(revision.Revision.RiskedCollateral()).Add(types.NewCurrency64(1))
+		allowance := proto4.MinRenterAllowance(settings.Prices, collateral)
+		_, err = rhp4.RPCRefreshContractPartialRollover(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRefreshContractParams{
+			ContractID: revision.ID,
+			Allowance:  allowance,
+			Collateral: collateral,
+		})
+		if err == nil {
+			t.Fatal("should fail")
+		} else if !strings.Contains(err.Error(), "exceeds max collateral") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// try again with exactly max collateral
+		collateral = settings.MaxCollateral.Sub(revision.Revision.RiskedCollateral())
+		allowance = proto4.MinRenterAllowance(settings.Prices, collateral)
+		_, err = rhp4.RPCRefreshContractPartialRollover(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRefreshContractParams{
+			ContractID: revision.ID,
+			Allowance:  allowance,
+			Collateral: collateral,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+
 	t.Run("valid refresh - full funding", func(t *testing.T) {
 		revision := formContractUploadSector(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
 
@@ -943,6 +973,36 @@ func TestRPCRefreshFullRollover(t *testing.T) {
 			t.Fatal(err)
 		} else if !strings.Contains(err.Error(), "allowance must be greater than zero") {
 			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("beyond max collateral", func(t *testing.T) {
+		revision := formContractUploadSector(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+
+		// refresh the contract with 1H over max collateral
+		collateral := settings.MaxCollateral.Sub(revision.Revision.TotalCollateral).Add(types.NewCurrency64(1))
+		allowance := proto4.MinRenterAllowance(settings.Prices, collateral)
+		_, err = rhp4.RPCRefreshContractFullRollover(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRefreshContractParams{
+			ContractID: revision.ID,
+			Allowance:  allowance,
+			Collateral: collateral,
+		})
+		if err == nil {
+			t.Fatal("should fail")
+		} else if !strings.Contains(err.Error(), "exceeds max collateral") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// try again with exactly max collateral
+		collateral = settings.MaxCollateral.Sub(revision.Revision.TotalCollateral)
+		allowance = proto4.MinRenterAllowance(settings.Prices, collateral)
+		_, err = rhp4.RPCRefreshContractFullRollover(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, revision.Revision, proto4.RPCRefreshContractParams{
+			ContractID: revision.ID,
+			Allowance:  allowance,
+			Collateral: collateral,
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
 	})
 

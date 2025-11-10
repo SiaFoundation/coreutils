@@ -17,7 +17,7 @@ import (
 	"lukechampine.com/frand"
 )
 
-var protocolVersion = ProtocolVersion501
+var protocolVersion = ProtocolVersion502
 
 type (
 	// A TransportMux is a generic multiplexer for incoming streams.
@@ -775,7 +775,7 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn, partial bool) error {
 
 	// validate the request
 	cs := s.chain.TipState()
-	if err := req.Validate(s.hostKey.PublicKey(), cs.Index, state.Revision, settings.MaxCollateral); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), cs.Index, state.Revision, settings.MaxCollateral, partial); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
