@@ -1,3 +1,38 @@
+## 0.18.7 (2025-11-10)
+
+### Features
+
+- Added SingleAddressWallet.SplitUTXO to fragment wallets. This function is used for contract maintenance where a large number of UTXOs is preferred.
+- Update core dependency to fix MaxCollateral check for partial contract refreshes and increment Protocol Version to 5.0.2.
+
+#### Implement parallel syncing
+
+Replaces the old serial syncing algorithm with a parallel one. In brief:
+
+```
+Old algorithm:
+1. For each unsynced peer, request blocks until the peer reports no further blocks
+
+New algorithm:
+1. In parallel, for each unsynced peer, request up to 10k headers
+2. In parallel, request sections of the header chain from peers in batches of 100 blocks
+3. Poll for new peers in the background and immediately assign them work
+4. After assigning the final batch, redundantly assign any remaining in-progress batches to idle peers
+5. Add batches of blocks to the Manager in a separate goroutine to avoid blocking peer I/O
+6. When requesting v2 blocks, perform validation within each worker goroutine, rather than in the Manager goroutine
+```
+
+Empirically, the new algorithm is anywhere from 2x-10x faster, particularly once it reaches the v2 require height and can start validating in parallel as well.
+
+#### Instant syncing
+
+Adds a new chain.DB constructor and a helper function for fetching checkpoints.
+
+### Fixes
+
+- Update core dependency from 0.17.5 to 0.18.0.
+- Use a more aggressive keepalive configuration in siamux.Serve.
+
 ## 0.18.6 (2025-10-15)
 
 ### Fixes
