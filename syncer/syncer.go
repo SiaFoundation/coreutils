@@ -617,7 +617,7 @@ func (s *Syncer) peerLoop(ctx context.Context) error {
 				break
 			} else if err := s.allowConnect(ctx, p, false); err != nil {
 				log.Debug("rejected outbound peer", zap.String("peer", p), zap.Error(err))
-				break
+				continue
 			}
 
 			ctx, cancel := context.WithTimeout(ctx, s.config.ConnectTimeout)
