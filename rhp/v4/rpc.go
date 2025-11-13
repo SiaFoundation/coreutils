@@ -507,7 +507,7 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 		tr = io.MultiReader(tr, io.LimitReader(zeros, int64(rhp4.SectorSize-req.DataLength)))
 	}
 
-	root, err := rhp4.ReaderRoot(tr)
+	root, err := rhp4.ReadSectorRoot(tr)
 	if err != nil {
 		return RPCWriteSectorResult{}, fmt.Errorf("failed to calculate root: %w", err)
 	} else if err := bw.Flush(); err != nil {
