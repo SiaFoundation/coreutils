@@ -235,7 +235,7 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 	}
 
 	buf := bytes.NewBuffer(sector[:0])
-	root, err := rhp4.ReaderRoot(io.TeeReader(sr, buf))
+	root, err := rhp4.ReadSectorRoot(io.TeeReader(sr, buf))
 	if err != nil {
 		return errorDecodingError("failed to read sector data: %v", err)
 	}
