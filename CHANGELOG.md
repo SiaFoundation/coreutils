@@ -1,3 +1,9 @@
+## 0.18.8 (2025-11-13)
+
+### Fixes
+
+- Update core dependency to include ReadSectorRoot.
+
 ## 0.18.7 (2025-11-10)
 
 ### Features
