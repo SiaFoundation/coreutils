@@ -398,6 +398,7 @@ func (b *dbBucket) delete(key []byte) {
 
 var (
 	bVersion              = []byte("Version")
+	bNetwork              = []byte("Network")
 	bMainChain            = []byte("MainChain")
 	bStates               = []byte("States")
 	bBlocks               = []byte("Blocks")
@@ -977,6 +978,7 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 	if version := dbs.bucket(bVersion).getRaw(bVersion); len(version) != 1 {
 		for _, bucket := range [][]byte{
 			bVersion,
+			bNetwork,
 			bMainChain,
 			bStates,
 			bBlocks,
@@ -990,6 +992,7 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 			}
 		}
 		dbs.bucket(bVersion).putRaw(bVersion, []byte{4})
+		dbs.bucket(bNetwork).putRaw(bNetwork, []byte(n.Name))
 
 		// store genesis state and apply genesis block to it
 		genesisState := n.GenesisState()
@@ -1010,19 +1013,8 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 			return nil, consensus.State{}, fmt.Errorf("failed to migrate database: %w", err)
 		}
 	}
-
-	// check that we have the correct genesis block for this network
-	if dbGenesis, ok := dbs.BestIndex(0); !ok || dbGenesis.ID != genesisBlock.ID() {
-		// try to detect network so we can provide a more helpful error message
-		_, mainnetGenesis := Mainnet()
-		_, zenGenesis := TestnetZen()
-		if genesisBlock.ID() == mainnetGenesis.ID() && dbGenesis.ID == zenGenesis.ID() {
-			return nil, consensus.State{}, errors.New("cannot use Zen testnet database on mainnet")
-		} else if genesisBlock.ID() == zenGenesis.ID() && dbGenesis.ID == mainnetGenesis.ID() {
-			return nil, consensus.State{}, errors.New("cannot use mainnet database on Zen testnet")
-		} else {
-			return nil, consensus.State{}, errors.New("database previously initialized with different genesis block")
-		}
+	if network := dbs.bucket(bNetwork).getRaw(bNetwork); len(network) != 0 && string(network) != n.Name {
+		return nil, consensus.State{}, fmt.Errorf("database previously initialized with different network (%s)", string(network))
 	}
 
 	// load tip state
@@ -1062,6 +1054,7 @@ func NewDBStoreAtCheckpoint(db DB, cs consensus.State, b types.Block, logger Mig
 	if version := dbs.bucket(bVersion).getRaw(bVersion); len(version) != 1 {
 		for _, bucket := range [][]byte{
 			bVersion,
+			bNetwork,
 			bMainChain,
 			bStates,
 			bBlocks,
@@ -1075,6 +1068,7 @@ func NewDBStoreAtCheckpoint(db DB, cs consensus.State, b types.Block, logger Mig
 			}
 		}
 		dbs.bucket(bVersion).putRaw(bVersion, []byte{4})
+		dbs.bucket(bNetwork).putRaw(bNetwork, []byte(cs.Network.Name))
 	} else if version[0] != 4 {
 		if logger == nil {
 			logger = noopLogger{}
@@ -1082,6 +1076,9 @@ func NewDBStoreAtCheckpoint(db DB, cs consensus.State, b types.Block, logger Mig
 		if err := migrateDB(dbs, logger); err != nil {
 			return nil, consensus.State{}, fmt.Errorf("failed to migrate database: %w", err)
 		}
+	}
+	if network := dbs.bucket(bNetwork).getRaw(bNetwork); len(network) != 0 && string(network) != cs.Network.Name {
+		return nil, consensus.State{}, fmt.Errorf("database previously initialized with different network (%s)", string(network))
 	}
 
 	dbs.putState(cs)

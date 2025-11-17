@@ -389,3 +389,94 @@ func TestFullTxPool(t *testing.T) {
 		t.Fatal("low-fee transaction should not be in the pool")
 	}
 }
+
+func TestNewDBStoreAtCheckpoint(t *testing.T) {
+	n, genesisBlock := TestnetZen()
+	genesisBlock.Transactions = nil
+	n.InitialTarget = types.BlockID{0xFF}
+	n.BlockInterval = time.Second
+	n.MaturityDelay = 5
+	n.HardforkDevAddr.Height = 1
+	n.HardforkTax.Height = 1
+	n.HardforkStorageProof.Height = 1
+	n.HardforkOak.Height = 1
+	n.HardforkASIC.Height = 1
+	n.HardforkFoundation.Height = 1
+	n.HardforkV2.AllowHeight = 1
+	n.HardforkV2.RequireHeight = 1
+	n.HardforkV2.FinalCutHeight = 1
+
+	// mine to checkpoint
+	checkpointParent := n.GenesisState()
+	checkpointBlock := genesisBlock
+	for range 20 {
+		checkpointParent, _ = consensus.ApplyBlock(checkpointParent, checkpointBlock, consensus.V1BlockSupplement{}, time.Time{})
+		checkpointBlock = types.Block{
+			ParentID:  checkpointParent.Index.ID,
+			Timestamp: types.CurrentTimestamp(),
+			MinerPayouts: []types.SiacoinOutput{{
+				Value:   checkpointParent.BlockReward(),
+				Address: types.VoidAddress,
+			}},
+		}
+		findBlockNonce(checkpointParent, &checkpointBlock)
+	}
+	checkpointState, _ := consensus.ApplyBlock(checkpointParent, checkpointBlock, consensus.V1BlockSupplement{}, time.Time{})
+
+	t.Run("DBThenCheckpoint", func(t *testing.T) {
+		db := NewMemDB()
+		_, _, _ = NewDBStore(db, n, genesisBlock, nil)
+		db.Flush()
+		_, tipState, err := NewDBStoreAtCheckpoint(db, checkpointParent, checkpointBlock, nil)
+		if err != nil {
+			t.Fatal(err)
+		} else if tipState.Index != checkpointState.Index {
+			t.Fatal("DB should be initialized at checkpoint")
+		}
+	})
+
+	t.Run("CheckpointThenDB", func(t *testing.T) {
+		db := NewMemDB()
+		_, _, err := NewDBStoreAtCheckpoint(db, checkpointParent, checkpointBlock, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.Flush()
+		_, tipState, err := NewDBStore(db, n, genesisBlock, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tipState.Index != checkpointState.Index {
+			t.Fatal("DB should remain at checkpoint")
+		}
+	})
+
+	t.Run("CheckpointTwice", func(t *testing.T) {
+		db := NewMemDB()
+		_, _, err := NewDBStoreAtCheckpoint(db, checkpointParent, checkpointBlock, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.Flush()
+		_, tipState, err := NewDBStoreAtCheckpoint(db, checkpointParent, checkpointBlock, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tipState.Index != checkpointState.Index {
+			t.Fatal("DB should remain at checkpoint")
+		}
+	})
+
+	t.Run("DifferentNetwork", func(t *testing.T) {
+		mainnet, mainnetGenesis := Mainnet()
+		db := NewMemDB()
+		_, _, err := NewDBStore(db, mainnet, mainnetGenesis, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _, err = NewDBStoreAtCheckpoint(db, checkpointParent, checkpointBlock, nil)
+		if err == nil {
+			t.Fatal("expected error when initializing with different network")
+		}
+	})
+}
