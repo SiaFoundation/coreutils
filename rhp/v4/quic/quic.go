@@ -103,6 +103,8 @@ func Dial(ctx context.Context, addr string, peerKey types.PublicKey, opts ...Cli
 	qc := &quic.Config{
 		EnableDatagrams:      true,
 		HandshakeIdleTimeout: 15 * time.Second,
+		KeepAlivePeriod:      30 * time.Second,
+		MaxIdleTimeout:       30 * time.Minute,
 	}
 	for _, opt := range opts {
 		opt(qc, tc)
@@ -188,6 +190,8 @@ func Listen(conn net.PacketConn, certs CertManager) (*quic.Listener, error) {
 		NextProtos:     []string{TLSNextProtoRHP4, http3.NextProtoH3},
 	}, &quic.Config{
 		EnableDatagrams:    true,
+		KeepAlivePeriod:    30 * time.Second,
+		MaxIdleTimeout:     30 * time.Minute,
 		MaxIncomingStreams: 1000,
 	})
 }
