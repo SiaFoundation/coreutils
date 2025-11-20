@@ -1,3 +1,10 @@
+## 0.18.8 (2025-11-20)
+
+### Fixes
+
+- Set quic keepalive period and max keepalive timeout.
+- Update core dependency to include ReadSectorRoot.
+
 ## 0.18.7 (2025-11-10)
 
 ### Features
