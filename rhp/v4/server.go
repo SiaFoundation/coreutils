@@ -77,8 +77,8 @@ type (
 	Sectors interface {
 		// HasSector returns true if the sector is stored.
 		HasSector(root types.Hash256) (bool, error)
-		// ReadSector retrieves a sector by its root
-		ReadSector(root types.Hash256) (*[rhp4.SectorSize]byte, error)
+		// ReadSector retrieves a segment of a sector by its root and returns the data and a proof for the segment.
+		ReadSector(root types.Hash256, offset, length uint64) ([]byte, []types.Hash256, error)
 		// StoreSector writes a sector to disk
 		StoreSector(root types.Hash256, data *[rhp4.SectorSize]byte, expiration uint64) error
 	}
@@ -194,17 +194,11 @@ func (s *Server) handleRPCReadSector(stream net.Conn, log *zap.Logger) error {
 	}
 	lap("debit account")
 
-	sector, err := s.sectors.ReadSector(req.Root)
+	segment, proof, err := s.sectors.ReadSector(req.Root, req.Offset, req.Length)
 	if err != nil {
 		return fmt.Errorf("failed to read sector: %w", err)
 	}
-	lap("read sector")
-
-	segment := sector[req.Offset : req.Offset+req.Length]
-	start := req.Offset / rhp4.LeafSize
-	end := (req.Offset + req.Length + rhp4.LeafSize - 1) / rhp4.LeafSize
-	proof := rhp4.BuildSectorProof(sector, start, end)
-	lap("build proof")
+	lap(fmt.Sprintf("read sector (off: %d, len: %d)", req.Offset, req.Length))
 
 	if err := rhp4.WriteResponse(stream, &rhp4.RPCReadSectorResponse{
 		Proof:      proof,
@@ -1129,15 +1123,14 @@ func (s *Server) handleRPCVerifySector(stream net.Conn) error {
 		return fmt.Errorf("failed to debit account: %w", err)
 	}
 
-	sector, err := s.sectors.ReadSector(req.Root)
+	leaf, proof, err := s.sectors.ReadSector(req.Root, rhp4.LeafSize*req.LeafIndex, 64)
 	if err != nil {
 		return fmt.Errorf("failed to read sector: %w", err)
 	}
 
-	proof := rhp4.BuildSectorProof(sector, req.LeafIndex, req.LeafIndex+1)
 	resp := rhp4.RPCVerifySectorResponse{
 		Proof: proof,
-		Leaf:  ([64]byte)(sector[rhp4.LeafSize*req.LeafIndex:]),
+		Leaf:  ([rhp4.LeafSize]byte)(leaf),
 	}
 	return rhp4.WriteResponse(stream, &resp)
 }

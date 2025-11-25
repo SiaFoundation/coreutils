@@ -76,14 +76,18 @@ func (es *EphemeralSectorStore) HasSector(root types.Hash256) (bool, error) {
 }
 
 // ReadSector reads a sector from the EphemeralSectorStore.
-func (es *EphemeralSectorStore) ReadSector(root types.Hash256) (*[proto4.SectorSize]byte, error) {
+func (es *EphemeralSectorStore) ReadSector(root types.Hash256, offset, length uint64) ([]byte, []types.Hash256, error) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
 	sector, ok := es.sectors[root]
 	if !ok {
-		return nil, proto4.ErrSectorNotFound
+		return nil, nil, proto4.ErrSectorNotFound
 	}
-	return sector, nil
+	segment := sector[offset : offset+length]
+	start := offset / proto4.LeafSize
+	end := (offset + length + proto4.LeafSize - 1) / proto4.LeafSize
+	proof := proto4.BuildSectorProof(sector, start, end)
+	return segment, proof, nil
 }
 
 // StoreSector stores a sector in the EphemeralSectorStore.
