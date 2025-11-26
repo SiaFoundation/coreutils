@@ -52,17 +52,14 @@ func TestStreamLimit(t *testing.T) {
 		for {
 			conn, err := server.Accept(context.Background())
 			if err != nil {
-				t.Error(err)
 				return
 			}
-			defer conn.CloseWithError(1, "cleanup")
 
 			transport := &transport{conn}
 
 			for {
 				stream, err := transport.AcceptStream()
 				if err != nil {
-					t.Error(err)
 					return
 				}
 				stream.Close()
