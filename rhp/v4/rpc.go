@@ -70,7 +70,7 @@ func (c *timeoutConn) Close() error {
 // openStream dials a stream setting the default timeout. The context deadline will
 // override the default timeout. The stream lifetime is tied to the context.
 func openStream(ctx context.Context, t TransportClient, defaultTimeout time.Duration) (net.Conn, error) {
-	s, err := t.DialStream()
+	s, err := t.DialStream(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial stream: %w", err)
 	}
@@ -99,7 +99,7 @@ func openStream(ctx context.Context, t TransportClient, defaultTimeout time.Dura
 type (
 	// A TransportClient is a generic multiplexer for outgoing streams.
 	TransportClient interface {
-		DialStream() (net.Conn, error)
+		DialStream(ctx context.Context) (net.Conn, error)
 
 		FrameSize() int
 		PeerKey() types.PublicKey

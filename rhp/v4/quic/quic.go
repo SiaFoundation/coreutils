@@ -86,8 +86,8 @@ func (c *client) PeerKey() types.PublicKey {
 }
 
 // DialStream implements [TransportClient]
-func (c *client) DialStream() (net.Conn, error) {
-	s, err := c.conn.OpenStream()
+func (c *client) DialStream(ctx context.Context) (net.Conn, error) {
+	s, err := c.conn.OpenStreamSync(ctx)
 	if err != nil {
 		return nil, err
 	}
