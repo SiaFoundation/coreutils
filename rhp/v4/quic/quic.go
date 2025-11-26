@@ -52,6 +52,11 @@ type (
 	ClientOption func(*quic.Config, *tls.Config)
 )
 
+func (s *stream) Close() error {
+	s.Stream.CancelRead(0x1)
+	return s.Stream.Close()
+}
+
 // WithTLSConfig is a QUICTransportOption that sets the TLSConfig
 // for the QUIC connection.
 func WithTLSConfig(fn func(*tls.Config)) ClientOption {
