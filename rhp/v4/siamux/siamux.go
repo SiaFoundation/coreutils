@@ -56,7 +56,7 @@ func (c *client) PeerKey() types.PublicKey {
 }
 
 // DialStream implements the [TransportClient] interface.
-func (c *client) DialStream() (net.Conn, error) {
+func (c *client) DialStream(_ context.Context) (net.Conn, error) {
 	s := c.m.DialStream()
 	return s, nil
 }
