@@ -54,6 +54,7 @@ type (
 
 func (s *stream) Close() error {
 	s.Stream.CancelRead(0x1)
+	s.Stream.CancelWrite(0x1)
 	return s.Stream.Close()
 }
 
