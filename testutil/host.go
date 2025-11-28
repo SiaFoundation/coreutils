@@ -46,17 +46,23 @@ func (es *EphemeralSectorStore) HasSector(root types.Hash256) (bool, error) {
 
 // ReadSector reads a sector from the EphemeralSectorStore.
 func (es *EphemeralSectorStore) ReadSector(root types.Hash256, offset, length uint64) ([]byte, []types.Hash256, error) {
+	if offset+length > proto4.SectorSize {
+		return nil, nil, fmt.Errorf("read exceeds sector size")
+	} else if offset%proto4.LeafSize != 0 || length%proto4.LeafSize != 0 {
+		return nil, nil, fmt.Errorf("offset and length must be multiples of leaf size")
+	}
+
 	es.mu.Lock()
 	defer es.mu.Unlock()
 	sector, ok := es.sectors[root]
 	if !ok {
 		return nil, nil, proto4.ErrSectorNotFound
 	}
-	segment := sector[offset : offset+length]
-	start := offset / proto4.LeafSize
-	end := (offset + length + proto4.LeafSize - 1) / proto4.LeafSize
-	proof := proto4.BuildSectorProof(sector, start, end)
-	return segment, proof, nil
+	start, end := offset/proto4.LeafSize, (offset+length+proto4.LeafSize-1)/proto4.LeafSize
+	segmentStart, segmentEnd := proto4.SectorSubtreeRange(start, end)
+	subtreeCache := proto4.CachedSectorSubtrees(sector)
+	proof := proto4.BuildSectorProof(sector[segmentStart*proto4.LeafSize:segmentEnd*proto4.LeafSize], start, end, subtreeCache)
+	return sector[offset:][:length], proof, nil
 }
 
 // StoreSector stores a sector in the EphemeralSectorStore.

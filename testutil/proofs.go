@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -8,7 +9,6 @@ import (
 
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/chain"
-	"golang.org/x/net/context"
 )
 
 // ElementStateStore is a store that holds state elements in memory.
