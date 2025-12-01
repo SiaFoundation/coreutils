@@ -29,7 +29,7 @@ const (
 
 	// maxIncomingStreams is the maximum number of incoming streams allowed per
 	// QUIC connection by the server.
-	maxIncomingStreams = 1000
+	maxIncomingStreams = 100000
 )
 
 type (
@@ -68,7 +68,7 @@ func WithTLSConfig(fn func(*tls.Config)) ClientOption {
 func (s *stream) Close() error {
 	err := s.Stream.Close()
 	_, errCopy := io.CopyN(io.Discard, s, 4096)
-	if !errors.Is(errCopy, io.EOF) && !errors.Is(errCopy, io.ErrUnexpectedEOF) {
+	if !errors.Is(errCopy, io.EOF) {
 		// fall back to forcefully canceling the read if we couldn't reach EOF
 		s.CancelRead(1)
 	}
