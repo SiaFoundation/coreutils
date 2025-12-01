@@ -6,7 +6,7 @@ require (
 	github.com/quic-go/quic-go v0.57.1
 	github.com/quic-go/webtransport-go v0.9.0
 	go.etcd.io/bbolt v1.4.3
-	go.sia.tech/core v0.18.2-0.20251127175624-89dce9ee36bf
+	go.sia.tech/core v0.19.0
 	go.sia.tech/mux v1.4.0
 	go.uber.org/zap v1.27.1
 	golang.org/x/crypto v0.45.0

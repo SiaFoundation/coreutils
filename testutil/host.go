@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"testing"
@@ -46,9 +47,14 @@ func (es *EphemeralSectorStore) HasSector(root types.Hash256) (bool, error) {
 
 // ReadSector reads a sector from the EphemeralSectorStore.
 func (es *EphemeralSectorStore) ReadSector(root types.Hash256, offset, length uint64) ([]byte, []types.Hash256, error) {
-	if offset+length > proto4.SectorSize {
+	switch {
+	case offset >= proto4.SectorSize:
+		return nil, nil, fmt.Errorf("offset exceeds sector size")
+	case length > proto4.SectorSize:
+		return nil, nil, fmt.Errorf("length exceeds sector size")
+	case length > proto4.SectorSize-offset:
 		return nil, nil, fmt.Errorf("read exceeds sector size")
-	} else if offset%proto4.LeafSize != 0 || length%proto4.LeafSize != 0 {
+	case offset%proto4.LeafSize != 0 || length%proto4.LeafSize != 0:
 		return nil, nil, fmt.Errorf("offset and length must be multiples of leaf size")
 	}
 
