@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -66,7 +67,11 @@ func WithTLSConfig(fn func(*tls.Config)) ClientOption {
 
 func (s *stream) Close() error {
 	err := s.Stream.Close()
-	_, _ = s.Read([]byte{1}) // read until EOF for stream to be fully closed
+	_, errCopy := io.CopyN(io.Discard, s, 4096)
+	if !errors.Is(errCopy, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		// fall back to forcefully canceling the read if we couldn't reach EOF
+		s.CancelRead(1)
+	}
 	return err
 }
 
