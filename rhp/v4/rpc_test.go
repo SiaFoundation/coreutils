@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"errors"
 	"math"
 	"net"
 	"reflect"
@@ -14,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	gquic "github.com/quic-go/quic-go"
 	"go.sia.tech/core/consensus"
 	proto4 "go.sia.tech/core/rhp/v4"
 	"go.sia.tech/core/types"
@@ -1278,10 +1276,6 @@ func TestRPCTimeout(t *testing.T) {
 
 	isTimeoutErr := func(err error) bool {
 		t.Helper()
-		se := new(gquic.StreamError)
-		if errors.As(err, &se) {
-			return !se.Remote
-		}
 		return err != nil && (strings.Contains(err.Error(), "deadline exceeded") || strings.Contains(err.Error(), "i/o timeout"))
 	}
 

@@ -65,8 +65,9 @@ func WithTLSConfig(fn func(*tls.Config)) ClientOption {
 }
 
 func (s *stream) Close() error {
-	s.CancelRead(1)
-	return s.Stream.Close()
+	err := s.Stream.Close()
+	_, _ = s.Read([]byte{1}) // read until EOF for stream to be fully closed
+	return err
 }
 
 // LocalAddr implements net.Conn
