@@ -44,6 +44,11 @@ func setupTestPair(tb testing.TB) (*quic.Listener, rhp.TransportClient) {
 	return l, client
 }
 
+// TestStreamLimit is a regression test that ensures we can perform more than
+// maxIncomingStreams RPCs on a single QUIC connection. This should be the case
+// if both sides close their streams.
+// Before fixing the issue, this test would hang for the full 10 minute test
+// timeout.
 func TestStreamLimit(t *testing.T) {
 	server, client := setupTestPair(t)
 
