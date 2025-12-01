@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -25,6 +26,10 @@ const (
 
 	// TLSNextProtoRHP4 is the ALPN identifier for the Quic RHP4 protocol.
 	TLSNextProtoRHP4 = "sia/rhp4"
+
+	// maxIncomingStreams is the maximum number of incoming streams allowed per
+	// QUIC connection by the server.
+	maxIncomingStreams = 100000
 )
 
 type (
@@ -58,6 +63,16 @@ func WithTLSConfig(fn func(*tls.Config)) ClientOption {
 	return func(_ *quic.Config, tc *tls.Config) {
 		fn(tc)
 	}
+}
+
+func (s *stream) Close() error {
+	err := s.Stream.Close()
+	_, errCopy := io.CopyN(io.Discard, s, 4096)
+	if !errors.Is(errCopy, io.EOF) {
+		// fall back to forcefully canceling the read if we couldn't reach EOF
+		s.CancelRead(1)
+	}
+	return err
 }
 
 // LocalAddr implements net.Conn
@@ -192,7 +207,7 @@ func Listen(conn net.PacketConn, certs CertManager) (*quic.Listener, error) {
 		EnableDatagrams:    true,
 		KeepAlivePeriod:    30 * time.Second,
 		MaxIdleTimeout:     30 * time.Minute,
-		MaxIncomingStreams: 1000,
+		MaxIncomingStreams: maxIncomingStreams,
 	})
 }
 
