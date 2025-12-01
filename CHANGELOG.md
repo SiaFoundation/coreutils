@@ -1,3 +1,21 @@
+## 0.19.0 (2025-12-01)
+
+### Breaking Changes
+
+- Update ReadSector method in Sectors interface to accept a range and return a proof.
+
+### Features
+
+- Updated ephemeral host to support partial reads.
+
+### Fixes
+
+- Fix QUIC streams not getting closed properly.
+- Set quic keepalive period and max keepalive timeout.
+- Update core dependency to include ReadSectorRoot.
+- Updated list of bootstrap peers for mainnet.
+- Use OpenStreamSync instead of OpenStream to avoid DialStream failing due to "too many open streams".
+
 ## 0.18.7 (2025-11-10)
 
 ### Features
