@@ -848,41 +848,81 @@ func New(l net.Listener, cm ChainManager, pm PeerStore, header gateway.Header, o
 	return s
 }
 
-// SendCheckpoint connects to the specified peer and downloads the requested
-// checkpoint.
-func SendCheckpoint(ctx context.Context, addr string, index types.ChainIndex, n *consensus.Network, genesisID types.BlockID) (consensus.State, types.Block, error) {
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return consensus.State{}, types.Block{}, err
+// RetrieveCheckpoint attempts to retrieve a checkpoint block and state from one of the
+// specified peers. The first successful response is returned.
+func RetrieveCheckpoint(ctx context.Context, peers []string, index types.ChainIndex, n *consensus.Network, genesisID types.BlockID) (consensus.State, types.Block, error) {
+	if len(peers) == 0 {
+		return consensus.State{}, types.Block{}, errors.New("no peers provided")
 	}
-	errChan := make(chan error)
-	var cs consensus.State
-	var b types.Block
+
+	type resp struct {
+		state consensus.State
+		block types.Block
+		err   error
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	resultCh := make(chan resp, 1)
 	go func() {
-		t, err := gateway.Dial(conn, gateway.Header{
-			GenesisID:  genesisID,
-			UniqueID:   gateway.GenerateUniqueID(),
-			NetAddress: "ephemeral:0",
-		})
-		if err != nil {
-			errChan <- err
-			return
+		sema := make(chan struct{}, 5) // limit concurrent dials
+		for _, addr := range peers {
+			select {
+			case sema <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			go func(ctx context.Context, addr string) {
+				defer func() { <-sema }()
+
+				conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+				if err != nil {
+					resultCh <- resp{err: err}
+					return
+				}
+				defer conn.Close()
+
+				ctx, cancel := context.WithCancel(ctx) // cancels the cleanup goroutine if the RPC fails or completes
+				defer cancel()
+				go func() {
+					<-ctx.Done()
+					// interrupt dial or RPC by forcing the connection to close
+					conn.Close()
+				}()
+				t, err := gateway.Dial(conn, gateway.Header{
+					GenesisID:  genesisID,
+					UniqueID:   gateway.GenerateUniqueID(),
+					NetAddress: "ephemeral:0",
+				})
+				if err != nil {
+					resultCh <- resp{err: err}
+					return
+				}
+				p := &Peer{
+					t:        t,
+					ConnAddr: conn.RemoteAddr().String(),
+					Inbound:  false,
+				}
+				cs, b, err := p.SendCheckpoint(index, n, 30*time.Second)
+				select {
+				case <-ctx.Done():
+					// another goroutine succeeded
+				case resultCh <- resp{state: cs, block: b, err: err}:
+				}
+			}(ctx, addr)
 		}
-		p := &Peer{
-			t:        t,
-			ConnAddr: conn.RemoteAddr().String(),
-			Inbound:  false,
-		}
-		cs, b, err = p.SendCheckpoint(index, n, 5*time.Second)
-		errChan <- err
 	}()
-	select {
-	case <-ctx.Done():
-		conn.Close()
-		<-errChan
-		return consensus.State{}, types.Block{}, ctx.Err()
-	case err := <-errChan:
-		conn.Close()
-		return cs, b, err
+
+	for range peers {
+		select {
+		case r := <-resultCh:
+			if r.err == nil {
+				return r.state, r.block, nil
+			}
+		case <-ctx.Done():
+			return consensus.State{}, types.Block{}, ctx.Err()
+		}
 	}
+	return consensus.State{}, types.Block{}, errors.New("failed to retrieve checkpoint from any peer")
 }

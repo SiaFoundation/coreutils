@@ -201,7 +201,8 @@ func TestInstantSync(t *testing.T) {
 	if !ok {
 		t.Fatal("failed to get index")
 	}
-	cs, b, err := syncer.SendCheckpoint(context.Background(), s.Addr(), index, n, genesis.ID())
+
+	cs, b, err := syncer.RetrieveCheckpoint(context.Background(), []string{s.Addr()}, index, n, genesis.ID())
 	if err != nil {
 		t.Fatal(err)
 	} else if cs.Index.ID != b.ParentID {
