@@ -876,9 +876,17 @@ func RetrieveCheckpoint(ctx context.Context, peers []string, index types.ChainIn
 			go func(ctx context.Context, addr string) {
 				defer func() { <-sema }()
 
+				sendResult := func(r resp) {
+					select {
+					case <-ctx.Done():
+						// another goroutine succeeded
+					case resultCh <- r:
+					}
+				}
+
 				conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 				if err != nil {
-					resultCh <- resp{err: err}
+					sendResult(resp{err: err})
 					return
 				}
 				defer conn.Close()
@@ -896,7 +904,7 @@ func RetrieveCheckpoint(ctx context.Context, peers []string, index types.ChainIn
 					NetAddress: "ephemeral:0",
 				})
 				if err != nil {
-					resultCh <- resp{err: err}
+					sendResult(resp{err: err})
 					return
 				}
 				p := &Peer{
@@ -905,11 +913,7 @@ func RetrieveCheckpoint(ctx context.Context, peers []string, index types.ChainIn
 					Inbound:  false,
 				}
 				cs, b, err := p.SendCheckpoint(index, n, 30*time.Second)
-				select {
-				case <-ctx.Done():
-					// another goroutine succeeded
-				case resultCh <- resp{state: cs, block: b, err: err}:
-				}
+				sendResult(resp{state: cs, block: b, err: err})
 			}(ctx, addr)
 		}
 	}()
