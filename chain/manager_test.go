@@ -480,3 +480,70 @@ func TestNewDBStoreAtCheckpoint(t *testing.T) {
 		}
 	})
 }
+
+func TestMinReorgIndex(t *testing.T) {
+	n, genesisBlock := TestnetZen()
+	genesisBlock.Transactions = nil
+	n.InitialTarget = types.BlockID{0xFF}
+	n.BlockInterval = time.Second
+	n.MaturityDelay = 5
+	n.HardforkDevAddr.Height = 1
+	n.HardforkTax.Height = 1
+	n.HardforkStorageProof.Height = 1
+	n.HardforkOak.Height = 1
+	n.HardforkASIC.Height = 1
+	n.HardforkFoundation.Height = 1
+	n.HardforkV2.AllowHeight = 1
+	n.HardforkV2.RequireHeight = 1
+	n.HardforkV2.FinalCutHeight = 1
+
+	// mine to checkpoint
+	cs := n.GenesisState()
+	b := genesisBlock
+	var blocks []types.Block
+	for range 20 {
+		cs, _ = consensus.ApplyBlock(cs, b, consensus.V1BlockSupplement{}, time.Time{})
+		b = types.Block{
+			ParentID:  cs.Index.ID,
+			Timestamp: types.CurrentTimestamp(),
+			MinerPayouts: []types.SiacoinOutput{{
+				Value:   cs.BlockReward(),
+				Address: types.VoidAddress,
+			}},
+		}
+		findBlockNonce(cs, &b)
+		blocks = append(blocks, b)
+	}
+	checkpointState, _ := consensus.ApplyBlock(cs, b, consensus.V1BlockSupplement{}, time.Time{})
+
+	// initialize manager at checkpoint
+	store, tipState, err := NewDBStoreAtCheckpoint(NewMemDB(), cs, b, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm := NewManager(store, tipState)
+	// min reorg index should be at checkpoint
+	if minReorg := cm.MinReorgIndex(); minReorg != checkpointState.Index {
+		t.Fatal("unexpected min reorg index:", minReorg, "expected:", checkpointState.Index)
+	}
+
+	// reinitialize at genesis
+	store, tipState, err = NewDBStore(NewMemDB(), n, genesisBlock, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm = NewManager(store, tipState)
+	if minReorg := cm.MinReorgIndex(); minReorg.ID != genesisBlock.ID() {
+		t.Fatal("unexpected min reorg index:", minReorg, "expected:", genesisBlock.ID())
+	}
+	// add intervening blocks
+	if err := cm.AddBlocks(blocks); err != nil {
+		t.Fatal(err)
+	} else if cm.Tip() != checkpointState.Index {
+		t.Fatal("tip mismatch:", cm.Tip(), "expected:", checkpointState.Index)
+	}
+	// min reorg index should still be at genesis
+	if minReorg := cm.MinReorgIndex(); minReorg.ID != genesisBlock.ID() {
+		t.Fatal("unexpected min reorg index:", minReorg, "expected:", genesisBlock.ID())
+	}
+}

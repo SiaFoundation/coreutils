@@ -137,6 +137,23 @@ func (m *Manager) BestIndex(height uint64) (types.ChainIndex, bool) {
 	return m.store.BestIndex(height)
 }
 
+// MinReorgIndex returns the index on the best chain below which the manager
+// cannot perform a reorg.
+func (m *Manager) MinReorgIndex() types.ChainIndex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	index := m.tipState.Index
+	for index.Height > 0 {
+		prevIndex, ok := m.store.BestIndex(index.Height - 1)
+		_, _, ok2 := m.store.Block(prevIndex.ID)
+		if !ok || !ok2 {
+			break
+		}
+		index = prevIndex
+	}
+	return index
+}
+
 // History returns a set of block IDs that span the best chain, beginning with
 // the 10 most-recent blocks, and subsequently spaced exponentionally farther
 // apart until reaching the genesis block.
