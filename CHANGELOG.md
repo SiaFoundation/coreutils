@@ -1,3 +1,9 @@
+## 0.19.1 (2025-12-05)
+
+### Features
+
+- Renamed SendCheckpoint to RetrieveCheckpoint and now accepts multiple peers.
+
 ## 0.19.0 (2025-12-01)
 
 ### Breaking Changes
