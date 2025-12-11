@@ -88,6 +88,7 @@ func Subnet(addr, mask string) string {
 }
 
 type config struct {
+	Dialer                     Dialer
 	MaxInboundPeers            int
 	MaxOutboundPeers           int
 	MaxInflightRPCs            int
@@ -111,6 +112,7 @@ type config struct {
 
 func defaultConfig() config {
 	return config{
+		Dialer:                     &net.Dialer{},
 		MaxInboundPeers:            64,
 		MaxOutboundPeers:           16,
 		MaxInflightRPCs:            64,
@@ -135,6 +137,13 @@ func defaultConfig() config {
 
 // An Option modifies a Syncer's configuration.
 type Option func(*config)
+
+// WithDialer sets the Dialer used to dial network connections.
+func WithDialer(d Dialer) Option {
+	return func(c *config) {
+		c.Dialer = d
+	}
+}
 
 // WithMaxInboundPeers sets the maximum number of inbound connections. The
 // default is 8.
@@ -237,8 +246,15 @@ func WithLogger(l *zap.Logger) Option {
 	return func(c *config) { c.Logger = l }
 }
 
+// A Dialer is responsible for dialing the Syncer's outgoing network
+// connections.
+type Dialer interface {
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+}
+
 // A Syncer synchronizes blockchain data with peers.
 type Syncer struct {
+	d      Dialer
 	l      net.Listener
 	cm     ChainManager
 	pm     PeerStore
@@ -763,7 +779,7 @@ func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
 	}
 	defer done()
 
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	conn, err := s.d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -834,6 +850,7 @@ func New(l net.Listener, cm ChainManager, pm PeerStore, header gateway.Header, o
 		opt(&config)
 	}
 	s := &Syncer{
+		d:       config.Dialer,
 		l:       l,
 		cm:      cm,
 		pm:      pm,
@@ -884,6 +901,8 @@ func RetrieveCheckpoint(ctx context.Context, peers []string, index types.ChainIn
 					}
 				}
 
+				// NOTE: we don't use the syncer's dialer here since this
+				// operation is only performed once before creating the syncer.
 				conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 				if err != nil {
 					sendResult(resp{err: err})
