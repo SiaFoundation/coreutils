@@ -1,3 +1,10 @@
+## 0.19.1 (2025-12-11)
+
+### Features
+
+- Allow for passing a custom Dialer to the Syncer.
+- Renamed SendCheckpoint to RetrieveCheckpoint and now accepts multiple peers.
+
 ## 0.19.0 (2025-12-01)
 
 ### Breaking Changes
