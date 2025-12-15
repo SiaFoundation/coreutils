@@ -230,17 +230,34 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 
 	switch r := gateway.ObjectForID(id).(type) {
 	case *gateway.RPCShareNodes:
-		peers, err := s.pm.Peers()
-		if err != nil {
-			return fmt.Errorf("failed to fetch peers: %w", err)
-		} else if n := len(peers); n > 10 {
-			frand.Shuffle(n, func(i, j int) {
-				peers[i], peers[j] = peers[j], peers[i]
-			})
-			peers = peers[:10]
+		seen := make(map[string]struct{})
+		// check connected peers first
+		connected := s.Peers()
+		frand.Shuffle(len(connected), func(i, j int) { connected[i], connected[j] = connected[j], connected[i] })
+		for i := 0; i < len(connected) && len(r.Peers) < 10; i++ {
+			p := connected[i]
+			if _, ok := seen[p.Addr()]; ok || p.Inbound {
+				continue
+			}
+			r.Peers = append(r.Peers, p.Addr())
+			seen[p.Addr()] = struct{}{}
 		}
-		for _, p := range peers {
-			r.Peers = append(r.Peers, p.Address)
+
+		if len(r.Peers) < 10 {
+			// fill the rest with random known peers
+			morePeers, err := s.pm.Peers()
+			if err != nil {
+				return fmt.Errorf("failed to fetch peers: %w", err)
+			}
+			frand.Shuffle(len(morePeers), func(i, j int) { morePeers[i], morePeers[j] = morePeers[j], morePeers[i] })
+			for i := 0; i < len(morePeers) && len(r.Peers) < 10; i++ {
+				p := morePeers[i]
+				if _, ok := seen[p.Address]; ok {
+					continue
+				}
+				r.Peers = append(r.Peers, p.Address)
+				seen[p.Address] = struct{}{}
+			}
 		}
 		if err := stream.WriteResponse(r); err != nil {
 			return err
