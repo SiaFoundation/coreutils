@@ -424,7 +424,7 @@ func ServeQUIC(tb testing.TB, s *rhp4.Server, log *zap.Logger) string {
 		tb.Fatal(err)
 	}
 	tb.Cleanup(func() { l.Close() })
-	go quic.Serve(l, s, log)
+	go quic.Serve(l, s, quic.WithServeLogger(log))
 	return conn.LocalAddr().String()
 }
 

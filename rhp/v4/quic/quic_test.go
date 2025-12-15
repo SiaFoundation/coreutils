@@ -60,7 +60,10 @@ func TestStreamLimit(t *testing.T) {
 				return
 			}
 
-			transport := &transport{conn}
+			transport := &transport{
+				qc:               conn,
+				streamMiddleware: func(c net.Conn) net.Conn { return c },
+			}
 
 			for {
 				stream, err := transport.AcceptStream()
