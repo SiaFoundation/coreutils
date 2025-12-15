@@ -407,7 +407,7 @@ func ServeSiaMux(tb testing.TB, s *rhp4.Server, log *zap.Logger, opts ...siamux.
 }
 
 // ServeQUIC starts a RHP4 host listening on a random port and returns the address.
-func ServeQUIC(tb testing.TB, s *rhp4.Server, log *zap.Logger) string {
+func ServeQUIC(tb testing.TB, s *rhp4.Server, opts ...quic.ServeOption) string {
 	udpAddr, err := net.ResolveUDPAddr("udp", "localhost:0")
 	if err != nil {
 		tb.Fatal(err)
@@ -424,7 +424,7 @@ func ServeQUIC(tb testing.TB, s *rhp4.Server, log *zap.Logger) string {
 		tb.Fatal(err)
 	}
 	tb.Cleanup(func() { l.Close() })
-	go quic.Serve(l, s, quic.WithServeLogger(log))
+	go quic.Serve(l, s, opts...)
 	return conn.LocalAddr().String()
 }
 
