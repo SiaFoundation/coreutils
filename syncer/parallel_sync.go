@@ -150,11 +150,14 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 			}
 		}
 	}
+
+	var once sync.Once
+	closeFinishCh := func() { close(finishCh) }
 	for {
 		select {
 		case <-ctx.Done():
 			close(reqChan)
-			close(finishCh)
+			once.Do(closeFinishCh)
 			wg.Wait()
 			return ctx.Err()
 
@@ -201,7 +204,7 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 			if batch := resps[i:finished]; len(batch) > 0 {
 				finishCh <- batch
 				if finished == len(resps) {
-					close(finishCh)
+					once.Do(closeFinishCh)
 				}
 			}
 			queueRequest()

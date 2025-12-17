@@ -83,7 +83,7 @@ func testRenterHostPairSiaMux(tb testing.TB, hostKey types.PrivateKey, cm rhp4.C
 
 func testRenterHostPairQUIC(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ChainManager, w rhp4.Wallet, c rhp4.Contractor, sr rhp4.Settings, ss rhp4.Sectors, log *zap.Logger) rhp4.TransportClient {
 	rs := rhp4.NewServer(hostKey, cm, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
-	hostAddr := testutil.ServeQUIC(tb, rs, log.Named("quic"))
+	hostAddr := testutil.ServeQUIC(tb, rs, quic.WithServeLogger(log.Named("quic")))
 
 	transport, err := quic.Dial(context.Background(), hostAddr, hostKey.PublicKey(), quic.WithTLSConfig(func(tc *tls.Config) {
 		tc.InsecureSkipVerify = true
@@ -2377,6 +2377,54 @@ func TestMaxSectorBatchSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertRevision(t, removeResult.Revision, []types.Hash256{})
+}
+
+// TestQuicStreamMiddleware tests that the QUIC stream middleware hooks are
+// called correctly on both the client and server side.
+func TestQuicStreamMiddleware(t *testing.T) {
+	n, genesis := testutil.V2Network()
+	hostKey := types.GeneratePrivateKey()
+
+	cm, w := startTestNode(t, n, genesis)
+
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
+
+	sr := testutil.NewEphemeralSettingsReporter()
+	ss := testutil.NewEphemeralSectorStore()
+	c := testutil.NewEphemeralContractor(cm)
+
+	// prepare custom middleware
+	var clientCntr, hostCntr int
+	clientMiddleware := func(c net.Conn) net.Conn {
+		clientCntr++
+		return c
+	}
+	serverMiddleware := func(c net.Conn) net.Conn {
+		hostCntr++
+		return c
+	}
+
+	rs := rhp4.NewServer(hostKey, cm, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
+	hostAddr := testutil.ServeQUIC(t, rs, quic.WithServeStreamMiddleware(serverMiddleware))
+
+	transport, err := quic.Dial(context.Background(), hostAddr, hostKey.PublicKey(), quic.WithTLSConfig(func(tc *tls.Config) {
+		tc.InsecureSkipVerify = true
+	}), quic.WithStreamMiddleware(clientMiddleware))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { transport.Close() })
+
+	// fetch the settings and check if the middleware was used
+	_, err = rhp4.RPCSettings(context.Background(), transport)
+	if err != nil {
+		t.Fatal(err)
+	} else if clientCntr != 1 {
+		t.Fatalf("expected client middleware to be used once, was %d", clientCntr)
+	} else if hostCntr != 1 {
+		t.Fatalf("expected host middleware to be used once, was %d", hostCntr)
+	}
 }
 
 func BenchmarkWrite(b *testing.B) {

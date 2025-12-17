@@ -41,8 +41,9 @@ type (
 	}
 
 	client struct {
-		conn    *quic.Conn
-		peerKey types.PublicKey
+		conn             *quic.Conn
+		peerKey          types.PublicKey
+		streamMiddleware func(net.Conn) net.Conn
 	}
 
 	// A CertManager provides a valid TLS certificate based on the given ClientHelloInfo.
@@ -53,14 +54,27 @@ type (
 		GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error)
 	}
 
+	// clientConfig holds additional configuration for a QUIC client
+	clientConfig struct {
+		streamMiddleware func(net.Conn) net.Conn
+	}
+
 	// A ClientOption can be used to configure the QUIC transport client
-	ClientOption func(*quic.Config, *tls.Config)
+	ClientOption func(*quic.Config, *tls.Config, *clientConfig)
 )
+
+// WithStreamMiddleware allows wrapping the net.Conn returned by DialStream or
+// AcceptStream with a custom middleware function.
+func WithStreamMiddleware(mw func(net.Conn) net.Conn) ClientOption {
+	return func(_ *quic.Config, _ *tls.Config, cc *clientConfig) {
+		cc.streamMiddleware = mw
+	}
+}
 
 // WithTLSConfig is a QUICTransportOption that sets the TLSConfig
 // for the QUIC connection.
 func WithTLSConfig(fn func(*tls.Config)) ClientOption {
-	return func(_ *quic.Config, tc *tls.Config) {
+	return func(_ *quic.Config, tc *tls.Config, _ *clientConfig) {
 		fn(tc)
 	}
 }
@@ -106,7 +120,7 @@ func (c *client) DialStream(ctx context.Context) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &stream{Stream: s, localAddr: c.conn.LocalAddr(), remoteAddr: c.conn.RemoteAddr()}, nil
+	return c.streamMiddleware(&stream{Stream: s, localAddr: c.conn.LocalAddr(), remoteAddr: c.conn.RemoteAddr()}), nil
 }
 
 // Dial creates a new TransportClient using the QUIC transport.
@@ -121,8 +135,11 @@ func Dial(ctx context.Context, addr string, peerKey types.PublicKey, opts ...Cli
 		KeepAlivePeriod:      30 * time.Second,
 		MaxIdleTimeout:       30 * time.Minute,
 	}
+	cc := &clientConfig{
+		streamMiddleware: func(nc net.Conn) net.Conn { return nc },
+	}
 	for _, opt := range opts {
-		opt(qc, tc)
+		opt(qc, tc, cc)
 	}
 
 	conn, err := quic.DialAddr(ctx, addr, tc, qc)
@@ -130,14 +147,16 @@ func Dial(ctx context.Context, addr string, peerKey types.PublicKey, opts ...Cli
 		return nil, fmt.Errorf("failed to connect to %q: %w", addr, err)
 	}
 	return &client{
-		conn:    conn,
-		peerKey: peerKey,
+		conn:             conn,
+		peerKey:          peerKey,
+		streamMiddleware: cc.streamMiddleware,
 	}, nil
 }
 
 type (
 	transport struct {
-		qc *quic.Conn
+		qc               *quic.Conn
+		streamMiddleware func(net.Conn) net.Conn
 	}
 )
 
@@ -147,11 +166,11 @@ func (t *transport) AcceptStream() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &stream{
+	return t.streamMiddleware(&stream{
 		Stream:     s,
 		localAddr:  t.qc.LocalAddr(),
 		remoteAddr: t.qc.RemoteAddr(),
-	}, nil
+	}), nil
 }
 
 // Close implements [TransportServer]
@@ -161,7 +180,8 @@ func (t *transport) Close() error {
 
 // webTransport is a rhp4.Transport that wraps a WebTransport Session
 type webTransport struct {
-	sess *webtransport.Session
+	sess             *webtransport.Session
+	streamMiddleware func(net.Conn) net.Conn
 }
 
 type webStream struct {
@@ -189,11 +209,11 @@ func (wt *webTransport) AcceptStream() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &webStream{
+	return wt.streamMiddleware(&webStream{
 		Stream:     conn,
 		localAddr:  wt.sess.LocalAddr(),
 		remoteAddr: wt.sess.RemoteAddr(),
-	}, nil
+	}), nil
 }
 
 // Listen listens for QUIC connections on conn using the provided certificate.
@@ -211,8 +231,42 @@ func Listen(conn net.PacketConn, certs CertManager) (*quic.Listener, error) {
 	})
 }
 
+// ServeOption is a functional parameter for the Serve function.
+type ServeOption func(*serveOptions)
+
+// WithServeLogger sets the logger used by the Serve function.
+func WithServeLogger(log *zap.Logger) ServeOption {
+	return func(so *serveOptions) {
+		so.log = log
+	}
+}
+
+// WithServeStreamMiddleware allows wrapping the net.Conn returned by AcceptStream
+// with a custom middleware function.
+func WithServeStreamMiddleware(mw func(net.Conn) net.Conn) ServeOption {
+	return func(so *serveOptions) {
+		so.streamMiddleware = mw
+	}
+}
+
+type serveOptions struct {
+	log              *zap.Logger
+	streamMiddleware func(net.Conn) net.Conn
+}
+
 // Serve serves RHP4 connections on the listener l using the QUIC transport.
-func Serve(l *quic.Listener, s *rhp4.Server, log *zap.Logger) {
+func Serve(l *quic.Listener, s *rhp4.Server, opts ...ServeOption) {
+	o := &serveOptions{
+		log: zap.NewNop(),
+		streamMiddleware: func(nc net.Conn) net.Conn {
+			return nc
+		},
+	}
+	for _, opt := range opts {
+		opt(o)
+	}
+	log := o.log
+
 	wts := &webtransport.Server{
 		CheckOrigin: func(*http.Request) bool {
 			return true // allow all origins
@@ -231,7 +285,8 @@ func Serve(l *quic.Listener, s *rhp4.Server, log *zap.Logger) {
 		defer sess.CloseWithError(0, "")
 
 		err = s.Serve(&webTransport{
-			sess: sess,
+			sess:             sess,
+			streamMiddleware: o.streamMiddleware,
 		}, log)
 		if err != nil {
 			log.Debug("failed to serve connection", zap.Error(err))
@@ -259,7 +314,7 @@ func Serve(l *quic.Listener, s *rhp4.Server, log *zap.Logger) {
 		case TLSNextProtoRHP4: // quic
 			go func() {
 				defer conn.CloseWithError(0, "")
-				if err := s.Serve(&transport{qc: conn}, log); err != nil {
+				if err := s.Serve(&transport{qc: conn, streamMiddleware: o.streamMiddleware}, log); err != nil {
 					log.Debug("failed to serve connection", zap.Error(err))
 				}
 			}()
