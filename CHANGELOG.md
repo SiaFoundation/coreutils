@@ -1,3 +1,20 @@
+## 0.20.0 (2025-12-18)
+
+### Breaking Changes
+
+- Add option to add middleware to dialed or accepted QUIC streams.
+
+### Features
+
+- Allow for passing a custom Dialer to the Syncer.
+- Renamed SendCheckpoint to RetrieveCheckpoint and now accepts multiple peers.
+- Updated bootstrap peers
+
+### Fixes
+
+- Fix double-close of finishCh in parallelSync.
+- Syncer: return connected peers first to avoid stale peers in the store.
+
 ## 0.19.0 (2025-12-01)
 
 ### Breaking Changes
