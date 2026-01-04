@@ -467,7 +467,11 @@ func NewEphemeralContractor(cm *chain.Manager) *EphemeralContractor {
 				return
 			}
 			for {
-				reverted, applied, err := cm.UpdatesSince(ec.tip, 1000)
+				tip, err := ec.Tip()
+				if err != nil {
+					panic(err)
+				}
+				reverted, applied, err := cm.UpdatesSince(tip, 1000)
 				if err != nil {
 					panic(err)
 				} else if len(reverted) == 0 && len(applied) == 0 {
