@@ -9,6 +9,7 @@ import (
 
 	"go.sia.tech/core/gateway"
 	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils"
 	"go.sia.tech/coreutils/chain"
 	"go.sia.tech/coreutils/syncer"
 	"go.sia.tech/coreutils/testutil"
@@ -17,7 +18,7 @@ import (
 	"go.uber.org/zap/zaptest"
 )
 
-func newTestSyncer(t testing.TB, name string, log *zap.Logger) (*syncer.Syncer, *chain.Manager) {
+func newTestSyncer(t testing.TB, name string, log *zap.Logger, opts ...syncer.Option) (*syncer.Syncer, *chain.Manager) {
 	n, genesis := testutil.Network()
 	store, tipState1, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
 	if err != nil {
@@ -33,11 +34,14 @@ func newTestSyncer(t testing.TB, name string, log *zap.Logger) (*syncer.Syncer, 
 		l.Close()
 	})
 
+	if len(opts) == 0 {
+		opts = append(opts, syncer.WithLogger(log.Named(name)), syncer.WithSyncInterval(100*time.Millisecond))
+	}
 	s := syncer.New(l, cm, testutil.NewEphemeralPeerStore(), gateway.Header{
 		GenesisID:  genesis.ID(),
 		UniqueID:   gateway.GenerateUniqueID(),
 		NetAddress: l.Addr().String(),
-	}, syncer.WithLogger(log.Named(name)), syncer.WithSyncInterval(100*time.Millisecond))
+	}, opts...)
 	go s.Run()
 	return s, cm
 }
@@ -278,4 +282,92 @@ func TestSendHeaders(t *testing.T) {
 	} else if rem != 10 {
 		t.Fatalf("expected 10 remaining headers, got %d", rem)
 	}
+}
+
+func TestSyncerReorg(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	s1, cm1 := newTestSyncer(t, "syncer1", log)
+	defer s1.Close()
+
+	// s2 must only be able to sync from s1 to force reorg propagation
+	s2, cm2 := newTestSyncer(t, "syncer2", log, syncer.WithLogger(log.Named("syncer2")), syncer.WithSyncInterval(100*time.Millisecond), syncer.WithMaxInboundPeers(1), syncer.WithMaxOutboundPeers(0))
+	defer s2.Close()
+
+	s3, cm3 := newTestSyncer(t, "syncer3", log)
+	defer s3.Close()
+
+	// connect s1 and s2
+	if _, err := s1.Connect(context.Background(), s2.Addr()); err != nil {
+		t.Fatal(err)
+	}
+	log.Debug("connected s1 and s2")
+
+	// helper to wait for all provided chain managers to be synced
+	synced := func(t *testing.T, cm ...*chain.Manager) {
+		t.Helper()
+
+		var heights []uint64
+		for range 100 {
+			heights = heights[:0]
+			heights = append(heights, cm[0].Tip().Height)
+			allEqual := true
+			for _, c := range cm[1:] {
+				heights = append(heights, c.Tip().Height)
+				if c.Tip() != cm[0].Tip() {
+					allEqual = false
+				}
+			}
+			if allEqual {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		t.Fatalf("tips are not equal: %v", heights)
+	}
+
+	// helper to mine blocks on cm and broadcast to syncer s
+	mineBlocks := func(t *testing.T, s *syncer.Syncer, cm *chain.Manager, n int) {
+		t.Helper()
+		for range n {
+			b, ok := coreutils.MineBlock(cm, types.VoidAddress, time.Second)
+			if !ok {
+				t.Fatal("failed to mine block")
+			} else if err := cm.AddBlocks([]types.Block{b}); err != nil {
+				t.Fatal(err)
+			}
+			if b.V2 != nil {
+				if err := s.BroadcastV2BlockOutline(gateway.OutlineBlock(b, cm.PoolTransactions(), cm.V2PoolTransactions())); err != nil {
+					log.Warn("failed to broadcast block outline", zap.Error(err))
+				}
+			}
+		}
+	}
+	// mine above the v2 require height
+	mineBlocks(t, s1, cm1, int(cm1.TipState().Network.HardforkV2.RequireHeight+10))
+
+	// apply cm1 blocks manually to cm3 to simulate a synced node
+	_, applied, err := cm1.UpdatesSince(types.ChainIndex{}, 1000)
+	if err != nil {
+		t.Fatalf("failed to get updates since genesis: %v", err)
+	}
+	for _, cau := range applied {
+		if err := cm3.AddBlocks([]types.Block{cau.Block}); err != nil {
+			t.Fatalf("failed to apply block at height %d: %v", cau.Block.V2.Height, err)
+		}
+	}
+
+	// check that all three nodes are at the same tip
+	synced(t, cm1, cm2, cm3)
+
+	// mine conflicting chains on cm1 and cm3
+	mineBlocks(t, s1, cm1, 1)
+	mineBlocks(t, s3, cm3, 5)
+
+	// connect cm1 and cm3, triggering a reorg on cm1 and cm2
+	if _, err := s1.Connect(context.Background(), s3.Addr()); err != nil {
+		t.Fatal(err)
+	}
+	log.Debug("syncer peers", zap.Int("s1", len(s1.Peers())), zap.Int("s2", len(s2.Peers())), zap.Int("s3", len(s3.Peers())))
+	synced(t, cm1, cm2, cm3)
 }
