@@ -6,6 +6,7 @@ import (
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/chain"
+	"lukechampine.com/frand"
 )
 
 // FindBlockNonce attempts to find a nonce for b that meets the PoW target.
@@ -48,6 +49,9 @@ retry:
 	if childHeight >= cs.Network.HardforkV2.AllowHeight {
 		b.V2 = &types.V2BlockData{
 			Height: childHeight,
+			Transactions: []types.V2Transaction{
+				{ArbitraryData: frand.Bytes(12)}, // to ensure unique block ID
+			},
 		}
 	}
 
