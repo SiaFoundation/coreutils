@@ -711,6 +711,7 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 				if err := s.parallelSync(ctx, r.cs, r.headers); err != nil {
 					s.log.Warn("sync failed", zap.Stringer("peer", r.peer), zap.Error(err))
 				}
+				go s.relayV2Header(r.headers[len(r.headers)-1], r.peer)
 			}
 		}
 	}

@@ -87,7 +87,8 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 			headers := headers[req.base.Height-cs.Index.Height:][:req.numBlocks]
 			for i := range blocks {
 				if blocks[i].ID() != headers[i].ID() {
-					s.ban(p, errors.New("sent blocks that do not match header chain"))
+					// note: this is not necessarily a ban-worthy offense, as it could
+					// be caused by a peer on a fork that could be valid.
 					return Resp{req: req, peer: p, err: errors.New("peer returned blocks that do not match header chain")}
 				}
 			}

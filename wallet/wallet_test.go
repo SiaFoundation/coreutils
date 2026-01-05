@@ -2159,6 +2159,7 @@ func TestSplitUTXO(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer w.Close()
 
 	largestUTXO := cm.TipState().BlockReward().Sub(w.RecommendedFee().Mul64(estimatedTxnSize)) // miner fee is subtracted
 	// fund the wallet
