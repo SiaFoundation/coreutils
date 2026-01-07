@@ -1,3 +1,10 @@
+## 0.20.1 (2026-01-05)
+
+### Fixes
+
+- Fix a race in the goroutine spun up by NewEphemeralContractor.
+- Fixed an issue where fully connected peers could get stuck on a stale chain after a reorg.
+
 ## 0.20.0 (2025-12-18)
 
 ### Breaking Changes
