@@ -267,7 +267,11 @@ func Serve(l *quic.Listener, s *rhp4.Server, opts ...ServeOption) {
 	}
 	log := o.log
 
+	mux := http.NewServeMux()
 	wts := &webtransport.Server{
+		H3: &http3.Server{
+			Handler: mux,
+		},
 		CheckOrigin: func(*http.Request) bool {
 			return true // allow all origins
 		},
@@ -275,7 +279,6 @@ func Serve(l *quic.Listener, s *rhp4.Server, opts ...ServeOption) {
 	}
 	defer wts.Close()
 
-	mux := http.NewServeMux()
 	mux.HandleFunc("/sia/rhp/v4", func(w http.ResponseWriter, r *http.Request) {
 		sess, err := wts.Upgrade(w, r)
 		if err != nil {
@@ -292,7 +295,6 @@ func Serve(l *quic.Listener, s *rhp4.Server, opts ...ServeOption) {
 			log.Debug("failed to serve connection", zap.Error(err))
 		}
 	})
-	wts.H3.Handler = mux
 
 	for {
 		conn, err := l.Accept(context.Background())
