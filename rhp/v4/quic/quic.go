@@ -268,6 +268,7 @@ func Serve(l *quic.Listener, s *rhp4.Server, opts ...ServeOption) {
 	log := o.log
 
 	wts := &webtransport.Server{
+		H3: &http3.Server{},
 		CheckOrigin: func(*http.Request) bool {
 			return true // allow all origins
 		},
