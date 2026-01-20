@@ -228,7 +228,7 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 		sr = io.MultiReader(sr, bytes.NewReader(sector[req.DataLength:]))
 	}
 
-	buf := bytes.NewBuffer(sector[:0])
+	buf := newSectorBuffer(&sector)
 	root, err := rhp4.ReadSectorRoot(io.TeeReader(sr, buf))
 	if err != nil {
 		return errorDecodingError("failed to read sector data: %v", err)
@@ -1264,4 +1264,24 @@ func NewServer(pk types.PrivateKey, cm ChainManager, contracts Contractor, walle
 		opt(s)
 	}
 	return s
+}
+
+// sectorBuffer implements io.Writer for a sector to allow for it to be used in
+// a streaming fashion.
+type sectorBuffer struct {
+	buf *[rhp4.SectorSize]byte
+	n   int
+}
+
+func (sb *sectorBuffer) Write(p []byte) (int, error) {
+	n := copy(sb.buf[sb.n:], p)
+	sb.n += n
+	if n < len(p) {
+		return n, io.ErrShortBuffer
+	}
+	return n, nil
+}
+
+func newSectorBuffer(sector *[rhp4.SectorSize]byte) *sectorBuffer {
+	return &sectorBuffer{buf: sector}
 }
