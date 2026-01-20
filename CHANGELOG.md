@@ -1,3 +1,9 @@
+## 0.20.2 (2026-01-20)
+
+### Fixes
+
+- Use custom sectorBuffer rather than bytes.Buffer in handleRPCWriteSector.
+
 ## 0.20.1 (2026-01-05)
 
 ### Fixes
