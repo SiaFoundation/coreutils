@@ -1,7 +1,6 @@
 package rhp
 
 import (
-	"bytes"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -220,15 +219,15 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 	}
 	prices := req.Prices
 
-	var sector [rhp4.SectorSize]byte
 	sr := io.LimitReader(stream, int64(req.DataLength))
 	if req.DataLength < rhp4.SectorSize {
 		// if the data is less than a full sector, the reader needs to be padded
 		// with zeros to calculate the sector root
-		sr = io.MultiReader(sr, bytes.NewReader(sector[req.DataLength:]))
+		padding := int64(rhp4.SectorSize - req.DataLength)
+		sr = io.MultiReader(sr, io.LimitReader(zeros, padding))
 	}
 
-	buf := bytes.NewBuffer(sector[:0])
+	buf := newSectorBuffer()
 	root, err := rhp4.ReadSectorRoot(io.TeeReader(sr, buf))
 	if err != nil {
 		return errorDecodingError("failed to read sector data: %v", err)
@@ -239,7 +238,7 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 		return fmt.Errorf("failed to debit account: %w", err)
 	}
 
-	if err := s.sectors.StoreSector(root, &sector, prices.TipHeight+rhp4.TempSectorDuration); err != nil {
+	if err := s.sectors.StoreSector(root, buf.Bytes(), prices.TipHeight+rhp4.TempSectorDuration); err != nil {
 		return fmt.Errorf("failed to store sector: %w", err)
 	}
 	return rhp4.WriteResponse(stream, &rhp4.RPCWriteSectorResponse{
@@ -1264,4 +1263,28 @@ func NewServer(pk types.PrivateKey, cm ChainManager, contracts Contractor, walle
 		opt(s)
 	}
 	return s
+}
+
+// sectorBuffer implements io.Writer for a sector to allow for it to be used in
+// a streaming fashion.
+type sectorBuffer struct {
+	buf [rhp4.SectorSize]byte
+	n   int
+}
+
+func (sb *sectorBuffer) Bytes() *[rhp4.SectorSize]byte {
+	return &sb.buf
+}
+
+func (sb *sectorBuffer) Write(p []byte) (int, error) {
+	n := copy(sb.buf[sb.n:], p)
+	sb.n += n
+	if n < len(p) {
+		return n, io.ErrShortBuffer
+	}
+	return n, nil
+}
+
+func newSectorBuffer() *sectorBuffer {
+	return &sectorBuffer{}
 }
