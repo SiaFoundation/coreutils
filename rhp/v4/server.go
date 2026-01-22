@@ -607,7 +607,7 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 
 	ourKey := s.hostKey.PublicKey()
 	tip := s.chain.Tip()
-	if err := req.Validate(ourKey, tip, settings.MaxCollateral, settings.MaxContractDuration); err != nil {
+	if err := req.Validate(ourKey, tip, settings.MaxContractDuration); err != nil {
 		return err
 	}
 	prices := req.Prices
@@ -768,7 +768,7 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn, partial bool) error {
 
 	// validate the request
 	cs := s.chain.TipState()
-	if err := req.Validate(s.hostKey.PublicKey(), cs.Index, state.Revision, settings.MaxCollateral, partial); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), cs.Index, state.Revision, partial); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
@@ -948,7 +948,7 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 
 	// validate the request
 	tip := s.chain.Tip()
-	if err := req.Validate(s.hostKey.PublicKey(), tip, state.Revision, settings.MaxCollateral, settings.MaxContractDuration); err != nil {
+	if err := req.Validate(s.hostKey.PublicKey(), tip, state.Revision, settings.MaxContractDuration); err != nil {
 		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
 	}
 
