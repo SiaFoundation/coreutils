@@ -130,10 +130,11 @@ func Dial(ctx context.Context, addr string, peerKey types.PublicKey, opts ...Cli
 		NextProtos: []string{TLSNextProtoRHP4},
 	}
 	qc := &quic.Config{
-		EnableDatagrams:      true,
-		HandshakeIdleTimeout: 15 * time.Second,
-		KeepAlivePeriod:      30 * time.Second,
-		MaxIdleTimeout:       30 * time.Minute,
+		EnableDatagrams:                  true,
+		HandshakeIdleTimeout:             15 * time.Second,
+		KeepAlivePeriod:                  30 * time.Second,
+		MaxIdleTimeout:                   30 * time.Minute,
+		EnableStreamResetPartialDelivery: true,
 	}
 	cc := &clientConfig{
 		streamMiddleware: func(nc net.Conn) net.Conn { return nc },
@@ -312,13 +313,15 @@ func Serve(l *quic.Listener, s *rhp4.Server, opts ...ServeOption) {
 		case http3.NextProtoH3: // webtransport
 			go func() {
 				defer conn.CloseWithError(0, "")
-				wts.ServeQUICConn(conn)
+				if err := wts.ServeQUICConn(conn); err != nil {
+					log.Debug("failed to serve webtransport connection", zap.Error(err))
+				}
 			}()
 		case TLSNextProtoRHP4: // quic
 			go func() {
 				defer conn.CloseWithError(0, "")
 				if err := s.Serve(&transport{qc: conn, streamMiddleware: o.streamMiddleware}, log); err != nil {
-					log.Debug("failed to serve connection", zap.Error(err))
+					log.Debug("failed to serve quic connection", zap.Error(err))
 				}
 			}()
 		default:
