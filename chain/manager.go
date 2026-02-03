@@ -535,9 +535,10 @@ func (m *Manager) PruneBlocks(height uint64) {
 	defer m.mu.Unlock()
 
 	for h := height; h > 0; h-- {
-		println(h - 1)
 		index, ok := m.store.BestIndex(h - 1)
 		if !ok {
+			break // block does not exist
+		} else if _, _, ok := m.store.Block(index.ID); !ok {
 			break // block does not exist
 		}
 		m.store.PruneBlock(index.ID)
