@@ -338,3 +338,40 @@ func TestReorgExpiringFileContractOrder(t *testing.T) {
 		t.Fatal("expected the chain states to be equal after reorg with new manager")
 	}
 }
+
+func TestPruneBlocks(t *testing.T) {
+	n, genesisBlock := testutil.V2Network()
+
+	store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm := chain.NewManager(store, tipState)
+
+	// mine a bunch of blocks
+	testutil.MineBlocks(t, cm, types.VoidAddress, 100)
+
+	// prune up to height 50
+	cm.PruneBlocks(50)
+
+	// ensure blocks < 50 are pruned
+	for height := range uint64(50) {
+		if index, ok := cm.BestIndex(height); !ok {
+			t.Fatalf("expected header at height %d to exist", height)
+		} else if _, exists := cm.Block(index.ID); exists {
+			t.Fatalf("expected block at height %d to exist", height)
+		}
+	}
+
+	// ensure blocks >= 50 exist
+	for height := uint64(50); height <= 100; height++ {
+		index, ok := cm.BestIndex(height)
+		if !ok {
+			t.Fatalf("expected block at height %d to exist", height)
+		} else if block, exists := cm.Block(index.ID); !exists {
+			t.Fatalf("expected block at height %d to exist", height)
+		} else if block.ID() != index.ID {
+			t.Fatalf("block ID mismatch at height %d: expected %s, got %s", height, index.ID, block.ID())
+		}
+	}
+}

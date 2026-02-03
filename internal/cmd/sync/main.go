@@ -151,7 +151,7 @@ func main() {
 	if err != nil {
 		log.Panic("failed to create store", zap.Error(err))
 	}
-	cm := chain.NewManager(store, tipState, chain.WithLog(log.Named("chain")), chain.WithPruneTarget(pruneTarget))
+	cm := chain.NewManager(store, tipState, chain.WithLog(log.Named("chain")))
 	log = log.With(zap.Stringer("start", cm.Tip()))
 
 	l, err := net.Listen("tcp", ":0")
@@ -186,7 +186,7 @@ func main() {
 
 	log.Info("starting sync", zap.String("network", network), zap.String("dir", dir))
 
-	reorgCh := make(chan struct{}, 1)
+	reorgCh := make(chan types.ChainIndex, 1)
 	var lastLog time.Time
 	cm.OnReorg(func(ci types.ChainIndex) {
 		if time.Since(lastLog) > 5*time.Second {
@@ -194,13 +194,16 @@ func main() {
 			log.Info("synced to", zap.Stringer("tip", ci))
 			lastLog = time.Now()
 		}
-		reorgCh <- struct{}{}
+		reorgCh <- ci
 	})
 
 	for {
 		select {
-		case <-reorgCh:
-			// still syncing
+		case tip := <-reorgCh:
+			// still syncing, prune blocks
+			if tip.Height > 144 {
+				cm.PruneBlocks(tip.Height - 144)
+			}
 			continue
 		case <-ctx.Done():
 			log.Info("shutting down")

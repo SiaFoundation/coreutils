@@ -98,7 +98,7 @@ func main() {
 	if err != nil {
 		log.Panic("failed to create clean db", zap.Error(err))
 	}
-	cm := chain.NewManager(cleanStore, cs, chain.WithLog(log.Named("chain")), chain.WithPruneTarget(144))
+	cm := chain.NewManager(cleanStore, cs, chain.WithLog(log.Named("chain")))
 
 	tip := min(tipState.Index.Height, maxCheckHeight)
 	overwriteIDs := make(map[types.BlockID][]types.FileContractID)
