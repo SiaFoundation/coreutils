@@ -359,7 +359,7 @@ func TestPruneBlocks(t *testing.T) {
 		if index, ok := cm.BestIndex(height); !ok {
 			t.Fatalf("expected header at height %d to exist", height)
 		} else if _, exists := cm.Block(index.ID); exists {
-			t.Fatalf("expected block at height %d to exist", height)
+			t.Fatalf("expected block at height %d to not exist", height)
 		}
 	}
 
