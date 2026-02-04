@@ -85,8 +85,7 @@ type Manager struct {
 	expiringFileContractOrder map[types.BlockID][]types.FileContractID
 
 	// configuration options
-	log         *zap.Logger
-	pruneTarget uint64
+	log *zap.Logger
 
 	txpool struct {
 		txns           []types.Transaction
@@ -430,12 +429,6 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 	m.store.ApplyBlock(cs, cau)
 	m.applyPoolUpdate(cau, cs)
 	m.tipState = cs
-
-	if m.pruneTarget != 0 && cs.Index.Height > m.pruneTarget {
-		if index, ok := m.store.BestIndex(cs.Index.Height - m.pruneTarget); ok {
-			m.store.PruneBlock(index.ID)
-		}
-	}
 	return nil
 }
 
@@ -525,6 +518,31 @@ func (m *Manager) reorgTo(index types.ChainIndex) error {
 		}
 	}
 	return nil
+}
+
+// PruneBlocks prunes any blocks below the specified height
+// from the store. This should only be called after all
+// subscribers have processed blocks up to the specified height.
+//
+// Once the blocks are removed, they cannot be re-added without
+// resyncing from genesis.
+//
+// This can take a while depending on the number of blocks
+// it is recommended to call this frequently to avoid
+// a large backlog.
+func (m *Manager) PruneBlocks(height uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for h := height; h > 0; h-- {
+		index, ok := m.store.BestIndex(h - 1)
+		if !ok {
+			break // block does not exist
+		} else if _, _, ok := m.store.Block(index.ID); !ok {
+			break // block does not exist
+		}
+		m.store.PruneBlock(index.ID)
+	}
 }
 
 // UpdatesSince returns at most max updates on the path between index and the

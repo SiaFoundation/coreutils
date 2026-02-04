@@ -15,13 +15,6 @@ func WithLog(l *zap.Logger) ManagerOption {
 	}
 }
 
-// WithPruneTarget sets the target number of blocks to store.
-func WithPruneTarget(n uint64) ManagerOption {
-	return func(m *Manager) {
-		m.pruneTarget = n
-	}
-}
-
 // WithExpiringContractOrder sets the order of file contracts that are expiring
 // at a given height. This is used to work around a bug in the chain db
 // where the order of expiring file contracts is not preserved across
