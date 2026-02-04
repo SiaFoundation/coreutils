@@ -281,6 +281,9 @@ func Serve(l *quic.Listener, s *rhp4.Server, opts ...ServeOption) {
 	}
 	defer wts.Close()
 
+	// configure the HTTP/3 server for WebTransport (enables extended CONNECT, etc.)
+	webtransport.ConfigureHTTP3Server(wts.H3)
+
 	mux.HandleFunc("/sia/rhp/v4", func(w http.ResponseWriter, r *http.Request) {
 		sess, err := wts.Upgrade(w, r)
 		if err != nil {

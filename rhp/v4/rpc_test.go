@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"fmt"
 	"math"
 	"net"
 	"reflect"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/webtransport-go"
 	"go.sia.tech/core/consensus"
 	proto4 "go.sia.tech/core/rhp/v4"
 	"go.sia.tech/core/types"
@@ -68,6 +70,50 @@ func (fs *fundAndSign) Address() types.Address {
 	return fs.w.Address()
 }
 
+// webTransportClient wraps a WebTransport session to implement rhp4.TransportClient
+type webTransportClient struct {
+	sess    *webtransport.Session
+	peerKey types.PublicKey
+}
+
+func (c *webTransportClient) Close() error {
+	return c.sess.CloseWithError(0, "")
+}
+
+func (c *webTransportClient) PeerKey() types.PublicKey {
+	return c.peerKey
+}
+
+func (c *webTransportClient) FrameSize() int {
+	return 1440 * 3
+}
+
+func (c *webTransportClient) DialStream(ctx context.Context) (net.Conn, error) {
+	stream, err := c.sess.OpenStreamSync(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &webTransportStream{
+		Stream:     stream,
+		localAddr:  c.sess.LocalAddr(),
+		remoteAddr: c.sess.RemoteAddr(),
+	}, nil
+}
+
+// webTransportStream wraps a WebTransport stream to implement net.Conn
+type webTransportStream struct {
+	*webtransport.Stream
+	localAddr, remoteAddr net.Addr
+}
+
+func (s *webTransportStream) LocalAddr() net.Addr {
+	return s.localAddr
+}
+
+func (s *webTransportStream) RemoteAddr() net.Addr {
+	return s.remoteAddr
+}
+
 func testRenterHostPairSiaMux(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ChainManager, w rhp4.Wallet, c rhp4.Contractor, sr rhp4.Settings, ss rhp4.Sectors, log *zap.Logger) rhp4.TransportClient {
 	rs := rhp4.NewServer(hostKey, cm, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
 	hostAddr := testutil.ServeSiaMux(tb, rs, log.Named("siamux"))
@@ -93,6 +139,27 @@ func testRenterHostPairQUIC(tb testing.TB, hostKey types.PrivateKey, cm rhp4.Cha
 	}
 	tb.Cleanup(func() { transport.Close() })
 	return transport
+}
+
+func testRenterHostPairWebTransport(tb testing.TB, hostKey types.PrivateKey, cm rhp4.ChainManager, w rhp4.Wallet, c rhp4.Contractor, sr rhp4.Settings, ss rhp4.Sectors, log *zap.Logger) rhp4.TransportClient {
+	rs := rhp4.NewServer(hostKey, cm, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
+	hostAddr := testutil.ServeQUIC(tb, rs, quic.WithServeLogger(log.Named("webtransport")))
+
+	dialer := webtransport.Dialer{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+	}
+	tb.Cleanup(func() { dialer.Close() })
+
+	url := fmt.Sprintf("https://%s/sia/rhp/v4", hostAddr)
+	_, sess, err := dialer.Dial(context.Background(), url, nil)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { sess.CloseWithError(0, "") })
+
+	return &webTransportClient{sess: sess, peerKey: hostKey.PublicKey()}
 }
 
 func startTestNode(tb testing.TB, n *consensus.Network, genesis types.Block) (*chain.Manager, *wallet.SingleAddressWallet) {
@@ -266,6 +333,11 @@ func TestFormContract(t *testing.T) {
 
 	t.Run("quic", func(t *testing.T) {
 		transport := testRenterHostPairQUIC(t, hostKey, cm, w, c, sr, ss, zap.NewNop())
+		testFormContract(t, transport)
+	})
+
+	t.Run("webtransport", func(t *testing.T) {
+		transport := testRenterHostPairWebTransport(t, hostKey, cm, w, c, sr, ss, zap.NewNop())
 		testFormContract(t, transport)
 	})
 }
