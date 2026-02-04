@@ -130,10 +130,11 @@ func Dial(ctx context.Context, addr string, peerKey types.PublicKey, opts ...Cli
 		NextProtos: []string{TLSNextProtoRHP4},
 	}
 	qc := &quic.Config{
-		EnableDatagrams:      true,
-		HandshakeIdleTimeout: 15 * time.Second,
-		KeepAlivePeriod:      30 * time.Second,
-		MaxIdleTimeout:       30 * time.Minute,
+		EnableDatagrams:                  true,
+		HandshakeIdleTimeout:             15 * time.Second,
+		KeepAlivePeriod:                  30 * time.Second,
+		MaxIdleTimeout:                   30 * time.Minute,
+		EnableStreamResetPartialDelivery: true,
 	}
 	cc := &clientConfig{
 		streamMiddleware: func(nc net.Conn) net.Conn { return nc },
@@ -224,10 +225,11 @@ func Listen(conn net.PacketConn, certs CertManager) (*quic.Listener, error) {
 		GetCertificate: certs.GetCertificate,
 		NextProtos:     []string{TLSNextProtoRHP4, http3.NextProtoH3},
 	}, &quic.Config{
-		EnableDatagrams:    true,
-		KeepAlivePeriod:    30 * time.Second,
-		MaxIdleTimeout:     30 * time.Minute,
-		MaxIncomingStreams: maxIncomingStreams,
+		EnableDatagrams:                  true,
+		KeepAlivePeriod:                  30 * time.Second,
+		MaxIdleTimeout:                   30 * time.Minute,
+		MaxIncomingStreams:               maxIncomingStreams,
+		EnableStreamResetPartialDelivery: true,
 	})
 }
 
@@ -279,6 +281,9 @@ func Serve(l *quic.Listener, s *rhp4.Server, opts ...ServeOption) {
 	}
 	defer wts.Close()
 
+	// configure the HTTP/3 server for WebTransport (enables extended CONNECT, etc.)
+	webtransport.ConfigureHTTP3Server(wts.H3)
+
 	mux.HandleFunc("/sia/rhp/v4", func(w http.ResponseWriter, r *http.Request) {
 		sess, err := wts.Upgrade(w, r)
 		if err != nil {
@@ -311,13 +316,15 @@ func Serve(l *quic.Listener, s *rhp4.Server, opts ...ServeOption) {
 		case http3.NextProtoH3: // webtransport
 			go func() {
 				defer conn.CloseWithError(0, "")
-				wts.ServeQUICConn(conn)
+				if err := wts.ServeQUICConn(conn); err != nil {
+					log.Debug("failed to serve webtransport connection", zap.Error(err))
+				}
 			}()
 		case TLSNextProtoRHP4: // quic
 			go func() {
 				defer conn.CloseWithError(0, "")
 				if err := s.Serve(&transport{qc: conn, streamMiddleware: o.streamMiddleware}, log); err != nil {
-					log.Debug("failed to serve connection", zap.Error(err))
+					log.Debug("failed to serve quic connection", zap.Error(err))
 				}
 			}()
 		default:
