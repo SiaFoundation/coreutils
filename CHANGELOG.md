@@ -1,3 +1,16 @@
+## 0.21.0 (2026-02-04)
+
+### Breaking Changes
+
+#### Changed block pruning to an active decision for integrators rather than a passive option
+
+This fixes a race condition on some nodes when chain subscribers are slow where blocks would be removed from the store before they could be indexed.
+
+### Fixes
+
+- Enable StreamResetPartialDelivery when listening for QUIC connections.
+- Use custom sectorBuffer rather than bytes.Buffer in handleRPCWriteSector.
+
 ## 0.20.1 (2026-01-05)
 
 ### Fixes
