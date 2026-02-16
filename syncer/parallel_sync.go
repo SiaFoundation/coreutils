@@ -188,7 +188,7 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 		case r := <-respChan:
 			// each time a request finishes, send a new one
 			if r.err != nil {
-				s.log.Warn("failed to fetch blocks", zap.Error(r.err), zap.Stringer("base", r.req.base), zap.Stringer("tip", r.req.tip))
+				s.log.Debug("failed to fetch blocks", zap.Error(r.err), zap.Stringer("base", r.req.base), zap.Stringer("tip", r.req.tip))
 				reqChan <- r.req // reassign to a different worker
 				continue
 			}
@@ -218,7 +218,7 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 				return err
 			}
 			elapsed := time.Since(start)
-			s.log.Info("finished sync batch", zap.Int("blocks", len(headers)), zap.Duration("elapsed", elapsed.Round(time.Millisecond)), zap.Float64("blocks/sec", float64(len(headers))/elapsed.Seconds()))
+			s.log.Debug("finished sync batch", zap.Int("blocks", len(headers)), zap.Duration("elapsed", elapsed.Round(time.Millisecond)), zap.Float64("blocks/sec", float64(len(headers))/elapsed.Seconds()))
 			return nil
 		}
 	}
