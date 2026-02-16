@@ -707,9 +707,9 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 				continue // already syncing these blocks from another peer
 			} else {
 				seen[id] = true
-				s.log.Info("syncing blocks", zap.Stringer("peer", r.peer), zap.Stringer("start", r.cs.Index), zap.Int("n", len(r.headers)))
+				s.log.Debug("syncing blocks", zap.Stringer("peer", r.peer), zap.Stringer("start", r.cs.Index), zap.Int("n", len(r.headers)))
 				if err := s.parallelSync(ctx, r.cs, r.headers); err != nil {
-					s.log.Warn("sync failed", zap.Stringer("peer", r.peer), zap.Error(err))
+					s.log.Debug("sync failed", zap.Stringer("peer", r.peer), zap.Error(err))
 				}
 				go s.relayV2Header(r.headers[len(r.headers)-1], r.peer)
 			}
