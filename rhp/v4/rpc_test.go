@@ -352,7 +352,7 @@ func TestFormContractBasis(t *testing.T) {
 
 		// fund both wallets
 		mineAndSync(t, cm1, w2.Address(), int(n.MaturityDelay+20))
-		mineAndSync(t, cm1, w1.Address(), int(n.MaturityDelay+20))
+		mineAndSync(t, cm1, w1.Address(), int(n.MaturityDelay+20), w1)
 
 		// fetch current tip
 		tip, err := w1.Tip()
@@ -446,7 +446,7 @@ func TestFormContractBasis(t *testing.T) {
 
 		// fund both wallets
 		mineAndSync(t, cm1, w2.Address(), int(n.MaturityDelay+20))
-		mineAndSync(t, cm1, w1.Address(), int(n.MaturityDelay+20))
+		mineAndSync(t, cm1, w1.Address(), int(n.MaturityDelay+20), w1)
 
 		// fetch current tip
 		tip, err := w1.Tip()
