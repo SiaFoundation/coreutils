@@ -191,11 +191,11 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 
 			// if all workers have exited and there are incomplete
 			// requests, no progress can be made
-			if activeWorkers.Load() == 0 && len(respChan) == 0 && finished < len(resps) {
-				close(reqChan)
-				once.Do(closeFinishCh)
-				wg.Wait()
-				return errors.New("all peers failed to sync blocks")
+			if activeWorkers.Load() == 0 && len(respChan) == 0 && finished < len(reqs) {
+				select {
+				case errCh <- errors.New("all peers failed to sync blocks"):
+				default:
+				}
 			}
 
 		case r := <-respChan:
@@ -225,6 +225,7 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 
 		case err := <-errCh:
 			close(reqChan)
+			once.Do(closeFinishCh)
 			cancel()
 			wg.Wait()
 			if err != nil {
