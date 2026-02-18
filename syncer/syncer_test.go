@@ -416,3 +416,62 @@ func TestParallelSyncReorgSplit(t *testing.T) {
 	}
 	synced(t, cm1, cm2, cm3)
 }
+
+func TestForkPeerSynced(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	// s1 has a longer chain (20 blocks)
+	s1, cm1 := newTestSyncer(t, syncer.WithLogger(log.Named("syncer1")))
+	defer s1.Close()
+	testutil.MineBlocks(t, cm1, types.VoidAddress, 20)
+
+	// s2 has a shorter fork chain (10 blocks) with a very long sync
+	// interval so it never adopts s1's chain during the test
+	n, genesis := testutil.Network()
+	store2, tipState2, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm2 := chain.NewManager(store2, tipState2)
+	testutil.MineBlocks(t, cm2, types.VoidAddress, 10)
+
+	l2, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l2.Close() })
+
+	s2 := syncer.New(l2, cm2, testutil.NewEphemeralPeerStore(), gateway.Header{
+		GenesisID:  genesis.ID(),
+		UniqueID:   gateway.GenerateUniqueID(),
+		NetAddress: l2.Addr().String(),
+	}, syncer.WithSyncInterval(time.Hour)) // effectively disabled
+	go s2.Run()
+	defer s2.Close()
+
+	s1Tip := cm1.Tip()
+
+	// connect s1 to s2 - s1 should sync s2's fork blocks but stay on
+	// its own longer chain, and mark s2 as synced
+	if _, err := s1.Connect(context.Background(), s2.Addr()); err != nil {
+		t.Fatal(err)
+	}
+
+	// wait for s2 to be marked synced in s1's peer list
+	var peers []*syncer.Peer
+	for range 100 {
+		peers = s1.Peers()
+		if len(peers) == 1 && peers[0].Synced() {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if len(peers) != 1 || !peers[0].Synced() {
+		t.Fatal("fork peer should be marked as synced after downloading its chain")
+	}
+
+	// verify s1 stayed on its original chain
+	if cm1.Tip() != s1Tip {
+		t.Fatalf("s1 tip should not have changed: expected %v, got %v", s1Tip, cm1.Tip())
+	}
+}
