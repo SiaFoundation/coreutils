@@ -191,7 +191,7 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 
 			// if all workers have exited and there are incomplete
 			// requests, no progress can be made
-			if activeWorkers.Load() == 0 && finished < len(resps) {
+			if activeWorkers.Load() == 0 && len(respChan) == 0 && finished < len(resps) {
 				close(reqChan)
 				once.Do(closeFinishCh)
 				wg.Wait()
