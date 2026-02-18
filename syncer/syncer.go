@@ -665,10 +665,11 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 		}
 		s.mu.Unlock()
 		type resp struct {
-			peer    *Peer
-			cs      consensus.State
-			headers []types.BlockHeader
-			err     error
+			peer      *Peer
+			cs        consensus.State
+			headers   []types.BlockHeader
+			remaining uint64
+			err       error
 		}
 		respChan := make(chan resp, len(peers))
 		hist, err := s.cm.History()
@@ -677,23 +678,23 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 		}
 		for _, p := range peers {
 			go func(p *Peer) {
-				cs, headers, err := func() (consensus.State, []types.BlockHeader, error) {
+				cs, headers, remaining, err := func() (consensus.State, []types.BlockHeader, uint64, error) {
 					for _, id := range hist {
 						cs, ok := s.cm.State(id)
 						if !ok {
-							return consensus.State{}, nil, errors.New("missing state for history")
+							return consensus.State{}, nil, 0, errors.New("missing state for history")
 						}
-						headers, _, err := p.SendHeaders(cs, s.config.MaxSendHeaders, s.config.SendHeadersTimeout)
+						headers, remaining, err := p.SendHeaders(cs, s.config.MaxSendHeaders, s.config.SendHeadersTimeout)
 						if err != nil && strings.Contains(err.Error(), "EOF") {
 							continue // probably "index is not on our best chain"
 						} else if err != nil {
-							return consensus.State{}, nil, err
+							return consensus.State{}, nil, 0, err
 						}
-						return cs, headers, nil
+						return cs, headers, remaining, nil
 					}
-					return consensus.State{}, nil, errors.New("no common history")
+					return consensus.State{}, nil, 0, errors.New("no common history")
 				}()
-				respChan <- resp{peer: p, cs: cs, headers: headers, err: err}
+				respChan <- resp{peer: p, cs: cs, headers: headers, remaining: remaining, err: err}
 			}(p)
 		}
 		// sync each set of headers as they arrive
@@ -710,6 +711,10 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 				s.log.Debug("syncing blocks", zap.Stringer("peer", r.peer), zap.Stringer("start", r.cs.Index), zap.Int("n", len(r.headers)))
 				if err := s.parallelSync(ctx, r.cs, r.headers); err != nil {
 					s.log.Debug("sync failed", zap.Stringer("peer", r.peer), zap.Error(err))
+				} else if r.remaining == 0 {
+					// peer sent all their headers; mark as synced to avoid
+					// re-downloading the same blocks over and over again
+					r.peer.setSynced(true)
 				}
 				go s.relayV2Header(r.headers[len(r.headers)-1], r.peer)
 			}
