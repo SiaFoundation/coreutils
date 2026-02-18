@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -474,4 +475,85 @@ func TestForkPeerSynced(t *testing.T) {
 	if cm1.Tip() != s1Tip {
 		t.Fatalf("s1 tip should not have changed: expected %v, got %v", s1Tip, cm1.Tip())
 	}
+}
+
+// stallManager serves valid headers but always fails to serve blocks,
+// simulating a peer that disconnects during block fetching.
+type stallManager struct {
+	n uint64
+	*chain.Manager
+}
+
+// BlocksForHistory always returns an error, simulating a peer that fails to
+// serve blocks.
+func (sm *stallManager) BlocksForHistory(_ []types.BlockID, _ uint64) ([]types.Block, uint64, error) {
+	atomic.AddUint64(&sm.n, 1)
+	return nil, 0, errors.New("stall")
+}
+
+// TestParallelSyncStall verifies that parallelSync doesn't block indefinitely
+// if all peers fail to serve blocks.
+func TestParallelSyncStall(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	// s1 starts without blocks
+	s1, cm1 := newTestSyncer(t, syncer.WithLogger(log.Named("syncer1")))
+	defer s1.Close()
+
+	// s2 has blocks but BlocksForHistory always fails, so blocks
+	// can never be served despite valid headers
+	n, genesis := testutil.Network()
+	store2, tipState2, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm2 := chain.NewManager(store2, tipState2)
+	testutil.MineBlocks(t, cm2, types.VoidAddress, 10)
+
+	l2, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l2.Close() })
+
+	stuckCM := &stallManager{Manager: cm2}
+	s2 := syncer.New(l2, stuckCM, testutil.NewEphemeralPeerStore(), gateway.Header{
+		GenesisID:  genesis.ID(),
+		UniqueID:   gateway.GenerateUniqueID(),
+		NetAddress: l2.Addr().String(),
+	}, syncer.WithSyncInterval(100*time.Millisecond))
+	go s2.Run()
+	defer s2.Close()
+
+	// connect s1 to s2 - parallelSync should detect the stall and
+	// return an error instead of blocking forever
+	if _, err := s1.Connect(context.Background(), s2.Addr()); err != nil {
+		t.Fatal(err)
+	}
+
+	// wait for a few cycles
+	for range 10 {
+		if n := atomic.LoadUint64(&stuckCM.n); n >= 2 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// verify s1 hasn't synced (stallManager prevents block serving)
+	if cm1.Tip().Height != 0 {
+		t.Fatal("s1 should not have synced from stallManager peer")
+	}
+
+	// connect a normal peer which should be able to sync
+	s3, cm3 := newTestSyncer(t, syncer.WithLogger(log.Named("syncer3")))
+	defer s3.Close()
+	testutil.MineBlocks(t, cm3, types.VoidAddress, 5)
+
+	if _, err := s1.Connect(context.Background(), s3.Addr()); err != nil {
+		t.Fatal(err)
+	}
+
+	// wait for s1 and s3 to sync, verifying that parallelSync is not blocked
+	// syncing with s2
+	synced(t, cm1, cm3)
 }
