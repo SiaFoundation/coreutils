@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.sia.tech/core/consensus"
@@ -135,6 +136,7 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 	seen := make(map[gateway.UniqueID]bool)
+	var activeWorkers atomic.Int64
 	reqIndex := 0
 	finished := 0
 	queueRequest := func() {
@@ -170,9 +172,11 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 					continue
 				}
 				seen[p.t.UniqueID] = true
+				activeWorkers.Add(1)
 				wg.Add(1)
 				go func(p *Peer) {
 					defer wg.Done()
+					defer activeWorkers.Add(-1)
 					for req := range reqChan {
 						resp := workFn(p, req)
 						respChan <- resp
@@ -184,6 +188,15 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 				queueRequest()
 			}
 			s.mu.Unlock()
+
+			// if all workers have exited and there are incomplete
+			// requests, no progress can be made
+			if activeWorkers.Load() == 0 && len(respChan) == 0 && finished < len(reqs) {
+				select {
+				case errCh <- errors.New("all peers failed to sync blocks"):
+				default:
+				}
+			}
 
 		case r := <-respChan:
 			// each time a request finishes, send a new one
@@ -212,6 +225,7 @@ func (s *Syncer) parallelSync(ctx context.Context, cs consensus.State, headers [
 
 		case err := <-errCh:
 			close(reqChan)
+			once.Do(closeFinishCh)
 			cancel()
 			wg.Wait()
 			if err != nil {
