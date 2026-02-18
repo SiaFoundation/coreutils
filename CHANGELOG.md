@@ -1,3 +1,12 @@
+## 0.21.1 (2026-02-18)
+
+### Fixes
+
+- Fix NDF in TestFormContractBasis
+- Fix parallelSync stalling when all workers fail.
+- Mark peer synced if there are no more blocks to sync.
+- Reduced excessive logging in syncer.
+
 ## 0.21.0 (2026-02-04)
 
 ### Breaking Changes
