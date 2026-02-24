@@ -680,6 +680,11 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 			go func(p *Peer) {
 				cs, headers, remaining, err := func() (consensus.State, []types.BlockHeader, uint64, error) {
 					for _, id := range hist {
+						if id == (types.BlockID{}) {
+							// skip empty history entries which can occur when
+							// we don't have a full history of blocks.
+							continue
+						}
 						cs, ok := s.cm.State(id)
 						if !ok {
 							return consensus.State{}, nil, 0, errors.New("missing state for history")
