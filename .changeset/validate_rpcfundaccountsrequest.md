@@ -1,0 +1,5 @@
+---
+default: patch
+---
+
+# Validate RPCFundAccountsRequest

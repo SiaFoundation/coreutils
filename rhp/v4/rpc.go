@@ -689,6 +689,10 @@ func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State,
 		RenterSignature: revision.RenterSignature,
 	}
 
+	if err := req.Validate(); err != nil {
+		return RPCFundAccountResult{}, fmt.Errorf("invalid request: %w", err)
+	}
+
 	var resp rhp4.RPCFundAccountsResponse
 	if err := callSingleRoundtripRPC(ctx, t, rhp4.RPCFundAccountsID, &req, &resp); err != nil {
 		return RPCFundAccountResult{}, err
