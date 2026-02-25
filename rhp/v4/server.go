@@ -397,6 +397,8 @@ func (s *Server) handleRPCFundAccounts(stream net.Conn) error {
 	var req rhp4.RPCFundAccountsRequest
 	if err := rhp4.ReadRequest(stream, &req); err != nil {
 		return errorDecodingError("failed to read request: %v", err)
+	} else if err := req.Validate(); err != nil {
+		return err
 	}
 
 	state, unlock, err := s.lockContractForRevision(req.ContractID)
