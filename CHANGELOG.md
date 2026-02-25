@@ -1,3 +1,14 @@
+## 0.21.1 (2026-02-25)
+
+### Fixes
+
+- Fix edge case where a node incorrectly sends the genesis state to peers while syncing.
+- Fix NDF in TestFormContractBasis
+- Fix parallelSync stalling when all workers fail.
+- Mark peer synced if there are no more blocks to sync.
+- Reduced excessive logging in syncer.
+- Validate RPCFundAccountsRequest
+
 ## 0.21.0 (2026-02-04)
 
 ### Breaking Changes
