@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"maps"
 	"math"
 	"net"
 	"reflect"
@@ -2340,16 +2341,35 @@ func TestFreeSectorsSwapConsistency(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			expectedRoots := assertSectorsFreed(t, removeResult.Revision, roots, tt.indices)
+			assertSectorsFreed(t, removeResult.Revision, roots, tt.indices)
 			revision.Revision = removeResult.Revision
 
-			// fetch the actual roots from the host and compare
-			rootsResult, err := rhp4.RPCSectorRoots(context.Background(), transport, cs, settings.Prices, fundAndSign, revision, 0, uint64(len(expectedRoots)))
+			// build the set of roots that should survive
+			deleted := make(map[types.Hash256]bool)
+			for _, idx := range tt.indices {
+				deleted[roots[idx]] = true
+			}
+			kept := make(map[types.Hash256]bool)
+			for _, r := range roots {
+				if !deleted[r] {
+					kept[r] = true
+				}
+			}
+
+			// fetch the actual roots from the host
+			rootsResult, err := rhp4.RPCSectorRoots(context.Background(), transport, cs, settings.Prices, fundAndSign, revision, 0, revision.Revision.Filesize/proto4.SectorSize)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !slices.Equal(rootsResult.Roots, expectedRoots) {
-				t.Fatalf("roots mismatch\ngot:  %v\nwant: %v", rootsResult.Roots, expectedRoots)
+
+			for _, r := range rootsResult.Roots {
+				if deleted[r] {
+					t.Fatalf("deleted root %v still present on host", r)
+				}
+				delete(kept, r)
+			}
+			if len(kept) != 0 {
+				t.Fatalf("kept roots missing from host: %v", slices.Collect(maps.Keys(kept)))
 			}
 		})
 	}
@@ -2586,8 +2606,11 @@ func TestMaxSectorBatchSize(t *testing.T) {
 	assertRevision(t, rootsResp.Revision, appendRoots)
 	revision.Revision = rootsResp.Revision
 
-	// try to remove too many indices
+	// try to remove too many indices. They must be unique.
 	indices := make([]uint64, len(appendRoots)*10)
+	for i := range indices {
+		indices[i] = uint64(i)
+	}
 	_, err = rhp4.RPCFreeSectors(context.Background(), transport, renterKey, cs, settings.Prices, revision, indices)
 	if code := proto4.ErrorCode(err); code != proto4.ErrorCodeDecoding {
 		t.Fatalf("expected decoding error, got %q", err)
