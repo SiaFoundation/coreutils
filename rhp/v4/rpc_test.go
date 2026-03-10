@@ -2,6 +2,7 @@ package rhp_test
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -261,6 +262,33 @@ func assertValidRevision(t *testing.T, cm rhp4.ChainManager, c rhp4.Contractor, 
 	if _, err := cm.AddV2PoolTransactions(basis, []types.V2Transaction{revisionTxn}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// assertSectorsFreed checks if the indices in deletedIndices
+// correspond to roots in the roots slice that have been freed.
+//
+// It returns the new slice of roots with the sectors removed.
+func assertSectorsFreed(tb testing.TB, revision types.V2FileContract, roots []types.Hash256, deletedIndices []uint64) []types.Hash256 {
+	tb.Helper()
+
+	deletedIndices = slices.Clone(deletedIndices)
+	slices.SortFunc(deletedIndices, func(a, b uint64) int {
+		return cmp.Compare(b, a) // desc
+	})
+	deletedIndices = slices.Compact(deletedIndices)
+
+	roots = slices.Clone(roots)
+	for i, n := range deletedIndices {
+		roots[n] = roots[len(roots)-i-1]
+	}
+	roots = roots[:len(roots)-len(deletedIndices)]
+
+	if expectedRoot := proto4.MetaRoot(roots); expectedRoot != revision.FileMerkleRoot {
+		tb.Fatalf("unexpected new merkle root: expected %v, got %v", revision.FileMerkleRoot, expectedRoot)
+	} else if revision.Filesize != uint64(len(roots))*proto4.SectorSize {
+		tb.Fatalf("unexpected new filesize: expected %v, got %v", uint64(len(roots))*proto4.SectorSize, revision.Filesize)
+	}
+	return roots
 }
 
 func TestFormContract(t *testing.T) {
@@ -2180,11 +2208,6 @@ func TestRPCFreeSectors(t *testing.T) {
 	for i, n := range frand.Perm(len(roots))[:len(roots)/2] {
 		indices[i] = uint64(n)
 	}
-	newRoots := append([]types.Hash256(nil), roots...)
-	for i, n := range indices {
-		newRoots[n] = newRoots[len(newRoots)-i-1]
-	}
-	newRoots = newRoots[:len(newRoots)-len(indices)]
 
 	// assert manipulating the signature returns [proto4.ErrInvalidSignature]
 	corrupted := revision
@@ -2198,8 +2221,138 @@ func TestRPCFreeSectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	expectedRoots := assertSectorsFreed(t, removeResult.Revision, roots, indices)
 	revision.Revision = removeResult.Revision
-	assertRevision(t, revision, newRoots)
+	assertRevision(t, revision, expectedRoots)
+}
+
+func TestFreeSectorsSwapConsistency(t *testing.T) {
+	n, genesis := testutil.V2Network()
+	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
+
+	cm, w := startTestNode(t, n, genesis)
+
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
+
+	sr := testutil.NewEphemeralSettingsReporter()
+	sr.Update(proto4.HostSettings{
+		Release:             "test",
+		AcceptingContracts:  true,
+		WalletAddress:       w.Address(),
+		MaxCollateral:       types.Siacoins(10000),
+		MaxContractDuration: 1000,
+		RemainingStorage:    100 * proto4.SectorSize,
+		TotalStorage:        100 * proto4.SectorSize,
+		Prices: proto4.HostPrices{
+			ContractPrice: types.Siacoins(1).Div64(5),
+			StoragePrice:  types.NewCurrency64(100),
+			IngressPrice:  types.NewCurrency64(100),
+			EgressPrice:   types.NewCurrency64(100),
+			Collateral:    types.NewCurrency64(200),
+		},
+	})
+	ss := testutil.NewEphemeralSectorStore()
+	c := testutil.NewEphemeralContractor(cm)
+
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, w, c, sr, ss, zap.NewNop())
+
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fundAndSign := &fundAndSign{w, renterKey}
+	cs := cm.TipState()
+
+	tests := []struct {
+		name    string
+		n       int
+		indices []uint64
+	}{
+		// index 0 replaced by last element which is also deleted
+		{name: "swap with tail", n: 5, indices: []uint64{0, 4}},
+		// same indices reversed; highest processed first avoids the bug
+		{name: "tail then head", n: 5, indices: []uint64{4, 0}},
+		// boundary between kept and replacement zones
+		{name: "boundary overlap", n: 6, indices: []uint64{1, 4}},
+		// last two elements are replacement sources for the first
+		{name: "multiple overlaps", n: 6, indices: []uint64{0, 4, 5}},
+		// kept root at index 2 written to truncated position 3
+		{name: "kept root lost", n: 4, indices: []uint64{1, 3}},
+		// smallest possible triggering case
+		{name: "minimal", n: 3, indices: []uint64{0, 2}},
+		// mid-slice deletion, no index 0 involved
+		{name: "mid swap with tail", n: 5, indices: []uint64{2, 4}},
+		// two low indices plus one in the tail
+		{name: "two low one high", n: 5, indices: []uint64{0, 1, 4}},
+		// majority deletion with tail overlap
+		{name: "majority delete", n: 6, indices: []uint64{0, 1, 2, 5}},
+		// contiguous tail indices overlap with replacement zone
+		{name: "contiguous tail", n: 5, indices: []uint64{0, 3, 4}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			formResult, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cs, settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+				RenterPublicKey: renterKey.PublicKey(),
+				RenterAddress:   w.Address(),
+				Allowance:       types.Siacoins(100),
+				Collateral:      types.Siacoins(200),
+				ProofHeight:     cm.Tip().Height + 50,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			revision := formResult.Contract
+
+			mineAndSync(t, cm, types.VoidAddress, 1, w, c)
+			cs = cm.TipState()
+
+			account := proto4.Account(renterKey.PublicKey())
+			fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cs, renterKey, revision, []proto4.AccountDeposit{
+				{Account: account, Amount: types.Siacoins(25)},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			revision.Revision = fundResult.Revision
+			token := proto4.NewAccountToken(renterKey, hostKey.PublicKey())
+
+			// upload sectors
+			roots := make([]types.Hash256, tt.n)
+			for i := range roots {
+				writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(frand.Bytes(1024)), 1024)
+				if err != nil {
+					t.Fatal(err)
+				}
+				roots[i] = writeResult.Root
+			}
+
+			appendResult, err := rhp4.RPCAppendSectors(context.Background(), transport, fundAndSign, cs, settings.Prices, revision, roots)
+			if err != nil {
+				t.Fatal(err)
+			}
+			revision.Revision = appendResult.Revision
+
+			// free sectors using the edge-case indices
+			removeResult, err := rhp4.RPCFreeSectors(context.Background(), transport, fundAndSign, cs, settings.Prices, revision, tt.indices)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expectedRoots := assertSectorsFreed(t, removeResult.Revision, roots, tt.indices)
+			revision.Revision = removeResult.Revision
+
+			// fetch the actual roots from the host and compare
+			rootsResult, err := rhp4.RPCSectorRoots(context.Background(), transport, cs, settings.Prices, fundAndSign, revision, 0, uint64(len(expectedRoots)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(rootsResult.Roots, expectedRoots) {
+				t.Fatalf("roots mismatch\ngot:  %v\nwant: %v", rootsResult.Roots, expectedRoots)
+			}
+		})
+	}
 }
 
 func TestRPCSectorRoots(t *testing.T) {
