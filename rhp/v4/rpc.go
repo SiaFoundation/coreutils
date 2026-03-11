@@ -2,11 +2,13 @@ package rhp
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"time"
 
 	"go.sia.tech/core/consensus"
@@ -550,6 +552,17 @@ func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPri
 
 // RPCFreeSectors removes sectors from a contract.
 func RPCFreeSectors(ctx context.Context, t TransportClient, signer ContractSigner, cs consensus.State, prices rhp4.HostPrices, contract ContractRevision, indices []uint64) (RPCFreeSectorsResult, error) {
+	// sort indices descending and remove duplicates to avoid swapping a
+	// root with one that should be kept or is pending deletion.
+	//
+	// note: we should probably add this normalization to the server as well,
+	// but that would break backwards compatibility with existing hosts.
+	indices = slices.Clone(indices) // copy to avoid mutating caller's slice
+	slices.SortFunc(indices, func(a, b uint64) int {
+		return cmp.Compare(b, a) // descending
+	})
+	indices = slices.Compact(indices)
+
 	req := rhp4.RPCFreeSectorsRequest{
 		ContractID: contract.ID,
 		Prices:     prices,
