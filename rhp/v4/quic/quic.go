@@ -79,6 +79,11 @@ func WithTLSConfig(fn func(*tls.Config)) ClientOption {
 	}
 }
 
+const (
+	ErrorCodeNoError      quic.ApplicationErrorCode = 0
+	ErrorCodeStreamClosed quic.ApplicationErrorCode = 1
+)
+
 func (s *stream) Close() error {
 	err := s.Stream.Close()
 	_, errCopy := io.CopyN(io.Discard, s, 4096)
@@ -101,7 +106,7 @@ func (s *stream) RemoteAddr() net.Addr {
 
 // Close implements [TransportClient]
 func (c *client) Close() error {
-	return c.conn.CloseWithError(0, "")
+	return c.conn.CloseWithError(0, "client.Close")
 }
 
 // FrameSize implements [TransportClient]
@@ -176,7 +181,7 @@ func (t *transport) AcceptStream() (net.Conn, error) {
 
 // Close implements [TransportServer]
 func (t *transport) Close() error {
-	return t.qc.CloseWithError(0, "")
+	return t.qc.CloseWithError(0, "transport.Close")
 }
 
 // webTransport is a rhp4.Transport that wraps a WebTransport Session
@@ -201,7 +206,7 @@ func (ws *webStream) RemoteAddr() net.Addr {
 
 // Close implements the rhp4.Transport interface.
 func (wt *webTransport) Close() error {
-	return wt.sess.CloseWithError(0, "")
+	return wt.sess.CloseWithError(0, "webTransport.Close")
 }
 
 // AcceptStream implements the rhp4.Transport interface.
@@ -290,7 +295,7 @@ func Serve(l *quic.Listener, s *rhp4.Server, opts ...ServeOption) {
 			log.Debug("webtransport upgrade failed", zap.Error(err))
 			return
 		}
-		defer sess.CloseWithError(0, "")
+		defer sess.CloseWithError(0, "server handler done")
 
 		err = s.Serve(&webTransport{
 			sess:             sess,
