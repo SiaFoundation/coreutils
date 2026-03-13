@@ -2,4 +2,4 @@
 default: patch
 ---
 
-# Always cancel read side of stream when calling stream.Close.
+# Always cancel read side of QUIC stream when calling stream.Close.
