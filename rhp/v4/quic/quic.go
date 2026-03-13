@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"time"
@@ -79,19 +78,9 @@ func WithTLSConfig(fn func(*tls.Config)) ClientOption {
 	}
 }
 
-const (
-	ErrorCodeNoError      quic.ApplicationErrorCode = 0
-	ErrorCodeStreamClosed quic.ApplicationErrorCode = 1
-)
-
 func (s *stream) Close() error {
-	err := s.Stream.Close()
-	_, errCopy := io.CopyN(io.Discard, s, 4096)
-	if !errors.Is(errCopy, io.EOF) {
-		// fall back to forcefully canceling the read if we couldn't reach EOF
-		s.CancelRead(1)
-	}
-	return err
+	s.CancelRead(0)
+	return s.Stream.Close()
 }
 
 // LocalAddr implements net.Conn
