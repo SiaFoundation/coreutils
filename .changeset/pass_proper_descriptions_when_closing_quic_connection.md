@@ -2,4 +2,4 @@
 default: patch
 ---
 
-# Pass proper descriptions when closing quic connection.
+# Pass proper descriptions when closing QUIC connection.
