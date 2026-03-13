@@ -77,14 +77,14 @@ func openStream(ctx context.Context, t TransportClient, defaultTimeout time.Dura
 		return nil, fmt.Errorf("failed to dial stream: %w", err)
 	}
 
-	if deadline, ok := ctx.Deadline(); ok {
-		if err := s.SetDeadline(deadline); err != nil {
-			return nil, fmt.Errorf("failed to set deadline: %w", err)
-		}
+	var deadline time.Time
+	if dl, ok := ctx.Deadline(); ok {
+		deadline = dl
 	} else if defaultTimeout != 0 {
-		if err := s.SetDeadline(time.Now().Add(defaultTimeout)); err != nil {
-			return nil, fmt.Errorf("failed to set default timeout %q: %w", defaultTimeout, err)
-		}
+		deadline = time.Now().Add(defaultTimeout)
+	}
+	if err := s.SetDeadline(deadline); err != nil {
+		return nil, fmt.Errorf("failed to set default timeout %q: %w", defaultTimeout, err)
 	}
 
 	closeChan := make(chan struct{})
@@ -93,7 +93,11 @@ func openStream(ctx context.Context, t TransportClient, defaultTimeout time.Dura
 		case <-ctx.Done():
 		case <-closeChan:
 		}
-		s.Close()
+		// only close the stream if the stream's deadline wasn't reached to
+		// avoid overwriting a timeout error with a close related error
+		if time.Now().Before(deadline) {
+			s.Close()
+		}
 	}()
 	return &timeoutConn{Conn: s, close: closeChan}, nil
 }
