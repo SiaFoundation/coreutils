@@ -1,3 +1,11 @@
+## 0.21.2 (2026-03-13)
+
+### Fixes
+
+- Always cancel read side of QUIC stream when calling stream.Close.
+- Fixed an edge case in `RPCFreeSectors` where the deletion logic would keep a sector root that was supposed to be deleted.
+- Pass proper descriptions when closing QUIC connection.
+
 ## 0.21.1 (2026-02-25)
 
 ### Fixes
