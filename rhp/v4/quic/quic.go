@@ -95,7 +95,7 @@ func (s *stream) RemoteAddr() net.Addr {
 
 // Close implements [TransportClient]
 func (c *client) Close() error {
-	return c.conn.CloseWithError(0, "")
+	return c.conn.CloseWithError(0, "client closed connection")
 }
 
 // FrameSize implements [TransportClient]
@@ -170,7 +170,7 @@ func (t *transport) AcceptStream() (net.Conn, error) {
 
 // Close implements [TransportServer]
 func (t *transport) Close() error {
-	return t.qc.CloseWithError(0, "")
+	return t.qc.CloseWithError(0, "transport closed connection")
 }
 
 // webTransport is a rhp4.Transport that wraps a WebTransport Session
@@ -195,7 +195,7 @@ func (ws *webStream) RemoteAddr() net.Addr {
 
 // Close implements the rhp4.Transport interface.
 func (wt *webTransport) Close() error {
-	return wt.sess.CloseWithError(0, "")
+	return wt.sess.CloseWithError(0, "webTransport closed connection")
 }
 
 // AcceptStream implements the rhp4.Transport interface.
@@ -284,7 +284,7 @@ func Serve(l *quic.Listener, s *rhp4.Server, opts ...ServeOption) {
 			log.Debug("webtransport upgrade failed", zap.Error(err))
 			return
 		}
-		defer sess.CloseWithError(0, "")
+		defer sess.CloseWithError(0, "server closed webtransport session")
 
 		err = s.Serve(&webTransport{
 			sess:             sess,
@@ -309,14 +309,14 @@ func Serve(l *quic.Listener, s *rhp4.Server, opts ...ServeOption) {
 		switch proto {
 		case http3.NextProtoH3: // webtransport
 			go func() {
-				defer conn.CloseWithError(0, "")
+				defer conn.CloseWithError(0, "server closed quic connection (http3)")
 				if err := wts.ServeQUICConn(conn); err != nil {
 					log.Debug("failed to serve webtransport connection", zap.Error(err))
 				}
 			}()
 		case TLSNextProtoRHP4: // quic
 			go func() {
-				defer conn.CloseWithError(0, "")
+				defer conn.CloseWithError(0, "server closed quic connection (RHP4)")
 				if err := s.Serve(&transport{qc: conn, streamMiddleware: o.streamMiddleware}, log); err != nil {
 					log.Debug("failed to serve quic connection", zap.Error(err))
 				}
