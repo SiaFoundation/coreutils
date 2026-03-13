@@ -137,9 +137,7 @@ func Dial(ctx context.Context, addr string, peerKey types.PublicKey, opts ...Cli
 		opt(qc, tc, cc)
 	}
 
-	// Dial the QUIC connection using 0-RTT
-	// https://quic-go.net/docs/quic/client/#0rtt-security
-	conn, err := quic.DialAddrEarly(ctx, addr, tc, qc)
+	conn, err := quic.DialAddr(ctx, addr, tc, qc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %q: %w", addr, err)
 	}
@@ -221,6 +219,7 @@ func Listen(conn net.PacketConn, certs CertManager) (*quic.Listener, error) {
 		GetCertificate: certs.GetCertificate,
 		NextProtos:     []string{TLSNextProtoRHP4, http3.NextProtoH3},
 	}, &quic.Config{
+		Allow0RTT:                        true,
 		EnableDatagrams:                  true,
 		KeepAlivePeriod:                  30 * time.Second,
 		MaxIdleTimeout:                   30 * time.Minute,
