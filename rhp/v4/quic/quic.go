@@ -137,7 +137,9 @@ func Dial(ctx context.Context, addr string, peerKey types.PublicKey, opts ...Cli
 		opt(qc, tc, cc)
 	}
 
-	conn, err := quic.DialAddr(ctx, addr, tc, qc)
+	// Dial the QUIC connection using 0-RTT
+	// https://quic-go.net/docs/quic/client/#0rtt-security
+	conn, err := quic.DialAddrEarly(ctx, addr, tc, qc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %q: %w", addr, err)
 	}
