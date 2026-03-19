@@ -8,10 +8,12 @@ import (
 	"net"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"go.sia.tech/core/consensus"
 	rhp4 "go.sia.tech/core/rhp/v4"
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/wallet"
+	"go.sia.tech/mux/v2"
 	"go.uber.org/zap"
 	"lukechampine.com/frand"
 )
@@ -1198,6 +1200,8 @@ func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 		if ok := errors.As(err, &re); ok {
 			rhp4.WriteResponse(stream, re)
 			log.Debug("RPC failed", zap.Error(err), zap.Duration("elapsed", time.Since(rpcStart)))
+		} else if isPeerClosed(err) {
+			log.Debug("RPC failed", zap.Error(err), zap.Duration("elapsed", time.Since(rpcStart)))
 		} else {
 			rhp4.WriteResponse(stream, rhp4.ErrHostInternalError.(*rhp4.RPCError))
 			log.Error("RPC failed", zap.Error(err), zap.Duration("elapsed", time.Since(rpcStart)))
@@ -1289,4 +1293,21 @@ func (sb *sectorBuffer) Write(p []byte) (int, error) {
 
 func newSectorBuffer() *sectorBuffer {
 	return &sectorBuffer{}
+}
+
+func isPeerClosed(err error) bool {
+	// SiaMux
+	if errors.Is(err, mux.ErrPeerClosedConn) {
+		return true // peer closed mux conn
+	} else if errors.Is(err, mux.ErrPeerClosedStream) {
+		return true // peer closed mux stream
+	}
+
+	// QUIC
+	if ae, ok := errors.AsType[*quic.ApplicationError](err); ok && ae.Remote {
+		return true // peer close QUIC conn
+	} else if se, ok := errors.AsType[*quic.StreamError](err); ok && se.Remote {
+		return true // peer closed QUIC stream
+	}
+	return false
 }
