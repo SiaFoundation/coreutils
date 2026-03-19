@@ -12,7 +12,6 @@ import (
 	"go.sia.tech/core/consensus"
 	rhp4 "go.sia.tech/core/rhp/v4"
 	"go.sia.tech/core/types"
-	"go.sia.tech/coreutils/threadgroup"
 	"go.sia.tech/coreutils/wallet"
 	"go.sia.tech/mux/v2"
 	"go.uber.org/zap"
@@ -1202,9 +1201,6 @@ func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 			rhp4.WriteResponse(stream, re)
 			log.Debug("RPC failed", zap.Error(err), zap.Duration("elapsed", time.Since(rpcStart)))
 		} else if isPeerClosed(err) {
-			log.Debug("RPC failed", zap.Error(err), zap.Duration("elapsed", time.Since(rpcStart)))
-		} else if errors.Is(err, threadgroup.ErrClosed) {
-			rhp4.WriteResponse(stream, &rhp4.RPCError{Code: rhp4.ErrorCodeHostError, Description: "host shutting down"})
 			log.Debug("RPC failed", zap.Error(err), zap.Duration("elapsed", time.Since(rpcStart)))
 		} else {
 			rhp4.WriteResponse(stream, rhp4.ErrHostInternalError.(*rhp4.RPCError))
