@@ -1309,7 +1309,7 @@ func isPeerClosed(err error) bool {
 
 	// QUIC
 	if ae, ok := errors.AsType[*quic.ApplicationError](err); ok && ae.Remote {
-		return true // peer close QUIC conn
+		return true // peer closed QUIC conn
 	} else if se, ok := errors.AsType[*quic.StreamError](err); ok && se.Remote {
 		return true // peer closed QUIC stream
 	}
