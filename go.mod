@@ -1,6 +1,6 @@
 module go.sia.tech/coreutils // v0.21.1
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/quic-go/quic-go v0.59.0
