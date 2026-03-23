@@ -717,11 +717,11 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 				if err := s.parallelSync(ctx, r.cs, r.headers); err != nil {
 					s.log.Debug("sync failed", zap.Stringer("peer", r.peer), zap.Error(err))
 				} else if r.remaining == 0 {
-					// peer sent all their headers; mark as synced to avoid
-					// re-downloading the same blocks over and over again
+					// peer sent all their headers; mark them as synced and
+					// relay their tip
 					r.peer.setSynced(true)
+					go s.relayV2Header(r.headers[len(r.headers)-1], r.peer)
 				}
-				go s.relayV2Header(r.headers[len(r.headers)-1], r.peer)
 			}
 		}
 	}
