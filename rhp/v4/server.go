@@ -1241,7 +1241,7 @@ func (s *Server) Serve(t TransportMux, log *zap.Logger) error {
 			done, err := s.tg.Add()
 			if err != nil {
 				log.Debug("rejected stream, server is shutting down")
-				rhp4.WriteResponse(stream, &rhp4.RPCError{Code: rhp4.ErrorCodeHostError, Description: "host is shutting down"})
+				rhp4.WriteResponse(stream, rhp4.ErrHostShuttingDown.(*rhp4.RPCError))
 				stream.Close()
 				return
 			}
