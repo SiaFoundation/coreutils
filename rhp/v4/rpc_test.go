@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -2950,5 +2951,31 @@ func BenchmarkContractUpload(b *testing.B) {
 		b.Fatal(err)
 	} else if appendResult.Revision.Filesize != uint64(b.N)*proto4.SectorSize {
 		b.Fatalf("expected %v sectors, got %v", b.N, appendResult.Revision.Filesize/proto4.SectorSize)
+	}
+}
+
+func TestGracefulShutdown(t *testing.T) {
+	n, genesis := testutil.V2Network()
+	cm, w := startTestNode(t, n, genesis)
+
+	ss := testutil.NewEphemeralSectorStore()
+	c := testutil.NewEphemeralContractor(cm)
+	sr := testutil.NewEphemeralSettingsReporter()
+
+	hostKey := types.GeneratePrivateKey()
+	rs := rhp4.NewServer(hostKey, cm, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
+	hostAddr := testutil.ServeSiaMux(t, rs, zap.NewNop())
+
+	transport, err := siamux.Dial(context.Background(), hostAddr, hostKey.PublicKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transport.Close()
+
+	rs.Close()
+
+	_, err = rhp4.RPCSettings(context.Background(), transport)
+	if !errors.Is(err, proto4.ErrHostShuttingDown) {
+		t.Fatalf("expected ErrHostShuttingDown, got %v", err)
 	}
 }

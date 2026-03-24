@@ -12,6 +12,7 @@ import (
 	"go.sia.tech/core/consensus"
 	rhp4 "go.sia.tech/core/rhp/v4"
 	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils/threadgroup"
 	"go.sia.tech/coreutils/wallet"
 	"go.sia.tech/mux/v2"
 	"go.uber.org/zap"
@@ -128,6 +129,8 @@ type (
 
 	// A Server handles incoming RHP4 RPC.
 	Server struct {
+		tg *threadgroup.ThreadGroup
+
 		hostKey            types.PrivateKey
 		priceTableValidity time.Duration
 		rpcTimeout         time.Duration
@@ -1216,6 +1219,11 @@ func (s *Server) HostKey() types.PrivateKey {
 	return s.hostKey
 }
 
+// Close stops accepting new RPCs and waits for in-flight handlers to complete.
+func (s *Server) Close() {
+	s.tg.Stop()
+}
+
 // Serve accepts incoming streams on the provided multiplexer and handles them
 func (s *Server) Serve(t TransportMux, log *zap.Logger) error {
 	defer t.Close()
@@ -1230,6 +1238,14 @@ func (s *Server) Serve(t TransportMux, log *zap.Logger) error {
 		log := log.With(zap.String("streamID", hex.EncodeToString(frand.Bytes(4))))
 		log.Debug("accepted stream")
 		go func() {
+			done, err := s.tg.Add()
+			if err != nil {
+				log.Debug("rejected stream, server is shutting down")
+				rhp4.WriteResponse(stream, rhp4.ErrHostShuttingDown.(*rhp4.RPCError))
+				stream.Close()
+				return
+			}
+			defer done()
 			defer func() {
 				if err := stream.Close(); err != nil {
 					log.Debug("failed to close stream", zap.Error(err))
@@ -1255,6 +1271,8 @@ func errorDecodingError(f string, p ...any) error {
 // NewServer creates a new RHP4 server
 func NewServer(pk types.PrivateKey, cm ChainManager, contracts Contractor, wallet Wallet, settings Settings, sectors Sectors, opts ...ServerOption) *Server {
 	s := &Server{
+		tg: threadgroup.New(),
+
 		hostKey:            pk,
 		priceTableValidity: 30 * time.Minute,
 		rpcTimeout:         10 * time.Minute,
