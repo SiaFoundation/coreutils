@@ -2580,13 +2580,13 @@ func TestMaxSectorBatchSize(t *testing.T) {
 
 	// append duplicate roots so the contract has over 1 TiB of sectors
 	var appendRoots []types.Hash256
-	for i := range 2 * proto4.MaxSectorBatchSize {
+	for i := range proto4.MaxSectorBatchSize + 1 {
 		appendRoots = append(appendRoots, roots[i%len(roots)])
 	}
 
 	_, err = rhp4.RPCAppendSectors(context.Background(), transport, renterKey, cs, settings.Prices, revision, appendRoots)
-	if code := proto4.ErrorCode(err); code != proto4.ErrorCodeDecoding {
-		t.Fatalf("expected decoding error, got %d", code)
+	if code := proto4.ErrorCode(err); code != proto4.ErrorCodeBadRequest {
+		t.Fatalf("expected BadRequest error, got %d", code)
 	}
 
 	// append all the sector roots to the contract
@@ -2608,13 +2608,13 @@ func TestMaxSectorBatchSize(t *testing.T) {
 	revision.Revision = rootsResp.Revision
 
 	// try to remove too many indices. They must be unique.
-	indices := make([]uint64, len(appendRoots)*10)
+	indices := make([]uint64, len(appendRoots)+1)
 	for i := range indices {
 		indices[i] = uint64(i)
 	}
 	_, err = rhp4.RPCFreeSectors(context.Background(), transport, renterKey, cs, settings.Prices, revision, indices)
-	if code := proto4.ErrorCode(err); code != proto4.ErrorCodeDecoding {
-		t.Fatalf("expected decoding error, got %q", err)
+	if code := proto4.ErrorCode(err); code != proto4.ErrorCodeBadRequest {
+		t.Fatalf("expected BadRequest error, got %q", err)
 	}
 
 	indices = indices[:len(appendRoots)]
