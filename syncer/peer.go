@@ -281,6 +281,13 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		}
 		r.Headers, r.Remaining, err = s.cm.Headers(r.Index, r.Max)
 		if err != nil {
+			// if the peer is requesting headers at or above our tip
+			// but not on our best chain, it indicates chain
+			// divergence. Trigger a resync to check if they have a
+			// heavier chain we should switch to.
+			if r.Index.Height >= s.cm.Tip().Height {
+				s.resync(origin, fmt.Sprintf("peer requested headers for index not on our best chain (%v)", r.Index))
+			}
 			return err
 		} else if err := stream.WriteResponse(r); err != nil {
 			return err
