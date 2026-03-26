@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/quic-go/quic-go"
-	"go.sia.tech/mux/v2"
+	"go.sia.tech/mux/v3"
 )
 
 func TestIsPeerClosed(t *testing.T) {

@@ -14,7 +14,7 @@ import (
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/threadgroup"
 	"go.sia.tech/coreutils/wallet"
-	"go.sia.tech/mux/v2"
+	"go.sia.tech/mux/v3"
 	"go.uber.org/zap"
 	"lukechampine.com/frand"
 )
