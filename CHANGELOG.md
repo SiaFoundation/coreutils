@@ -1,3 +1,19 @@
+## 0.21.2 (2026-04-10)
+
+### Features
+
+- RHP4 graceful shutdown
+
+### Fixes
+
+- Always cancel read side of QUIC stream when calling stream.Close.
+- Fixed an edge case in `RPCFreeSectors` where the deletion logic would keep a sector root that was supposed to be deleted.
+- Pass proper descriptions when closing QUIC connection.
+- Fixed excessive "peer relayed a v2 header with unknown parent" log spam by only relaying headers after sync when the synced blocks became the new tip.
+- Update Go version to 1.26.0.
+- Update mux dependency to v1.5.0.
+- Use DEBUG log level instead of ERROR for RPCs failing due to the peer closing the connection on their end.
+
 ## 0.21.1 (2026-02-25)
 
 ### Fixes
