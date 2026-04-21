@@ -268,6 +268,8 @@ func Serve(l *quic.Listener, s *rhp4.Server, opts ...ServeOption) {
 	wts := &webtransport.Server{
 		H3: &http3.Server{
 			Handler: mux,
+
+			EnableDatagrams: true,
 		},
 		CheckOrigin: func(*http.Request) bool {
 			return true // allow all origins
