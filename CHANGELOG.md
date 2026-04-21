@@ -1,3 +1,10 @@
+## 0.21.3 (2026-04-21)
+
+### Fixes
+
+- Fix a bug where a changed host wallet address leads to failed renewals.
+- Update webtransport-go to `05fe5253a73c`
+
 ## 0.21.2 (2026-04-10)
 
 ### Features
