@@ -782,9 +782,9 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn, partial bool) error {
 	var renewal types.V2FileContractRenewal
 	var usage rhp4.Usage
 	if partial {
-		renewal, usage = rhp4.RefreshContractPartialRollover(existing, prices, req.Refresh)
+		renewal, usage = rhp4.RefreshContractPartialRollover(existing, prices, settings.WalletAddress, req.Refresh)
 	} else {
-		renewal, usage = rhp4.RefreshContractFullRollover(existing, prices, req.Refresh)
+		renewal, usage = rhp4.RefreshContractFullRollover(existing, prices, settings.WalletAddress, req.Refresh)
 	}
 	renterCost, hostCost := rhp4.RefreshCost(cs, prices, renewal, req.MinerFee)
 	renewalTxn := types.V2Transaction{
@@ -966,7 +966,7 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	}
 
 	cs := s.chain.TipState()
-	renewal, usage := rhp4.RenewContract(existing, prices, req.Renewal)
+	renewal, usage := rhp4.RenewContract(existing, prices, settings.WalletAddress, req.Renewal)
 	renterCost, hostCost := rhp4.RenewalCost(cs, renewal, req.MinerFee)
 	renewalTxn := types.V2Transaction{
 		MinerFee: req.MinerFee,

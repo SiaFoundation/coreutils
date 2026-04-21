@@ -276,15 +276,15 @@ func callSingleRoundtripRPC(ctx context.Context, t TransportClient, rpcID types.
 	return nil
 }
 
-func rpcRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRefreshContractParams, partialRollover bool) (RPCRefreshContractResult, error) {
+func rpcRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, hostAddress types.Address, existing types.V2FileContract, params rhp4.RPCRefreshContractParams, partialRollover bool) (RPCRefreshContractResult, error) {
 	var renewal types.V2FileContractRenewal
 	var usage rhp4.Usage
 	var id types.Specifier
 	if partialRollover {
-		renewal, usage = rhp4.RefreshContractPartialRollover(existing, p, params)
+		renewal, usage = rhp4.RefreshContractPartialRollover(existing, p, hostAddress, params)
 		id = rhp4.RPCRefreshPartialID
 	} else {
-		renewal, usage = rhp4.RefreshContractFullRollover(existing, p, params)
+		renewal, usage = rhp4.RefreshContractFullRollover(existing, p, hostAddress, params)
 		id = rhp4.RPCRefreshContractID
 	}
 
@@ -348,7 +348,7 @@ func rpcRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 	} else if n > 0 {
 		// add change output
 		renewalTxn.SiacoinOutputs = append(renewalTxn.SiacoinOutputs, types.SiacoinOutput{
-			Address: existing.HostOutput.Address,
+			Address: renewal.NewContract.HostOutput.Address,
 			Value:   hostInputSum.Sub(hostCost),
 		})
 	}
@@ -1006,8 +1006,8 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 }
 
 // RPCRenewContract renews a contract with a host.
-func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRenewContractParams) (RPCRenewContractResult, error) {
-	renewal, usage := rhp4.RenewContract(existing, p, params)
+func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, hostAddress types.Address, existing types.V2FileContract, params rhp4.RPCRenewContractParams) (RPCRenewContractResult, error) {
+	renewal, usage := rhp4.RenewContract(existing, p, hostAddress, params)
 	renewalTxn := types.V2Transaction{
 		MinerFee: signer.RecommendedFee().Mul64(1000),
 	}
@@ -1067,7 +1067,7 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 	} else if n > 0 {
 		// add change output
 		renewalTxn.SiacoinOutputs = append(renewalTxn.SiacoinOutputs, types.SiacoinOutput{
-			Address: existing.HostOutput.Address,
+			Address: renewal.NewContract.HostOutput.Address,
 			Value:   hostInputSum.Sub(hostCost),
 		})
 	}
@@ -1148,13 +1148,13 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 // RPCRefreshContractFullRollover refreshes a contract with a host.
 //
 // Deprecated: use RPCRefreshContractPartialRollover instead.
-func RPCRefreshContractFullRollover(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRefreshContractParams) (RPCRefreshContractResult, error) {
-	return rpcRefreshContract(ctx, t, tp, signer, cs, p, existing, params, false)
+func RPCRefreshContractFullRollover(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, hostAddress types.Address, existing types.V2FileContract, params rhp4.RPCRefreshContractParams) (RPCRefreshContractResult, error) {
+	return rpcRefreshContract(ctx, t, tp, signer, cs, p, hostAddress, existing, params, false)
 }
 
 // RPCRefreshContractPartialRollover refreshes a contract with a host.
 //
 // Only supported on hosts using protocol 5.0.0 or later.
-func RPCRefreshContractPartialRollover(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, existing types.V2FileContract, params rhp4.RPCRefreshContractParams) (RPCRefreshContractResult, error) {
-	return rpcRefreshContract(ctx, t, tp, signer, cs, p, existing, params, true)
+func RPCRefreshContractPartialRollover(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, hostAddress types.Address, existing types.V2FileContract, params rhp4.RPCRefreshContractParams) (RPCRefreshContractResult, error) {
+	return rpcRefreshContract(ctx, t, tp, signer, cs, p, hostAddress, existing, params, true)
 }
