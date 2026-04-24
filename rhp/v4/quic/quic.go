@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/quic-go/qlog"
+	"github.com/quic-go/quic-go/qlogwriter"
 	"github.com/quic-go/webtransport-go"
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/chain"
@@ -215,17 +218,26 @@ func (wt *webTransport) AcceptStream() (net.Conn, error) {
 // It is a wrapper around quic.Listen that sets the appropriate ALPN protocol
 // for RHP4 and WebTransport.
 func Listen(conn net.PacketConn, certs CertManager) (*quic.Listener, error) {
-	return quic.Listen(conn, &tls.Config{
+	tc := &tls.Config{
 		GetCertificate: certs.GetCertificate,
 		NextProtos:     []string{TLSNextProtoRHP4, http3.NextProtoH3},
-	}, &quic.Config{
+	}
+	qc := &quic.Config{
 		Allow0RTT:                        true,
 		EnableDatagrams:                  true,
 		KeepAlivePeriod:                  30 * time.Second,
 		MaxIdleTimeout:                   30 * time.Minute,
 		MaxIncomingStreams:               maxIncomingStreams,
 		EnableStreamResetPartialDelivery: true,
-	})
+	}
+	// Debug: if QLOGDIR is set, quic-go writes per-connection .sqlog files with
+	// frame-level events (including CONNECTION_CLOSE reason codes).
+	if os.Getenv("QLOGDIR") != "" {
+		qc.Tracer = func(ctx context.Context, isClient bool, connID quic.ConnectionID) qlogwriter.Trace {
+			return qlog.DefaultConnectionTracer(ctx, isClient, connID)
+		}
+	}
+	return quic.Listen(conn, tc, qc)
 }
 
 // ServeOption is a functional parameter for the Serve function.
@@ -297,9 +309,17 @@ func Serve(l *quic.Listener, s *rhp4.Server, opts ...ServeOption) {
 	wts.H3.AdditionalSettings[0x2b61] = 1 << 60       // SETTINGS_WT_INITIAL_MAX_DATA
 
 	mux.HandleFunc("/sia/rhp/v4", func(w http.ResponseWriter, r *http.Request) {
+		log.Info("webtransport request",
+			zap.String("method", r.Method),
+			zap.String("proto", r.Proto),
+			zap.String("origin", r.Header.Get("Origin")),
+			zap.String("userAgent", r.Header.Get("User-Agent")),
+			zap.String("wtProtocols", r.Header.Get("WT-Available-Protocols")),
+			zap.String("remote", r.RemoteAddr),
+		)
 		sess, err := wts.Upgrade(w, r)
 		if err != nil {
-			log.Debug("webtransport upgrade failed", zap.Error(err))
+			log.Info("webtransport upgrade failed", zap.Error(err))
 			return
 		}
 		defer sess.CloseWithError(0, "server closed webtransport session")
