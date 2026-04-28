@@ -2028,9 +2028,27 @@ func TestPoolAttachAuth(t *testing.T) {
 		Pool:       pool,
 		ValidUntil: time.Now().Add(time.Minute),
 	}
-	forged.Signature = accountKey.SignHash(forged.SigHash())
-	if forged.ValidSignature() {
+	forged.Signature = accountKey.SignHash(forged.SigHash(hostKey.PublicKey()))
+	if forged.ValidSignature(hostKey.PublicKey()) {
 		t.Fatal("expected forged signature to fail validation locally")
+	}
+
+	// an attach signature must not be valid as a detach signature even with
+	// the same fields — the domain separator differs.
+	attachSigned := proto4.PoolAttachment{
+		Account:    account,
+		Pool:       pool,
+		ValidUntil: time.Now().Add(time.Minute),
+	}
+	attachSigned.Signature = poolKey.SignHash(attachSigned.SigHash(hostKey.PublicKey()))
+	cross := proto4.PoolDetachment{
+		Account:    attachSigned.Account,
+		Pool:       attachSigned.Pool,
+		ValidUntil: attachSigned.ValidUntil,
+		Signature:  attachSigned.Signature,
+	}
+	if cross.ValidSignature(hostKey.PublicKey()) {
+		t.Fatal("attach signature must not validate as detach")
 	}
 
 	if err := rhp4.RPCAttachPools(context.Background(), transport, []rhp4.PoolAttachInput{
@@ -2142,9 +2160,7 @@ func TestPoolBatchAttachDetach(t *testing.T) {
 		}
 	}
 
-	// atomic batch failure: include one bad detach (unknown pool)
-	// — implementation detaches what it can since detach is idempotent;
-	// the partial-batch behavior is fine for v1.
+	// detach pool2 (signed by account key) and pool4 (signed by pool key) in one batch
 	if err := rhp4.RPCDetachPools(context.Background(), transport, []rhp4.PoolDetachInput{
 		{Account: account, Pool: pools[2], Signer: accountKey},
 		{Account: account, Pool: pools[4], Signer: poolKeys[4]},
@@ -2158,6 +2174,99 @@ func TestPoolBatchAttachDetach(t *testing.T) {
 	}
 	if err := c.DebitAccount(account, proto4.Usage{RPC: types.NewCurrency64(1)}); err == nil {
 		t.Fatal("expected ErrNotEnoughFunds after pool3 drained")
+	}
+}
+
+func TestPoolDebitAtomicOnInsufficient(t *testing.T) {
+	n, genesis := testutil.V2Network()
+	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
+
+	cm, w := startTestNode(t, n, genesis)
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
+
+	sr := testutil.NewEphemeralSettingsReporter()
+	sr.Update(proto4.HostSettings{
+		Release:             "test",
+		AcceptingContracts:  true,
+		WalletAddress:       w.Address(),
+		MaxCollateral:       types.Siacoins(10000),
+		MaxContractDuration: 1000,
+		RemainingStorage:    100 * proto4.SectorSize,
+		TotalStorage:        100 * proto4.SectorSize,
+		Prices: proto4.HostPrices{
+			ContractPrice: types.Siacoins(1).Div64(5),
+			StoragePrice:  types.NewCurrency64(100),
+			IngressPrice:  types.NewCurrency64(100),
+			EgressPrice:   types.NewCurrency64(100),
+			Collateral:    types.NewCurrency64(200),
+		},
+	})
+	ss := testutil.NewEphemeralSectorStore()
+	c := testutil.NewEphemeralContractor(cm)
+
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, w, c, sr, ss, zaptest.NewLogger(t))
+
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fundAndSign := &fundAndSign{w, renterKey}
+	formResult, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+		RenterPublicKey: renterKey.PublicKey(),
+		RenterAddress:   w.Address(),
+		Allowance:       types.Siacoins(100),
+		Collateral:      types.Siacoins(200),
+		ProofHeight:     cm.Tip().Height + 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := formResult.Contract
+	mineAndSync(t, cm, types.VoidAddress, 1, w, c)
+
+	accountKey := types.GeneratePrivateKey()
+	account := proto4.Account(accountKey.PublicKey())
+	poolKey := types.GeneratePrivateKey()
+	pool := proto4.Account(poolKey.PublicKey())
+
+	accountFund, err := rhp4.RPCFundAccounts(context.Background(), transport, cm.TipState(), renterKey, revision, []proto4.AccountDeposit{
+		{Account: account, Amount: types.Siacoins(2)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision.Revision = accountFund.Revision
+
+	poolFund, err := rhp4.RPCFundPools(context.Background(), transport, cm.TipState(), renterKey, revision, []proto4.AccountDeposit{
+		{Account: pool, Amount: types.Siacoins(3)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision.Revision = poolFund.Revision
+
+	if err := rhp4.RPCAttachPools(context.Background(), transport, []rhp4.PoolAttachInput{
+		{Account: account, PoolKey: poolKey},
+	}, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+
+	// drawable is 5 SC (account 2 + pool 3); debit 6 SC must fail without
+	// touching either balance.
+	if err := c.DebitAccount(account, proto4.Usage{RPC: types.Siacoins(6)}); err == nil {
+		t.Fatal("expected ErrNotEnoughFunds")
+	}
+	if bal, err := c.AccountBalance(account); err != nil {
+		t.Fatal(err)
+	} else if !bal.Equals(types.Siacoins(2)) {
+		t.Fatalf("account drained on failed debit: expected 2 SC, got %v", bal)
+	}
+	balances, err := c.PoolBalances([]proto4.Account{pool})
+	if err != nil {
+		t.Fatal(err)
+	} else if !balances[0].Equals(types.Siacoins(3)) {
+		t.Fatalf("pool drained on failed debit: expected 3 SC, got %v", balances[0])
 	}
 }
 

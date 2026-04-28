@@ -304,12 +304,25 @@ func (ec *EphemeralContractor) CreditAccountsWithContract(deposits []proto4.Acco
 
 // DebitAccount debits an account by the given amount. The account's own
 // balance drains first; if insufficient, attached pools are drained in
-// attachment order.
+// attachment order. Returns ErrNotEnoughFunds without mutating any balances
+// if the combined drawable amount is insufficient.
 func (ec *EphemeralContractor) DebitAccount(account proto4.Account, usage proto4.Usage) error {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 
-	remaining := usage.RenterCost()
+	cost := usage.RenterCost()
+	drawable := ec.accounts[account]
+	for _, pool := range ec.attached[account] {
+		if drawable.Cmp(cost) >= 0 {
+			break
+		}
+		drawable = drawable.Add(ec.pools[pool])
+	}
+	if drawable.Cmp(cost) < 0 {
+		return proto4.ErrNotEnoughFunds
+	}
+
+	remaining := cost
 	if balance := ec.accounts[account]; !balance.IsZero() {
 		take := balance
 		if balance.Cmp(remaining) > 0 {
@@ -332,9 +345,6 @@ func (ec *EphemeralContractor) DebitAccount(account proto4.Account, usage proto4
 		}
 		ec.pools[pool] = balance.Sub(take)
 		remaining = remaining.Sub(take)
-	}
-	if !remaining.IsZero() {
-		return proto4.ErrNotEnoughFunds
 	}
 	return nil
 }

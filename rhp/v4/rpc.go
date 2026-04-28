@@ -992,6 +992,7 @@ type PoolDetachInput struct {
 // its pool's private key. validity bounds the replay window for the whole
 // batch.
 func RPCAttachPools(ctx context.Context, t TransportClient, inputs []PoolAttachInput, validity time.Duration) error {
+	hostKey := t.PeerKey()
 	deadline := time.Now().Add(validity)
 	attachments := make([]rhp4.PoolAttachment, 0, len(inputs))
 	for _, in := range inputs {
@@ -1000,7 +1001,7 @@ func RPCAttachPools(ctx context.Context, t TransportClient, inputs []PoolAttachI
 			Pool:       rhp4.Account(in.PoolKey.PublicKey()),
 			ValidUntil: deadline,
 		}
-		a.Signature = in.PoolKey.SignHash(a.SigHash())
+		a.Signature = in.PoolKey.SignHash(a.SigHash(hostKey))
 		attachments = append(attachments, a)
 	}
 	req := rhp4.RPCAttachPoolsRequest{Attachments: attachments}
@@ -1014,6 +1015,7 @@ func RPCAttachPools(ctx context.Context, t TransportClient, inputs []PoolAttachI
 // RPCDetachPools batches one or more detachments. Each entry is signed by
 // either the account's or the pool's private key.
 func RPCDetachPools(ctx context.Context, t TransportClient, inputs []PoolDetachInput, validity time.Duration) error {
+	hostKey := t.PeerKey()
 	deadline := time.Now().Add(validity)
 	detachments := make([]rhp4.PoolDetachment, 0, len(inputs))
 	for _, in := range inputs {
@@ -1022,7 +1024,7 @@ func RPCDetachPools(ctx context.Context, t TransportClient, inputs []PoolDetachI
 			Pool:       in.Pool,
 			ValidUntil: deadline,
 		}
-		d.Signature = in.Signer.SignHash(d.SigHash())
+		d.Signature = in.Signer.SignHash(d.SigHash(hostKey))
 		detachments = append(detachments, d)
 	}
 	req := rhp4.RPCDetachPoolsRequest{Detachments: detachments}

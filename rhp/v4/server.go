@@ -650,8 +650,9 @@ func (s *Server) handleRPCAttachPools(stream net.Conn) error {
 	} else if err := req.Validate(); err != nil {
 		return err
 	}
+	hostKey := s.hostKey.PublicKey()
 	for i := range req.Attachments {
-		if !req.Attachments[i].ValidSignature() {
+		if !req.Attachments[i].ValidSignature(hostKey) {
 			return errorBadRequest("attachment %d: invalid signature", i)
 		}
 	}
@@ -669,8 +670,9 @@ func (s *Server) handleRPCDetachPools(stream net.Conn) error {
 	} else if err := req.Validate(); err != nil {
 		return err
 	}
+	hostKey := s.hostKey.PublicKey()
 	for i := range req.Detachments {
-		if !req.Detachments[i].ValidSignature() {
+		if !req.Detachments[i].ValidSignature(hostKey) {
 			return errorBadRequest("detachment %d: invalid signature", i)
 		}
 	}
