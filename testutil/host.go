@@ -88,6 +88,10 @@ type EphemeralContractor struct {
 	locks            map[types.FileContractID]bool
 
 	accounts map[proto4.Account]types.Currency
+	pools    map[proto4.Account]types.Currency
+	// attached preserves attachment order so pools drain in the order they
+	// were attached, after the account's own balance.
+	attached map[proto4.Account][]proto4.Account
 
 	mu       sync.Mutex
 	shutdown chan struct{}
@@ -298,16 +302,140 @@ func (ec *EphemeralContractor) CreditAccountsWithContract(deposits []proto4.Acco
 	return balance, nil
 }
 
-// DebitAccount debits an account by the given amount.
+// DebitAccount debits an account by the given amount. The account's own
+// balance drains first; if insufficient, attached pools are drained in
+// attachment order. Returns ErrNotEnoughFunds without mutating any balances
+// if the combined drawable amount is insufficient.
 func (ec *EphemeralContractor) DebitAccount(account proto4.Account, usage proto4.Usage) error {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 
-	balance, ok := ec.accounts[account]
-	if !ok || balance.Cmp(usage.RenterCost()) < 0 {
+	cost := usage.RenterCost()
+	drawable := ec.accounts[account]
+	for _, pool := range ec.attached[account] {
+		if drawable.Cmp(cost) >= 0 {
+			break
+		}
+		drawable = drawable.Add(ec.pools[pool])
+	}
+	if drawable.Cmp(cost) < 0 {
 		return proto4.ErrNotEnoughFunds
 	}
-	ec.accounts[account] = balance.Sub(usage.RenterCost())
+
+	remaining := cost
+	if balance := ec.accounts[account]; !balance.IsZero() {
+		take := balance
+		if balance.Cmp(remaining) > 0 {
+			take = remaining
+		}
+		ec.accounts[account] = balance.Sub(take)
+		remaining = remaining.Sub(take)
+	}
+	for _, pool := range ec.attached[account] {
+		if remaining.IsZero() {
+			break
+		}
+		balance := ec.pools[pool]
+		if balance.IsZero() {
+			continue
+		}
+		take := balance
+		if balance.Cmp(remaining) > 0 {
+			take = remaining
+		}
+		ec.pools[pool] = balance.Sub(take)
+		remaining = remaining.Sub(take)
+	}
+	return nil
+}
+
+// PoolBalances returns the balances of multiple pools. The order of the
+// returned balances corresponds to the order of the input pools. If a pool
+// is not found, its balance will be types.ZeroCurrency.
+func (ec *EphemeralContractor) PoolBalances(pools []proto4.Account) ([]types.Currency, error) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	balances := make([]types.Currency, 0, len(pools))
+	for _, pool := range pools {
+		balances = append(balances, ec.pools[pool])
+	}
+	return balances, nil
+}
+
+// CreditPoolsWithContract credits pools with the given deposits and revises
+// the contract revision. Pools auto-create on first credit.
+func (ec *EphemeralContractor) CreditPoolsWithContract(deposits []proto4.AccountDeposit, contractID types.FileContractID, revision types.V2FileContract, _ proto4.Usage) ([]types.Currency, error) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	existing, ok := ec.contracts[contractID]
+	if !ok {
+		return nil, errors.New("contract not found")
+	} else if revision.RevisionNumber <= existing.RevisionNumber {
+		return nil, errors.New("revision number must be greater than existing")
+	}
+
+	sigHash := consensus.State{}.ContractSigHash(revision)
+	if !existing.RenterPublicKey.VerifyHash(sigHash, revision.RenterSignature) {
+		return nil, errors.New("invalid renter signature")
+	} else if !existing.HostPublicKey.VerifyHash(sigHash, revision.HostSignature) {
+		return nil, errors.New("invalid host signature")
+	}
+
+	balances := make([]types.Currency, 0, len(deposits))
+	for _, deposit := range deposits {
+		ec.pools[deposit.Account] = ec.pools[deposit.Account].Add(deposit.Amount)
+		balances = append(balances, ec.pools[deposit.Account])
+	}
+
+	ec.contracts[contractID] = revision
+	return balances, nil
+}
+
+// AttachPools applies a batch of attachments atomically. All referenced
+// pools must exist before any mutation occurs.
+func (ec *EphemeralContractor) AttachPools(attachments []proto4.PoolAttachment) error {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	for _, a := range attachments {
+		if _, ok := ec.pools[a.Pool]; !ok {
+			return fmt.Errorf("pool %v does not exist", a.Pool)
+		}
+	}
+	for _, a := range attachments {
+		already := false
+		for _, existing := range ec.attached[a.Account] {
+			if existing == a.Pool {
+				already = true
+				break
+			}
+		}
+		if !already {
+			ec.attached[a.Account] = append(ec.attached[a.Account], a.Pool)
+		}
+	}
+	return nil
+}
+
+// DetachPools applies a batch of detachments atomically. Idempotent on
+// missing attachments.
+func (ec *EphemeralContractor) DetachPools(detachments []proto4.PoolDetachment) error {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	for _, d := range detachments {
+		links := ec.attached[d.Account]
+		for i, existing := range links {
+			if existing == d.Pool {
+				ec.attached[d.Account] = append(links[:i], links[i+1:]...)
+				break
+			}
+		}
+		if len(ec.attached[d.Account]) == 0 {
+			delete(ec.attached, d.Account)
+		}
+	}
 	return nil
 }
 
@@ -448,6 +576,8 @@ func NewEphemeralContractor(cm *chain.Manager) *EphemeralContractor {
 		roots:            make(map[types.FileContractID][]types.Hash256),
 		locks:            make(map[types.FileContractID]bool),
 		accounts:         make(map[proto4.Account]types.Currency),
+		pools:            make(map[proto4.Account]types.Currency),
+		attached:         make(map[proto4.Account][]proto4.Account),
 		shutdown:         make(chan struct{}),
 	}
 

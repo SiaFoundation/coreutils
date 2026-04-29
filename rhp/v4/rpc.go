@@ -229,6 +229,33 @@ type (
 		Usage    rhp4.Usage            `json:"usage"`
 	}
 
+	// A PoolBalance pairs a pool key with its current balance.
+	PoolBalance struct {
+		Pool    rhp4.Account   `json:"pool"`
+		Balance types.Currency `json:"balance"`
+	}
+
+	// RPCFundPoolsResult contains the result of executing the fund pools RPC.
+	RPCFundPoolsResult struct {
+		Revision types.V2FileContract `json:"revision"`
+		Balances []PoolBalance        `json:"balances"`
+		Usage    rhp4.Usage           `json:"usage"`
+	}
+
+	// RPCReplenishPoolsParams contains the parameters for the replenish pools RPC.
+	RPCReplenishPoolsParams struct {
+		Pools    []rhp4.Account   `json:"pools"`
+		Target   types.Currency   `json:"target"`
+		Contract ContractRevision `json:"contract"`
+	}
+
+	// RPCReplenishPoolsResult contains the result of executing the replenish pools RPC.
+	RPCReplenishPoolsResult struct {
+		Revision types.V2FileContract  `json:"revision"`
+		Deposits []rhp4.AccountDeposit `json:"deposits"`
+		Usage    rhp4.Usage            `json:"usage"`
+	}
+
 	// RPCSectorRootsResult contains the result of executing the sector roots RPC.
 	RPCSectorRootsResult struct {
 		Revision types.V2FileContract `json:"revision"`
@@ -813,6 +840,199 @@ func RPCReplenishAccounts(ctx context.Context, t TransportClient, p RPCReplenish
 		Deposits: resp.Deposits,
 		Usage:    usage,
 	}, nil
+}
+
+// RPCFundPools funds pools on the host. Pools auto-create on first credit.
+// Reuses RPCFundAccountsRequest/Response on the wire — the host routes the
+// deposits to its pool table based on the RPC ID.
+func RPCFundPools(ctx context.Context, t TransportClient, cs consensus.State, signer ContractSigner, contract ContractRevision, deposits []rhp4.AccountDeposit) (RPCFundPoolsResult, error) {
+	var total types.Currency
+	for _, deposit := range deposits {
+		total = total.Add(deposit.Amount)
+	}
+	revision, usage, err := rhp4.ReviseForFundAccounts(contract.Revision, total)
+	if err != nil {
+		return RPCFundPoolsResult{}, fmt.Errorf("failed to revise contract: %w", err)
+	}
+	sigHash := cs.ContractSigHash(revision)
+	revision.RenterSignature = signer.SignHash(sigHash)
+
+	req := rhp4.RPCFundAccountsRequest{
+		ContractID:      contract.ID,
+		Deposits:        deposits,
+		RenterSignature: revision.RenterSignature,
+	}
+
+	if err := req.Validate(); err != nil {
+		return RPCFundPoolsResult{}, fmt.Errorf("invalid request: %w", err)
+	}
+
+	var resp rhp4.RPCFundAccountsResponse
+	if err := callSingleRoundtripRPC(ctx, t, rhp4.RPCFundPoolsID, &req, &resp); err != nil {
+		return RPCFundPoolsResult{}, err
+	}
+
+	if len(resp.Balances) != len(deposits) {
+		return RPCFundPoolsResult{}, fmt.Errorf("expected %v balances, got %v", len(deposits), len(resp.Balances))
+	} else if !contract.Revision.HostPublicKey.VerifyHash(sigHash, resp.HostSignature) {
+		return RPCFundPoolsResult{}, rhp4.ErrInvalidSignature
+	}
+	revision.HostSignature = resp.HostSignature
+
+	balances := make([]PoolBalance, 0, len(deposits))
+	for i := range deposits {
+		balances = append(balances, PoolBalance{
+			Pool:    deposits[i].Account,
+			Balance: resp.Balances[i],
+		})
+	}
+
+	return RPCFundPoolsResult{
+		Revision: revision,
+		Balances: balances,
+		Usage:    usage,
+	}, nil
+}
+
+// RPCReplenishPools tops up pool balances to a target on the host. Reuses
+// RPCReplenishAccounts wire types — the host routes deposits to its pool
+// table based on the RPC ID.
+func RPCReplenishPools(ctx context.Context, t TransportClient, p RPCReplenishPoolsParams, cs consensus.State, signer ContractSigner) (RPCReplenishPoolsResult, error) {
+	req := rhp4.RPCReplenishAccountsRequest{
+		Accounts:   p.Pools,
+		Target:     p.Target,
+		ContractID: p.Contract.ID,
+	}
+	challengeSigHash := req.ChallengeSigHash(p.Contract.Revision.RevisionNumber)
+	req.ChallengeSignature = signer.SignHash(challengeSigHash)
+
+	if err := req.Validate(); err != nil {
+		return RPCReplenishPoolsResult{}, fmt.Errorf("invalid request: %w", err)
+	}
+
+	s, err := openStream(ctx, t, defaultStreamTimeout)
+	if err != nil {
+		return RPCReplenishPoolsResult{}, fmt.Errorf("failed to dial stream: %w", err)
+	}
+	defer s.Close()
+
+	if err := rhp4.WriteRequest(s, rhp4.RPCReplenishPoolsID, &req); err != nil {
+		return RPCReplenishPoolsResult{}, fmt.Errorf("failed to write request: %w", err)
+	}
+
+	maxCost := p.Target.Mul64(uint64(len(p.Pools)))
+
+	var resp rhp4.RPCReplenishAccountsResponse
+	if err := rhp4.ReadResponse(s, &resp); err != nil {
+		return RPCReplenishPoolsResult{}, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	for _, deposit := range resp.Deposits {
+		if deposit.Amount.Cmp(p.Target) > 0 {
+			return RPCReplenishPoolsResult{}, fmt.Errorf("expected deposit <= %v, got %v", p.Target, deposit.Amount)
+		}
+	}
+
+	totalCost := resp.TotalCost()
+	if totalCost.IsZero() {
+		return RPCReplenishPoolsResult{
+			Revision: p.Contract.Revision,
+			Deposits: resp.Deposits,
+		}, nil
+	} else if totalCost.Cmp(maxCost) > 0 {
+		return RPCReplenishPoolsResult{}, fmt.Errorf("expected cost <= %v, got %v", maxCost, totalCost)
+	}
+
+	revision, usage, err := rhp4.ReviseForReplenish(p.Contract.Revision, totalCost)
+	if err != nil {
+		return RPCReplenishPoolsResult{}, fmt.Errorf("failed to revise contract: %w", err)
+	}
+
+	sigHash := cs.ContractSigHash(revision)
+	revision.RenterSignature = signer.SignHash(sigHash)
+
+	signatureResp := rhp4.RPCReplenishAccountsSecondResponse{
+		RenterSignature: revision.RenterSignature,
+	}
+	if err := rhp4.WriteResponse(s, &signatureResp); err != nil {
+		return RPCReplenishPoolsResult{}, fmt.Errorf("failed to write signature response: %w", err)
+	}
+
+	var hostSignature rhp4.RPCReplenishAccountsThirdResponse
+	if err := rhp4.ReadResponse(s, &hostSignature); err != nil {
+		return RPCReplenishPoolsResult{}, fmt.Errorf("failed to read host signatures: %w", err)
+	} else if !p.Contract.Revision.HostPublicKey.VerifyHash(sigHash, hostSignature.HostSignature) {
+		return RPCReplenishPoolsResult{}, fmt.Errorf("failed to validate host signature: %w", rhp4.ErrInvalidSignature)
+	}
+	revision.HostSignature = hostSignature.HostSignature
+	return RPCReplenishPoolsResult{
+		Revision: revision,
+		Deposits: resp.Deposits,
+		Usage:    usage,
+	}, nil
+}
+
+// PoolAttachInput pairs an account with the pool keypair authorizing the
+// attachment.
+type PoolAttachInput struct {
+	Account rhp4.Account
+	PoolKey types.PrivateKey
+}
+
+// PoolDetachInput identifies an attachment to sever, paired with the private
+// key that signs the request. The signer may be either the account's or the
+// pool's key.
+type PoolDetachInput struct {
+	Account rhp4.Account
+	Pool    rhp4.Account
+	Signer  types.PrivateKey
+}
+
+// RPCAttachPools batches one or more attachments. Each entry is signed by
+// its pool's private key. validity bounds the replay window for the whole
+// batch.
+func RPCAttachPools(ctx context.Context, t TransportClient, inputs []PoolAttachInput, validity time.Duration) error {
+	hostKey := t.PeerKey()
+	deadline := time.Now().Add(validity)
+	attachments := make([]rhp4.PoolAttachment, 0, len(inputs))
+	for _, in := range inputs {
+		a := rhp4.PoolAttachment{
+			Account:    in.Account,
+			Pool:       rhp4.Account(in.PoolKey.PublicKey()),
+			ValidUntil: deadline,
+		}
+		a.Signature = in.PoolKey.SignHash(a.SigHash(hostKey))
+		attachments = append(attachments, a)
+	}
+	req := rhp4.RPCAttachPoolsRequest{Attachments: attachments}
+	if err := req.Validate(); err != nil {
+		return fmt.Errorf("invalid request: %w", err)
+	}
+	var resp rhp4.RPCAttachPoolsResponse
+	return callSingleRoundtripRPC(ctx, t, rhp4.RPCAttachPoolsID, &req, &resp)
+}
+
+// RPCDetachPools batches one or more detachments. Each entry is signed by
+// either the account's or the pool's private key.
+func RPCDetachPools(ctx context.Context, t TransportClient, inputs []PoolDetachInput, validity time.Duration) error {
+	hostKey := t.PeerKey()
+	deadline := time.Now().Add(validity)
+	detachments := make([]rhp4.PoolDetachment, 0, len(inputs))
+	for _, in := range inputs {
+		d := rhp4.PoolDetachment{
+			Account:    in.Account,
+			Pool:       in.Pool,
+			ValidUntil: deadline,
+		}
+		d.Signature = in.Signer.SignHash(d.SigHash(hostKey))
+		detachments = append(detachments, d)
+	}
+	req := rhp4.RPCDetachPoolsRequest{Detachments: detachments}
+	if err := req.Validate(); err != nil {
+		return fmt.Errorf("invalid request: %w", err)
+	}
+	var resp rhp4.RPCDetachPoolsResponse
+	return callSingleRoundtripRPC(ctx, t, rhp4.RPCDetachPoolsID, &req, &resp)
 }
 
 // RPCLatestRevision returns the latest revision of a contract.

@@ -118,8 +118,24 @@ type (
 		AccountBalances([]rhp4.Account) ([]types.Currency, error)
 		// CreditAccountsWithContract atomically revises a contract and credits the account.
 		CreditAccountsWithContract([]rhp4.AccountDeposit, types.FileContractID, types.V2FileContract, rhp4.Usage) ([]types.Currency, error)
-		// DebitAccount debits an account.
+		// DebitAccount debits an account. The account's own balance is
+		// drained first; if insufficient, attached pools are drained in
+		// attachment order. Returns ErrNotEnoughFunds if the combined
+		// drawable balance is insufficient.
 		DebitAccount(rhp4.Account, rhp4.Usage) error
+
+		// PoolBalances returns balances for the given pool keys in input
+		// order. Unknown pools return types.ZeroCurrency.
+		PoolBalances([]rhp4.Account) ([]types.Currency, error)
+		// CreditPoolsWithContract atomically revises a contract and credits
+		// the pools. Pools auto-create on first credit.
+		CreditPoolsWithContract([]rhp4.AccountDeposit, types.FileContractID, types.V2FileContract, rhp4.Usage) ([]types.Currency, error)
+		// AttachPools applies a batch of attachments atomically. Each pool
+		// must already exist; idempotent on existing attachments.
+		AttachPools([]rhp4.PoolAttachment) error
+		// DetachPools applies a batch of detachments atomically. Idempotent
+		// on missing attachments.
+		DetachPools([]rhp4.PoolDetachment) error
 	}
 
 	// Settings reports the host's current settings.
@@ -512,6 +528,159 @@ func (s *Server) handleRPCReplenishAccounts(stream net.Conn) error {
 	return rhp4.WriteResponse(stream, &rhp4.RPCReplenishAccountsThirdResponse{
 		HostSignature: revision.HostSignature,
 	})
+}
+
+func (s *Server) handleRPCFundPools(stream net.Conn) error {
+	var req rhp4.RPCFundAccountsRequest
+	if err := rhp4.ReadRequest(stream, &req); err != nil {
+		return errorDecodingError("failed to read request: %v", err)
+	} else if err := req.Validate(); err != nil {
+		return err
+	}
+
+	state, unlock, err := s.lockContractForRevision(req.ContractID)
+	if err != nil {
+		return fmt.Errorf("failed to lock contract: %w", err)
+	}
+	defer unlock()
+
+	var totalDeposits types.Currency
+	for _, deposit := range req.Deposits {
+		totalDeposits = totalDeposits.Add(deposit.Amount)
+	}
+
+	revision, usage, err := rhp4.ReviseForFundAccounts(state.Revision, totalDeposits)
+	if err != nil {
+		return fmt.Errorf("failed to revise contract: %w", err)
+	}
+
+	sigHash := s.chain.TipState().ContractSigHash(revision)
+	if !revision.RenterPublicKey.VerifyHash(sigHash, req.RenterSignature) {
+		return rhp4.ErrInvalidSignature
+	}
+	revision.RenterSignature = req.RenterSignature
+	revision.HostSignature = s.hostKey.SignHash(sigHash)
+
+	balances, err := s.contractor.CreditPoolsWithContract(req.Deposits, req.ContractID, revision, usage)
+	if err != nil {
+		return fmt.Errorf("failed to credit pools: %w", err)
+	}
+
+	return rhp4.WriteResponse(stream, &rhp4.RPCFundAccountsResponse{
+		Balances:      balances,
+		HostSignature: revision.HostSignature,
+	})
+}
+
+func (s *Server) handleRPCReplenishPools(stream net.Conn) error {
+	var req rhp4.RPCReplenishAccountsRequest
+	if err := rhp4.ReadRequest(stream, &req); err != nil {
+		return errorDecodingError("failed to read request: %v", err)
+	} else if err := req.Validate(); err != nil {
+		return rhp4.NewRPCError(rhp4.ErrorCodeBadRequest, err.Error())
+	}
+
+	state, unlock, err := s.lockContractForRevision(req.ContractID)
+	if err != nil {
+		return fmt.Errorf("failed to lock contract %q: %w", req.ContractID, err)
+	}
+	defer unlock()
+
+	existing := state.Revision
+	if !req.ValidChallengeSignature(existing) {
+		return errorBadRequest("failed to validate challenge signature: %v", rhp4.ErrInvalidSignature)
+	}
+
+	balances, err := s.contractor.PoolBalances(req.Accounts)
+	if err != nil {
+		return fmt.Errorf("failed to get pool balances: %w", err)
+	}
+
+	var depositSum types.Currency
+	var costResp rhp4.RPCReplenishAccountsResponse
+	for i, balance := range balances {
+		deposit := rhp4.AccountDeposit{
+			Account: req.Accounts[i],
+		}
+		value, underflows := req.Target.SubWithUnderflow(balance)
+		if !underflows {
+			deposit.Amount = value
+		}
+		depositSum = depositSum.Add(deposit.Amount)
+		costResp.Deposits = append(costResp.Deposits, deposit)
+	}
+
+	if err := rhp4.WriteResponse(stream, &costResp); err != nil {
+		return fmt.Errorf("failed to write response: %w", err)
+	} else if depositSum.IsZero() {
+		return nil
+	}
+
+	revision, usage, err := rhp4.ReviseForReplenish(existing, depositSum)
+	if err != nil {
+		return fmt.Errorf("failed to revise contract: %w", err)
+	}
+
+	var renterSigResp rhp4.RPCReplenishAccountsSecondResponse
+	if err := rhp4.ReadResponse(stream, &renterSigResp); err != nil {
+		return errorDecodingError("failed to read renter signature response: %v", err)
+	}
+
+	sigHash := s.chain.TipState().ContractSigHash(revision)
+	if !revision.RenterPublicKey.VerifyHash(sigHash, renterSigResp.RenterSignature) {
+		return rhp4.ErrInvalidSignature
+	}
+	revision.RenterSignature = renterSigResp.RenterSignature
+	revision.HostSignature = s.hostKey.SignHash(sigHash)
+
+	_, err = s.contractor.CreditPoolsWithContract(costResp.Deposits, req.ContractID, revision, usage)
+	if err != nil {
+		return fmt.Errorf("failed to credit pools: %w", err)
+	}
+
+	return rhp4.WriteResponse(stream, &rhp4.RPCReplenishAccountsThirdResponse{
+		HostSignature: revision.HostSignature,
+	})
+}
+
+func (s *Server) handleRPCAttachPools(stream net.Conn) error {
+	var req rhp4.RPCAttachPoolsRequest
+	if err := rhp4.ReadRequest(stream, &req); err != nil {
+		return errorDecodingError("failed to read request: %v", err)
+	} else if err := req.Validate(); err != nil {
+		return err
+	}
+	hostKey := s.hostKey.PublicKey()
+	for i := range req.Attachments {
+		if !req.Attachments[i].ValidSignature(hostKey) {
+			return errorBadRequest("attachment %d: invalid signature", i)
+		}
+	}
+
+	if err := s.contractor.AttachPools(req.Attachments); err != nil {
+		return fmt.Errorf("failed to attach pools: %w", err)
+	}
+	return rhp4.WriteResponse(stream, &rhp4.RPCAttachPoolsResponse{})
+}
+
+func (s *Server) handleRPCDetachPools(stream net.Conn) error {
+	var req rhp4.RPCDetachPoolsRequest
+	if err := rhp4.ReadRequest(stream, &req); err != nil {
+		return errorDecodingError("failed to read request: %v", err)
+	} else if err := req.Validate(); err != nil {
+		return err
+	}
+	hostKey := s.hostKey.PublicKey()
+	for i := range req.Detachments {
+		if !req.Detachments[i].ValidSignature(hostKey) {
+			return errorBadRequest("detachment %d: invalid signature", i)
+		}
+	}
+
+	if err := s.contractor.DetachPools(req.Detachments); err != nil {
+		return fmt.Errorf("failed to detach pools: %w", err)
+	}
+	return rhp4.WriteResponse(stream, &rhp4.RPCDetachPoolsResponse{})
 }
 
 func (s *Server) handleRPCLatestRevision(stream net.Conn) error {
@@ -1184,6 +1353,15 @@ func (s *Server) handleHostStream(stream net.Conn, log *zap.Logger) {
 		err = s.handleRPCFundAccounts(stream)
 	case rhp4.RPCReplenishAccountsID:
 		err = s.handleRPCReplenishAccounts(stream)
+	// pool
+	case rhp4.RPCFundPoolsID:
+		err = s.handleRPCFundPools(stream)
+	case rhp4.RPCReplenishPoolsID:
+		err = s.handleRPCReplenishPools(stream)
+	case rhp4.RPCAttachPoolsID:
+		err = s.handleRPCAttachPools(stream)
+	case rhp4.RPCDetachPoolsID:
+		err = s.handleRPCDetachPools(stream)
 	// sector
 	case rhp4.RPCAppendSectorsID:
 		err = s.handleRPCAppendSectors(stream)
