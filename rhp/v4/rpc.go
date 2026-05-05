@@ -466,10 +466,10 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 	rpv := rhp4.NewRangeProofVerifier(start, end)
 	if n, err := rpv.ReadFrom(io.TeeReader(io.LimitReader(s, int64(resp.DataLength)), w)); err != nil {
 		return RPCReadSectorResult{}, fmt.Errorf("failed to read data: %w", err)
-	} else if !rpv.Verify(resp.Proof, root) {
-		return RPCReadSectorResult{}, ErrInvalidProof
 	} else if n != int64(resp.DataLength) {
 		return RPCReadSectorResult{}, io.ErrUnexpectedEOF
+	} else if !rpv.Verify(resp.Proof, root) {
+		return RPCReadSectorResult{}, ErrInvalidProof
 	}
 	return RPCReadSectorResult{
 		Usage: prices.RPCReadSectorCost(length),
