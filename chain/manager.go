@@ -1419,7 +1419,7 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 			return false, fmt.Errorf("transaction %v conflicts with pool: %w", txid, err)
 		}
 		m.txpool.ms.ApplyV2Transaction(txn)
-		m.txpool.indices[txid] = len(m.txpool.txns)
+		m.txpool.indices[txid] = len(m.txpool.v2txns)
 		m.txpool.v2txns = append(m.txpool.v2txns, txn)
 		m.txpool.weight += m.tipState.V2TransactionWeight(txn)
 	}
