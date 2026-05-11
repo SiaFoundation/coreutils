@@ -36,6 +36,9 @@ var (
 	// ProtocolVersion502 fixed hosts performing invalid MaxCollateral
 	// validation on partial rollover refreshes.
 	ProtocolVersion502 = rhp4.ProtocolVersion{5, 0, 2}
+
+	// ProtocolVersion510 added RHP account pools.
+	ProtocolVersion510 = rhp4.ProtocolVersion{5, 1, 0}
 )
 
 var (

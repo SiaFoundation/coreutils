@@ -19,7 +19,7 @@ import (
 	"lukechampine.com/frand"
 )
 
-var protocolVersion = ProtocolVersion502
+var protocolVersion = ProtocolVersion510
 
 type (
 	// A TransportMux is a generic multiplexer for incoming streams.
