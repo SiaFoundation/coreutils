@@ -1510,7 +1510,7 @@ func TestRPCReplenishAccounts(t *testing.T) {
 
 	var balances []rhp4.AccountBalance
 	// add some random unknown accounts
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		balances = append(balances, rhp4.AccountBalance{
 			Account: proto4.Account(frand.Entropy256()),
 			Balance: types.ZeroCurrency,
@@ -2588,7 +2588,7 @@ func TestAppendSectors(t *testing.T) {
 
 	// store random sectors
 	roots := make([]types.Hash256, 0, 10)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		var sector [proto4.SectorSize]byte
 		frand.Read(sector[:])
 		root := proto4.SectorRoot(&sector)
