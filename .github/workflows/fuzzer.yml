@@ -12,19 +12,19 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           repository: SiaFoundation/fuzz
           token: ${{ secrets.FOUNDATION_READ_TOKEN }}
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
 
       - name: Build
         run: go get go.sia.tech/core@none && go get go.sia.tech/coreutils@$GITHUB_SHA && go mod tidy && go build -buildvcs=false .
 
       - name: Run
         run: ./fuzzer fuzz
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           # Name of the artifact to upload.
           # Optional. Default is 'artifact'
