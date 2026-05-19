@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -85,6 +86,22 @@ func Subnet(addr, mask string) string {
 		return "" // shouldn't happen
 	}
 	return ip.Mask(ipnet.Mask).String() + mask
+}
+
+func validatePeer(addr string) error {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return err
+	} else if len(host) == 0 {
+		return errors.New("empty host")
+	} else if len(host) > 254 {
+		return errors.New("host too long")
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return errors.New("invalid port")
+	}
+	return nil
 }
 
 type config struct {
@@ -595,7 +612,10 @@ func (s *Syncer) peerLoop(ctx context.Context) error {
 				continue
 			}
 			for _, n := range nodes {
-				if err := s.pm.AddPeer(n); err != nil {
+				if err := validatePeer(n); err != nil {
+					log.Debug("ignoring invalid peer address", zap.String("peer", n), zap.Error(err))
+					continue
+				} else if err := s.pm.AddPeer(n); err != nil {
 					log.Debug("failed to add peer", zap.String("peer", n), zap.Error(err))
 				}
 			}
