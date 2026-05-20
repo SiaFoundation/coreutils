@@ -88,13 +88,16 @@ func Subnet(addr, mask string) string {
 	return ip.Mask(ipnet.Mask).String() + mask
 }
 
+// maxHostLen is the maximum length of a peer's host component per RFC 1035.
+const maxHostLen = 253
+
 func validatePeer(addr string) error {
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
 		return err
 	} else if len(host) == 0 {
 		return errors.New("empty host")
-	} else if len(host) > 254 {
+	} else if len(host) > maxHostLen {
 		return errors.New("host too long")
 	}
 	port, err := strconv.Atoi(portStr)
@@ -585,6 +588,10 @@ func (s *Syncer) peerLoop(ctx context.Context) error {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		for _, p := range p {
+			if err := validatePeer(p.Address); err != nil {
+				log.Debug("ignoring invalid peer address", zap.String("peer", p.Address), zap.Error(err))
+				continue
+			}
 			// TODO: don't include port in comparison
 			if _, ok := s.peers[p.Address]; !ok && time.Since(lastTried[p.Address]) > 5*time.Minute {
 				peers = append(peers, p.Address)

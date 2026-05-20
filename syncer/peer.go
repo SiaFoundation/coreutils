@@ -236,11 +236,12 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 		frand.Shuffle(len(connected), func(i, j int) { connected[i], connected[j] = connected[j], connected[i] })
 		for i := 0; i < len(connected) && len(r.Peers) < 10; i++ {
 			p := connected[i]
-			if _, ok := seen[p.Addr()]; ok || p.Inbound {
+			addr := p.Addr()
+			if _, ok := seen[addr]; ok || p.Inbound || validatePeer(addr) != nil {
 				continue
 			}
-			r.Peers = append(r.Peers, p.Addr())
-			seen[p.Addr()] = struct{}{}
+			r.Peers = append(r.Peers, addr)
+			seen[addr] = struct{}{}
 		}
 
 		if len(r.Peers) < 10 {
@@ -252,7 +253,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 			frand.Shuffle(len(morePeers), func(i, j int) { morePeers[i], morePeers[j] = morePeers[j], morePeers[i] })
 			for i := 0; i < len(morePeers) && len(r.Peers) < 10; i++ {
 				p := morePeers[i]
-				if _, ok := seen[p.Address]; ok {
+				if _, ok := seen[p.Address]; ok || validatePeer(p.Address) != nil {
 					continue
 				}
 				r.Peers = append(r.Peers, p.Address)

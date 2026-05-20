@@ -557,3 +557,88 @@ func TestParallelSyncStall(t *testing.T) {
 	// syncing with s2
 	synced(t, cm1, cm3)
 }
+
+func TestShareNodesMalformed(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	// s1's peer store contains malformed addresses that should not
+	// be served via ShareNodes or added to other peer stores
+	malformed := map[string]bool{
+		":1234":      true,
+		"host:99999": true,
+		"host:0":     true,
+		"noport":     true,
+		"":           true,
+	}
+	n, genesis := testutil.Network()
+
+	ps1 := testutil.NewEphemeralPeerStore()
+	for addr := range malformed {
+		ps1.AddPeer(addr)
+	}
+	ps1.AddPeer("127.0.0.1:65535")
+	store1, tipState1, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm1 := chain.NewManager(store1, tipState1)
+
+	l1, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l1.Close() })
+
+	s1 := syncer.New(l1, cm1, ps1, gateway.Header{
+		GenesisID:  genesis.ID(),
+		UniqueID:   gateway.GenerateUniqueID(),
+		NetAddress: l1.Addr().String(),
+	}, syncer.WithLogger(log.Named("syncer1")), syncer.WithSyncInterval(100*time.Millisecond))
+	go s1.Run()
+	defer s1.Close()
+
+	// s2 connects to s1 and runs peer discovery
+	ps2 := testutil.NewEphemeralPeerStore()
+	store2, tipState2, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm2 := chain.NewManager(store2, tipState2)
+
+	l2, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l2.Close() })
+
+	s2 := syncer.New(l2, cm2, ps2, gateway.Header{
+		GenesisID:  genesis.ID(),
+		UniqueID:   gateway.GenerateUniqueID(),
+		NetAddress: l2.Addr().String(),
+	}, syncer.WithLogger(log.Named("syncer2")), syncer.WithSyncInterval(100*time.Millisecond), syncer.WithPeerDiscoveryInterval(100*time.Millisecond))
+	go s2.Run()
+	defer s2.Close()
+
+	if _, err := s2.Connect(context.Background(), s1.Addr()); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		peers, err := ps2.Peers()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range peers {
+			if malformed[p.Address] {
+				t.Fatalf("malformed address %q should not have been added to peer store", p.Address)
+			}
+		}
+		if len(peers) > 1 {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatal("peer discovery did not add any peers")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
