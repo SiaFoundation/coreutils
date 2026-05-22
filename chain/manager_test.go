@@ -324,6 +324,115 @@ func TestUpdateV2TransactionSet(t *testing.T) {
 	}
 }
 
+// TestValidateV2TransactionManyInputs measures the validation cost of a v2
+// transaction containing 5000 siacoin inputs, the approximate maximum that
+// fits within the 5 MB RPCRelayV2TransactionSet limit. Each input is signed
+// independently with its own ed25519 key.
+func TestValidateV2TransactionManyInputs(t *testing.T) {
+	const numInputs = 5000
+
+	n, genesisBlock := TestnetZen()
+	n.InitialTarget = types.BlockID{0xFF}
+	n.HardforkDevAddr.Height = 0
+	n.HardforkTax.Height = 0
+	n.HardforkStorageProof.Height = 0
+	n.HardforkOak.Height = 0
+	n.HardforkOak.FixHeight = 0
+	n.HardforkASIC.Height = 0
+	n.HardforkFoundation.Height = 0
+	n.HardforkV2.AllowHeight = 0
+
+	// generate a distinct key per input so signature verification can't be
+	// short-circuited by deduplication
+	keys := make([]types.PrivateKey, numInputs)
+	outputs := make([]types.SiacoinOutput, numInputs)
+	for i := range keys {
+		keys[i] = types.GeneratePrivateKey()
+		outputs[i] = types.SiacoinOutput{
+			Address: types.StandardAddress(keys[i].PublicKey()),
+			Value:   types.Siacoins(1),
+		}
+	}
+	genesisBlock.Transactions = []types.Transaction{{SiacoinOutputs: outputs}}
+
+	bs := consensus.V1BlockSupplement{Transactions: make([]consensus.V1TransactionSupplement, 1)}
+	cs, cau := consensus.ApplyBlock(n.GenesisState(), genesisBlock, bs, time.Time{})
+
+	diffs := cau.SiacoinElementDiffs()
+	if len(diffs) < numInputs {
+		t.Fatalf("expected %d siacoin elements, got %d", numInputs, len(diffs))
+	}
+
+	// index siacoin elements by address so we can pair them with their key
+	elementByAddr := make(map[types.Address]types.SiacoinElement, numInputs)
+	for _, d := range diffs {
+		elementByAddr[d.SiacoinElement.SiacoinOutput.Address] = d.SiacoinElement.Copy()
+	}
+
+	txn := types.V2Transaction{
+		SiacoinInputs: make([]types.V2SiacoinInput, numInputs),
+	}
+	totalIn := types.ZeroCurrency
+	inputKeys := make([]types.PrivateKey, numInputs)
+	for i, sk := range keys {
+		sce, ok := elementByAddr[types.StandardAddress(sk.PublicKey())]
+		if !ok {
+			t.Fatalf("missing siacoin element for input %d", i)
+		}
+		txn.SiacoinInputs[i] = types.V2SiacoinInput{
+			Parent: sce,
+			SatisfiedPolicy: types.SatisfiedPolicy{
+				Policy: types.PolicyPublicKey(sk.PublicKey()),
+			},
+		}
+		inputKeys[i] = sk
+		totalIn = totalIn.Add(sce.SiacoinOutput.Value)
+	}
+	txn.MinerFee = totalIn
+
+	// sign each input (same hash, but a distinct signature per key)
+	sigHash := cs.InputSigHash(txn)
+	for i, sk := range inputKeys {
+		txn.SiacoinInputs[i].SatisfiedPolicy.Signatures = []types.Signature{sk.SignHash(sigHash)}
+	}
+
+	// report the encoded sizes
+	var fullBuf, weightBuf byteCounter
+	enc := types.NewEncoder(&fullBuf)
+	txn.EncodeTo(enc)
+	enc.Flush()
+	weightBuf.n = int(cs.V2TransactionWeight(txn))
+	t.Logf("inputs=%d encoded(wire,with proofs)=%d bytes consensus weight=%d bytes",
+		numInputs, fullBuf.n, weightBuf.n)
+
+	// warm-up validation to amortize one-time costs
+	if err := consensus.ValidateV2Transaction(consensus.NewMidState(cs), txn); err != nil {
+		t.Fatal(err)
+	}
+
+	// time validation
+	const runs = 5
+	var total time.Duration
+	for range runs {
+		ms := consensus.NewMidState(cs)
+		start := time.Now()
+		if err := consensus.ValidateV2Transaction(ms, txn); err != nil {
+			t.Fatal(err)
+		}
+		total += time.Since(start)
+	}
+	avg := total / runs
+	t.Logf("ValidateV2Transaction: %d inputs, avg %s over %d runs (%.1f µs/input)",
+		numInputs, avg, runs, float64(avg.Microseconds())/float64(numInputs))
+}
+
+type byteCounter struct{ n int }
+
+func (bc *byteCounter) Write(p []byte) (int, error) {
+	bc.n += len(p)
+	return len(p), nil
+}
+
 func TestFullTxPool(t *testing.T) {
 	n, genesisBlock := TestnetZen()
 
