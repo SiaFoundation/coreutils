@@ -1,3 +1,9 @@
+## 0.22.1 (2026-05-27)
+
+### Fixes
+
+- Update mux to v1.5.1.
+
 ## 0.22.0 (2026-05-12)
 
 ### Breaking Changes
