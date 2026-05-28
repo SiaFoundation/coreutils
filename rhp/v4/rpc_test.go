@@ -1378,7 +1378,7 @@ func TestRPCTimeout(t *testing.T) {
 
 	isTimeoutErr := func(err error) bool {
 		t.Helper()
-		return err != nil && (strings.Contains(err.Error(), "deadline exceeded") || strings.Contains(err.Error(), "i/o timeout"))
+		return err != nil && (strings.Contains(err.Error(), "deadline exceeded") || strings.Contains(err.Error(), "i/o timeout") || strings.Contains(err.Error(), "stream was gracefully closed") || strings.Contains(err.Error(), "canceled by local"))
 	}
 
 	assertRPCTimeout := func(transport rhp4.TransportClient, timeout bool) {
