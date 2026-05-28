@@ -84,22 +84,23 @@ func clientErrf(format string, args ...any) error {
 	return rhp4.NewRPCError(rhp4.ErrorCodeClientError, fmt.Sprintf(format, args...))
 }
 
-// openStream dials a stream setting the default timeout. The context deadline will
-// override the default timeout. The stream lifetime is tied to the context.
+// openStream dials a stream setting the default timeout if the context has no
+// deadline. The stream lifetime is tied to the context.
 func openStream(ctx context.Context, t TransportClient, defaultTimeout time.Duration) (net.Conn, error) {
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
+
 	s, err := t.DialStream(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial stream: %w", err)
 	}
 
-	var deadline time.Time
-	if dl, ok := ctx.Deadline(); ok {
-		deadline = dl
-	} else if defaultTimeout != 0 {
-		deadline = time.Now().Add(defaultTimeout)
-	}
-	if err := s.SetDeadline(deadline); err != nil {
-		return nil, fmt.Errorf("failed to set default timeout %q: %w", defaultTimeout, err)
+	if _, ok := ctx.Deadline(); !ok && defaultTimeout != 0 {
+		if err := s.SetDeadline(time.Now().Add(defaultTimeout)); err != nil {
+			_ = s.Close()
+			return nil, fmt.Errorf("failed to set default timeout %q: %w", defaultTimeout, err)
+		}
 	}
 
 	closeChan := make(chan struct{})
@@ -108,11 +109,7 @@ func openStream(ctx context.Context, t TransportClient, defaultTimeout time.Dura
 		case <-ctx.Done():
 		case <-closeChan:
 		}
-		// only close the stream if the stream's deadline wasn't reached to
-		// avoid overwriting a timeout error with a close related error
-		if time.Now().Before(deadline) {
-			s.Close()
-		}
+		s.Close()
 	}()
 	return &timeoutConn{Conn: s, close: closeChan}, nil
 }
