@@ -65,6 +65,14 @@ type DB interface {
 	CreateBucket(name []byte) (DBBucket, error)
 	Flush() error
 	Cancel()
+
+	// View calls fn with a read-only DB. Implementations must guarantee
+	// that the DB passed to fn observes a consistent snapshot for the
+	// duration of fn, and that fn may run concurrently with other View
+	// calls. Buckets obtained via the DB inside fn must not be used
+	// after fn returns. Writes via the DB inside fn are not durable
+	// and may panic.
+	View(fn func(DB) error) error
 }
 
 // A DBBucket is a set of key-value pairs.
@@ -103,6 +111,12 @@ func (db *MemDB) Flush() error {
 		delete(db.dels, bucket)
 	}
 	return nil
+}
+
+// View implements DB. MemDB has no MVCC; callers must ensure that no writes
+// occur concurrently with the View call.
+func (db *MemDB) View(fn func(DB) error) error {
+	return fn(db)
 }
 
 // Cancel implements DB.
@@ -334,6 +348,12 @@ func (db *CacheDB) Flush() error {
 func (db *CacheDB) Cancel() {
 	db.mem.Cancel()
 	db.db.Cancel()
+}
+
+// View implements DB. CacheDB has no MVCC; callers must ensure that no writes
+// occur concurrently with the View call.
+func (db *CacheDB) View(fn func(DB) error) error {
+	return fn(db)
 }
 
 // NewCacheDB returns a new CacheDB that wraps the given DB.
@@ -946,6 +966,16 @@ func (db *DBStore) Flush() error {
 	db.unflushed = 0
 	db.lastFlush = time.Now()
 	return err
+}
+
+// View implements Store. It calls fn with a read-only Store backed by a
+// consistent snapshot of the underlying DB. The Store passed to fn must not be
+// used after fn returns. Writes performed via the Store will fail.
+func (db *DBStore) View(fn func(Store)) error {
+	return db.db.View(func(rdb DB) error {
+		fn(&DBStore{db: rdb, n: db.n})
+		return nil
+	})
 }
 
 // NewDBStore creates a new DBStore using the provided database. The tip state
