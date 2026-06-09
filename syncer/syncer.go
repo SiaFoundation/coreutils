@@ -183,15 +183,19 @@ func WithMaxOutboundPeers(n int) Option {
 	return func(c *config) { c.MaxOutboundPeers = n }
 }
 
-// WithMaxInflightRPCs sets the maximum number of concurrent RPCs per peer. The
-// default is 64.
+// WithMaxInflightRPCs sets the maximum number of concurrent RPCs per peer. When
+// a peer reaches this limit, the syncer stops accepting new RPCs from it until
+// an in-flight one completes, i.e. it applies backpressure rather than dropping
+// RPCs. The default is 64.
 func WithMaxInflightRPCs(n int) Option {
 	return func(c *config) { c.MaxInflightRPCs = n }
 }
 
 // WithMaxInflightRPCsPerSubnet sets the maximum number of concurrent RPCs
-// permitted from a single remote subnet.
-// A value <= 0 disables the limit. The default is 64.
+// permitted from a single remote subnet. Unlike the per-peer limit, RPCs that
+// exceed this limit are dropped (the stream is closed) rather than backpressured,
+// since a subnet over its budget is treated as abusive. A value <= 0 disables
+// the limit. The default is 64.
 func WithMaxInflightRPCsPerSubnet(n int) Option {
 	return func(c *config) { c.MaxInflightRPCsPerSubnet = n }
 }
