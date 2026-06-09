@@ -100,7 +100,7 @@ func (db *boltViewDB) Bucket(name []byte) chain.DBBucket {
 	return boltBucket{b}
 }
 
-func (db *boltViewDB) CreateBucket(name []byte) (chain.DBBucket, error) {
+func (db *boltViewDB) CreateBucket(_ []byte) (chain.DBBucket, error) {
 	return nil, bbolt.ErrTxNotWritable
 }
 
