@@ -106,13 +106,23 @@ type Manager struct {
 	mu sync.RWMutex
 }
 
-// flushStore commits any pending store writes. It must be called before
-// releasing m.mu in writer paths so that concurrent View readers observe a
-// consistent snapshot.
+// flushStore commits any pending store writes. Writer paths must not release
+// m.mu without flushing first, or concurrent View readers would observe a
+// snapshot older than m.tipState; use writeUnlock to release the write lock so
+// the two cannot drift apart.
 func (m *Manager) flushStore() {
 	if err := m.store.Flush(); err != nil {
 		panic(err)
 	}
+}
+
+// writeUnlock flushes pending store writes, then releases the write lock. It
+// must be used (never m.mu.Unlock directly) to release a lock taken with
+// m.mu.Lock in a store-mutating path, so that flush-before-unlock cannot be
+// forgotten. Pool-only writers that don't touch the store use m.mu.Unlock.
+func (m *Manager) writeUnlock() {
+	m.flushStore()
+	m.mu.Unlock()
 }
 
 // viewStore runs fn against a read-only snapshot of the store. It panics on
@@ -293,8 +303,7 @@ func (m *Manager) BlocksForHistory(history []types.BlockID, maxBlocks uint64) (b
 // belong to may become the new best chain, triggering a reorg.
 func (m *Manager) AddBlocks(blocks []types.Block) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	defer m.flushStore()
+	defer m.writeUnlock()
 	if len(blocks) == 0 {
 		return nil
 	}
@@ -348,8 +357,7 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 		for _, fn := range m.onPool {
 			fns = append(fns, fn)
 		}
-		m.flushStore()
-		m.mu.Unlock()
+		m.writeUnlock()
 		for _, fn := range fns {
 			fn()
 		}
@@ -363,8 +371,7 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 // sufficient work, it may become the new best chain, triggering a reorg.
 func (m *Manager) AddValidatedV2Blocks(blocks []types.Block, states []consensus.State) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	defer m.flushStore()
+	defer m.writeUnlock()
 	if len(blocks) == 0 {
 		return nil
 	} else if len(states) != len(blocks) {
@@ -401,8 +408,7 @@ func (m *Manager) AddValidatedV2Blocks(blocks []types.Block, states []consensus.
 		for _, fn := range m.onPool {
 			fns = append(fns, fn)
 		}
-		m.flushStore()
-		m.mu.Unlock()
+		m.writeUnlock()
 		for _, fn := range fns {
 			fn()
 		}
@@ -586,8 +592,7 @@ func (m *Manager) reorgTo(index types.ChainIndex) error {
 // a large backlog.
 func (m *Manager) PruneBlocks(height uint64) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	defer m.flushStore()
+	defer m.writeUnlock()
 
 	for h := height; h > 0; h-- {
 		index, ok := m.store.BestIndex(h - 1)
