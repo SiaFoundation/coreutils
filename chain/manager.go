@@ -1520,6 +1520,5 @@ func NewManager(store Store, cs consensus.State, opts ...ManagerOption) *Manager
 	for _, opt := range opts {
 		opt(m)
 	}
-
 	return m
 }
