@@ -1,7 +1,9 @@
 package chain
 
 import (
+	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -545,5 +547,130 @@ func TestMinReorgIndex(t *testing.T) {
 	// min reorg index should still be at genesis
 	if minReorg := cm.MinReorgIndex(); minReorg.ID != genesisBlock.ID() {
 		t.Fatal("unexpected min reorg index:", minReorg, "expected:", genesisBlock.ID())
+	}
+}
+
+// mineEmptyBlocks mines n blocks containing only a miner payout. Returns the
+// chain manager's tip after mining.
+func mineEmptyBlocks(t *testing.T, cm *Manager, n int) types.ChainIndex {
+	t.Helper()
+	for range n {
+		cs := cm.TipState()
+		b := types.Block{
+			ParentID:  cs.Index.ID,
+			Timestamp: types.CurrentTimestamp(),
+			MinerPayouts: []types.SiacoinOutput{{
+				Value:   cs.BlockReward(),
+				Address: types.Address(frand.Entropy256()),
+			}},
+		}
+		findBlockNonce(cs, &b)
+		if err := cm.AddBlocks([]types.Block{b}); err != nil {
+			t.Fatal(err)
+		}
+		println("mined block at height", cs.Index.Height+1)
+	}
+	return cm.Tip()
+}
+
+// TestReorgPathMaxLen exercises the maxLen parameter of reorgPath: paths
+// at or below the limit return cleanly, paths exceeding it return an error
+// containing "too long".
+func TestReorgPathMaxLen(t *testing.T) {
+	n, genesisBlock := TestnetZen()
+	n.InitialTarget = types.BlockID{0xFF}
+	n.BlockInterval = time.Second
+	n.MaturityDelay = 5
+	n.HardforkDevAddr.Height = 1
+	n.HardforkTax.Height = 1
+	n.HardforkStorageProof.Height = 1
+	n.HardforkOak.Height = 1
+	n.HardforkASIC.Height = 1
+	n.HardforkFoundation.Height = 1
+	n.HardforkV2.AllowHeight = 1
+	n.HardforkV2.RequireHeight = 1
+	n.HardforkV2.FinalCutHeight = 1
+	store, tipState, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm := NewManager(store, tipState)
+
+	const chainLen = 200
+	tip := mineEmptyBlocks(t, cm, chainLen)
+	genesisIdx := types.ChainIndex{Height: 0, ID: genesisBlock.ID()}
+
+	cases := []struct {
+		name      string
+		maxLen    int
+		shouldErr bool
+	}{
+		{"large maxLen", chainLen * 5, false},
+		{"exactly path length", chainLen, false},
+		{"one below path length", chainLen - 1, true},
+		{"well below path length", chainLen / 2, true},
+		{"zero maxLen", 0, true},
+		{"math.MaxInt", math.MaxInt, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := cm.reorgPath(genesisIdx, tip, tc.maxLen)
+			if tc.shouldErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), "too long") {
+					t.Fatalf("expected 'too long' error, got %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestReorgPathBogusBasisBailsFast verifies that reorgPath rejects a bogus
+// basis cheaply via its in-loop maxLen guard.
+func TestReorgPathBogusBasisBailsFast(t *testing.T) {
+	n, genesisBlock := TestnetZen()
+	n.InitialTarget = types.BlockID{0xFF}
+	n.BlockInterval = time.Second
+	n.MaturityDelay = 5
+	n.HardforkDevAddr.Height = 1
+	n.HardforkTax.Height = 1
+	n.HardforkStorageProof.Height = 1
+	n.HardforkOak.Height = 1
+	n.HardforkASIC.Height = 1
+	n.HardforkFoundation.Height = 1
+	n.HardforkV2.AllowHeight = 1
+	n.HardforkV2.RequireHeight = 1
+	n.HardforkV2.FinalCutHeight = 1
+	store, tipState, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm := NewManager(store, tipState)
+
+	// mine enough real blocks that the in-loop cap fires before the rewind
+	// reaches genesis (and would otherwise error with ErrMissingBlock).
+	tip := mineEmptyBlocks(t, cm, 200)
+
+	// real tip ID, but height far past tip
+	bogus := types.ChainIndex{Height: math.MaxUint64, ID: tip.ID}
+
+	const maxLen = 144
+	revert, apply, err := cm.reorgPath(bogus, tip, maxLen)
+	if err == nil {
+		t.Fatal("expected error for bogus basis, got nil")
+	}
+	if !strings.Contains(err.Error(), "too long") {
+		t.Fatalf("expected 'too long' error, got %v", err)
+	}
+	// Cap should fire one iteration after exceeding maxLen, so revert+apply
+	// is bounded near maxLen+1. Anything beyond that means the in-loop check
+	// is missing or has regressed.
+	if pathLen := len(revert) + len(apply); pathLen > maxLen+2 {
+		t.Fatalf("revert+apply grew to %d, expected ≤ %d (maxLen+2)", pathLen, maxLen+2)
 	}
 }
