@@ -78,6 +78,39 @@ func (db *BoltChainDB) Cancel() {
 	db.tx = nil
 }
 
+// View implements chain.DB. It runs fn against a read-only bbolt transaction,
+// which can execute concurrently with other View calls and with the open
+// writer transaction. Writes performed via the DB passed to fn will fail.
+func (db *BoltChainDB) View(fn func(chain.DB) error) error {
+	return db.db.View(func(tx *bbolt.Tx) error {
+		return fn(&boltViewDB{tx: tx})
+	})
+}
+
+// boltViewDB is a read-only chain.DB backed by a bbolt read transaction.
+type boltViewDB struct {
+	tx *bbolt.Tx
+}
+
+func (db *boltViewDB) Bucket(name []byte) chain.DBBucket {
+	b := db.tx.Bucket(name)
+	if b == nil {
+		return nil
+	}
+	return boltBucket{b}
+}
+
+func (db *boltViewDB) CreateBucket(_ []byte) (chain.DBBucket, error) {
+	return nil, bbolt.ErrTxNotWritable
+}
+
+func (db *boltViewDB) Flush() error { return nil }
+func (db *boltViewDB) Cancel()      {}
+
+func (db *boltViewDB) View(fn func(chain.DB) error) error {
+	return fn(db)
+}
+
 // Close closes the BoltDB database.
 func (db *BoltChainDB) Close() error {
 	db.Flush()
