@@ -1,3 +1,11 @@
+## 0.22.1 (2026-06-11)
+
+### Fixes
+
+- enforce reorg path length limit inside reorgPath
+- Only set default timeout in openStream when the context has no deadline and handle context deadlines via goroutine.
+- Update mux to v1.5.1.
+
 ## 0.22.0 (2026-05-12)
 
 ### Breaking Changes
