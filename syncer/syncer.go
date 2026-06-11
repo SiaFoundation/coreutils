@@ -112,6 +112,9 @@ type config struct {
 	MaxInboundPeers            int
 	MaxOutboundPeers           int
 	MaxInflightRPCs            int
+	MaxInflightRPCsPerSubnet   int
+	InflightIPv4PrefixBits     int
+	InflightIPv6PrefixBits     int
 	RPCTimeout                 time.Duration
 	ConnectTimeout             time.Duration
 	ShareNodesTimeout          time.Duration
@@ -136,6 +139,9 @@ func defaultConfig() config {
 		MaxInboundPeers:            64,
 		MaxOutboundPeers:           16,
 		MaxInflightRPCs:            64,
+		MaxInflightRPCsPerSubnet:   64,
+		InflightIPv4PrefixBits:     32,
+		InflightIPv6PrefixBits:     64,
 		ConnectTimeout:             10 * time.Second,
 		RPCTimeout:                 5 * time.Minute,
 		ShareNodesTimeout:          5 * time.Second,
@@ -177,10 +183,31 @@ func WithMaxOutboundPeers(n int) Option {
 	return func(c *config) { c.MaxOutboundPeers = n }
 }
 
-// WithMaxInflightRPCs sets the maximum number of concurrent RPCs per peer. The
-// default is 3.
+// WithMaxInflightRPCs sets the maximum number of concurrent RPCs per peer. When
+// a peer reaches this limit, the syncer stops accepting new RPCs from it until
+// an in-flight one completes, i.e. it applies backpressure rather than dropping
+// RPCs. The default is 64.
 func WithMaxInflightRPCs(n int) Option {
 	return func(c *config) { c.MaxInflightRPCs = n }
+}
+
+// WithMaxInflightRPCsPerSubnet sets the maximum number of concurrent RPCs
+// permitted from a single remote subnet. Unlike the per-peer limit, RPCs that
+// exceed this limit are dropped (the stream is closed) rather than backpressured,
+// since a subnet over its budget is treated as abusive. A value <= 0 disables
+// the limit. The default is 64.
+func WithMaxInflightRPCsPerSubnet(n int) Option {
+	return func(c *config) { c.MaxInflightRPCsPerSubnet = n }
+}
+
+// WithInflightRPCSubnetPrefixes sets the prefix lengths used to group remote
+// addresses into subnets for WithMaxInflightRPCsPerSubnet.
+// The defaults are /32 (exact address) for IPv4 and /64 for IPv6.
+func WithInflightRPCSubnetPrefixes(ipv4Bits, ipv6Bits int) Option {
+	return func(c *config) {
+		c.InflightIPv4PrefixBits = ipv4Bits
+		c.InflightIPv6PrefixBits = ipv6Bits
+	}
 }
 
 // WithConnectTimeout sets the timeout when connecting to a peer. The default is
@@ -288,6 +315,9 @@ type Syncer struct {
 	peerRemoved sync.Cond // broadcasts when peer is removed from 'peers'
 	peers       map[string]*Peer
 	strikes     map[string]int
+
+	inflightMu     sync.Mutex
+	inflightSubnet map[string]int // subnet key -> live inbound handler count
 }
 
 func (s *Syncer) resync(p *Peer, reason string) {
@@ -349,6 +379,52 @@ func (s *Syncer) addPeer(p *Peer) error {
 	return nil
 }
 
+// subnetKey normalizes a connection's remote address to a subnet key
+func (s *Syncer) subnetKey(connAddr string) string {
+	host, _, err := net.SplitHostPort(connAddr)
+	if err != nil {
+		host = connAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return ""
+	}
+	bits, size := s.config.InflightIPv6PrefixBits, 128
+	if v4 := ip.To4(); v4 != nil {
+		ip, bits, size = v4, s.config.InflightIPv4PrefixBits, 32
+	}
+	return ip.Mask(net.CIDRMask(bits, size)).String()
+}
+
+// acquireInflight reserves an inbound-RPC slot for the given subnet key,
+// returning false if the subnet is already at capacity. The slot is held for
+// the lifetime of the handler rather than the connection, so a peer cannot
+// obtain a fresh allowance by disconnecting and reconnecting.
+func (s *Syncer) acquireInflight(key string) bool {
+	if key == "" || s.config.MaxInflightRPCsPerSubnet <= 0 {
+		return true
+	}
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	if s.inflightSubnet[key] >= s.config.MaxInflightRPCsPerSubnet {
+		return false
+	}
+	s.inflightSubnet[key]++
+	return true
+}
+
+// releaseInflight releases a slot previously reserved by acquireInflight.
+func (s *Syncer) releaseInflight(key string) {
+	if key == "" || s.config.MaxInflightRPCsPerSubnet <= 0 {
+		return
+	}
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	if s.inflightSubnet[key]--; s.inflightSubnet[key] <= 0 {
+		delete(s.inflightSubnet, key)
+	}
+}
+
 func (s *Syncer) runPeer(p *Peer) {
 	defer func() {
 		s.mu.Lock()
@@ -365,6 +441,7 @@ func (s *Syncer) runPeer(p *Peer) {
 	}
 	defer done()
 
+	subnet := s.subnetKey(p.ConnAddr)
 	inflight := make(chan struct{}, s.config.MaxInflightRPCs)
 	for {
 		if p.Err() != nil {
@@ -380,9 +457,18 @@ func (s *Syncer) runPeer(p *Peer) {
 		case <-s.tg.Done():
 			return
 		}
+		// enforce the per-subnet in-flight cap; the slot is held until the
+		// handler completes, so reconnecting does not grant a fresh allowance.
+		if !s.acquireInflight(subnet) {
+			<-inflight
+			stream.Close()
+			s.log.Debug("rejected rpc: subnet in-flight limit reached", zap.Stringer("peer", p), zap.Stringer("rpc", id))
+			continue
+		}
 
 		go func() {
 			defer func() { <-inflight }()
+			defer s.releaseInflight(subnet)
 
 			done, err := s.tg.Add()
 			if err != nil {
@@ -898,6 +984,8 @@ func New(l net.Listener, cm ChainManager, pm PeerStore, header gateway.Header, o
 		peers:   make(map[string]*Peer),
 		strikes: make(map[string]int),
 		tg:      threadgroup.New(),
+
+		inflightSubnet: make(map[string]int),
 	}
 	s.peerRemoved = sync.Cond{L: &s.mu}
 	return s
