@@ -654,13 +654,13 @@ type blockingManager struct {
 	once    sync.Once
 }
 
-func (b *blockingManager) BlocksForHistory(history []types.BlockID, max uint64) ([]types.Block, uint64, error) {
+func (b *blockingManager) BlocksForHistory(history []types.BlockID, maxBlocks uint64) ([]types.Block, uint64, error) {
 	select {
 	case b.entered <- struct{}{}:
 	default:
 	}
 	<-b.release
-	return b.Manager.BlocksForHistory(history, max)
+	return b.Manager.BlocksForHistory(history, maxBlocks)
 }
 
 // unblock releases all blocked (and future) BlocksForHistory calls. It is safe
