@@ -23,6 +23,19 @@ import (
 // ErrNoPeers is returned when there are no peers available to relay to.
 var ErrNoPeers = errors.New("no peers available")
 
+const (
+	// maxIPv4PrefixBits and maxIPv6PrefixBits are the largest valid prefix
+	// lengths for grouping remote addresses into subnets.
+	maxIPv4PrefixBits = 32
+	maxIPv6PrefixBits = 128
+
+	// defaultInflightIPv4PrefixBits and defaultInflightIPv6PrefixBits are the
+	// prefix lengths used to group remote addresses into subnets when none are
+	// configured (or an invalid value is provided).
+	defaultInflightIPv4PrefixBits = 32
+	defaultInflightIPv6PrefixBits = 48
+)
+
 // A ChainManager manages blockchain state.
 type ChainManager interface {
 	History() ([32]types.BlockID, error)
@@ -140,8 +153,8 @@ func defaultConfig() config {
 		MaxOutboundPeers:           16,
 		MaxInflightRPCs:            64,
 		MaxInflightRPCsPerSubnet:   64,
-		InflightIPv4PrefixBits:     32,
-		InflightIPv6PrefixBits:     48,
+		InflightIPv4PrefixBits:     defaultInflightIPv4PrefixBits,
+		InflightIPv6PrefixBits:     defaultInflightIPv6PrefixBits,
 		ConnectTimeout:             10 * time.Second,
 		RPCTimeout:                 5 * time.Minute,
 		ShareNodesTimeout:          5 * time.Second,
@@ -201,12 +214,20 @@ func WithMaxInflightRPCsPerSubnet(n int) Option {
 }
 
 // WithInflightRPCSubnetPrefixes sets the prefix lengths used to group remote
-// addresses into subnets for WithMaxInflightRPCsPerSubnet.
-// The defaults are /32 (exact address) for IPv4 and /64 for IPv6.
+// addresses into subnets for WithMaxInflightRPCsPerSubnet. Valid prefix lengths
+// are 0-32 for IPv4 and 0-128 for IPv6; a value outside its range is ignored
+// and the default is used instead. The defaults are /32 (exact address) for
+// IPv4 and /48 for IPv6.
 func WithInflightRPCSubnetPrefixes(ipv4Bits, ipv6Bits int) Option {
 	return func(c *config) {
-		c.InflightIPv4PrefixBits = ipv4Bits
-		c.InflightIPv6PrefixBits = ipv6Bits
+		c.InflightIPv4PrefixBits = defaultInflightIPv4PrefixBits
+		if ipv4Bits >= 0 && ipv4Bits <= maxIPv4PrefixBits {
+			c.InflightIPv4PrefixBits = ipv4Bits
+		}
+		c.InflightIPv6PrefixBits = defaultInflightIPv6PrefixBits
+		if ipv6Bits >= 0 && ipv6Bits <= maxIPv6PrefixBits {
+			c.InflightIPv6PrefixBits = ipv6Bits
+		}
 	}
 }
 
