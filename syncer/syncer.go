@@ -400,7 +400,8 @@ func (s *Syncer) addPeer(p *Peer) error {
 	return nil
 }
 
-// subnetKey normalizes a connection's remote address to a subnet key
+// subnetKey normalizes a connection's remote address to a subnet key in CIDR
+// notation (e.g. "192.168.1.0/24")
 func (s *Syncer) subnetKey(connAddr string) string {
 	host, _, err := net.SplitHostPort(connAddr)
 	if err != nil {
@@ -414,7 +415,8 @@ func (s *Syncer) subnetKey(connAddr string) string {
 	if v4 := ip.To4(); v4 != nil {
 		ip, bits, size = v4, s.config.InflightIPv4PrefixBits, 32
 	}
-	return ip.Mask(net.CIDRMask(bits, size)).String()
+	mask := net.CIDRMask(bits, size)
+	return (&net.IPNet{IP: ip.Mask(mask), Mask: mask}).String()
 }
 
 // acquireInflight reserves an inbound-RPC slot for the given subnet key,
@@ -483,7 +485,7 @@ func (s *Syncer) runPeer(p *Peer) {
 		if !s.acquireInflight(subnet) {
 			<-inflight
 			stream.Close()
-			s.log.Debug("rejected rpc: subnet in-flight limit reached", zap.Stringer("peer", p), zap.Stringer("rpc", id))
+			s.log.Debug("rejected rpc: subnet in-flight limit reached", zap.Stringer("peer", p), zap.Stringer("rpc", id), zap.String("subnet", subnet), zap.Int("limit", s.config.MaxInflightRPCsPerSubnet))
 			continue
 		}
 
