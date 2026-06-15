@@ -152,7 +152,7 @@ func defaultConfig() config {
 		MaxInboundPeers:            64,
 		MaxOutboundPeers:           16,
 		MaxInflightRPCs:            64,
-		MaxInflightRPCsPerSubnet:   64,
+		MaxInflightRPCsPerSubnet:   256,
 		InflightIPv4PrefixBits:     defaultInflightIPv4PrefixBits,
 		InflightIPv6PrefixBits:     defaultInflightIPv6PrefixBits,
 		ConnectTimeout:             10 * time.Second,
