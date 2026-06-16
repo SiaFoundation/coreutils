@@ -67,15 +67,34 @@ type Store interface {
 	RevertBlock(s consensus.State, cru consensus.RevertUpdate)
 	Flush() error
 
-	// View calls fn with a read-only Store backed by a consistent snapshot
-	// of the underlying storage. The Store passed to fn must not be used
-	// after fn returns and may execute concurrently with other View calls.
-	View(fn func(Store)) error
+	// Snapshot returns a read-only, point-in-time view of the Store. It may be
+	// read concurrently with other snapshots and must be closed when finished.
+	Snapshot() ReadonlyStore
+}
+
+// A ReadonlyStore is a read-only, point-in-time view of a Store. It exposes
+// only the Store's read methods, so the underlying storage cannot be modified
+// through it.
+type ReadonlyStore interface {
+	BestIndex(height uint64) (types.ChainIndex, bool)
+	Block(id types.BlockID) (types.Block, *consensus.V1BlockSupplement, bool)
+	Header(id types.BlockID) (types.BlockHeader, bool)
+	State(id types.BlockID) (consensus.State, bool)
+	AncestorTimestamp(id types.BlockID) (time.Time, bool)
+	// Close releases the snapshot.
+	Close()
+}
+
+// blockReader provides the reads needed by blockAndParent. Both Store and
+// ReadonlyStore satisfy it.
+type blockReader interface {
+	Block(id types.BlockID) (types.Block, *consensus.V1BlockSupplement, bool)
+	State(id types.BlockID) (consensus.State, bool)
 }
 
 // blockAndParent returns the block with the specified ID, along with its parent
 // state.
-func blockAndParent(s Store, id types.BlockID) (types.Block, *consensus.V1BlockSupplement, consensus.State, bool) {
+func blockAndParent(s blockReader, id types.BlockID) (types.Block, *consensus.V1BlockSupplement, consensus.State, bool) {
 	b, bs, ok := s.Block(id)
 	cs, ok2 := s.State(b.ParentID)
 	return b, bs, cs, ok && ok2
@@ -126,15 +145,6 @@ func (m *Manager) writeUnlock() {
 	m.mu.Unlock()
 }
 
-// viewStore runs fn against a read-only snapshot of the store. It panics on
-// any tx-level error, consistent with the rest of Manager's store error
-// handling.
-func (m *Manager) viewStore(fn func(Store)) {
-	if err := m.store.View(fn); err != nil {
-		panic(err)
-	}
-}
-
 // TipState returns the consensus state for the current tip.
 func (m *Manager) TipState() consensus.State {
 	m.mu.RLock()
@@ -148,61 +158,61 @@ func (m *Manager) Tip() types.ChainIndex {
 }
 
 // Block returns the block with the specified ID.
-func (m *Manager) Block(id types.BlockID) (b types.Block, ok bool) {
+func (m *Manager) Block(id types.BlockID) (types.Block, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	m.viewStore(func(s Store) {
-		b, _, ok = s.Block(id)
-	})
-	return
+	snap := m.store.Snapshot()
+	defer snap.Close()
+	b, _, ok := snap.Block(id)
+	return b, ok
 }
 
 // State returns the state with the specified ID.
-func (m *Manager) State(id types.BlockID) (cs consensus.State, ok bool) {
+func (m *Manager) State(id types.BlockID) (consensus.State, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	m.viewStore(func(s Store) {
-		cs, ok = s.State(id)
-	})
-	return
+	snap := m.store.Snapshot()
+	defer snap.Close()
+	return snap.State(id)
 }
 
 // BestIndex returns the index of the block at the specified height within the
 // best chain.
-func (m *Manager) BestIndex(height uint64) (index types.ChainIndex, ok bool) {
+func (m *Manager) BestIndex(height uint64) (types.ChainIndex, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	m.viewStore(func(s Store) {
-		index, ok = s.BestIndex(height)
-	})
-	return
+	snap := m.store.Snapshot()
+	defer snap.Close()
+	return snap.BestIndex(height)
 }
 
 // MinReorgIndex returns the index on the best chain below which the manager
 // cannot perform a reorg.
-func (m *Manager) MinReorgIndex() (index types.ChainIndex) {
+func (m *Manager) MinReorgIndex() types.ChainIndex {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	m.viewStore(func(s Store) {
-		index = m.tipState.Index
-		for index.Height > 0 {
-			prevIndex, ok := s.BestIndex(index.Height - 1)
-			_, _, ok2 := s.Block(prevIndex.ID)
-			if !ok || !ok2 {
-				break
-			}
-			index = prevIndex
+	snap := m.store.Snapshot()
+	defer snap.Close()
+	index := m.tipState.Index
+	for index.Height > 0 {
+		prevIndex, ok := snap.BestIndex(index.Height - 1)
+		_, _, ok2 := snap.Block(prevIndex.ID)
+		if !ok || !ok2 {
+			break
 		}
-	})
-	return
+		index = prevIndex
+	}
+	return index
 }
 
 // History returns a set of block IDs that span the best chain, beginning with
 // the 10 most-recent blocks, and subsequently spaced exponentionally farther
 // apart until reaching the genesis block.
-func (m *Manager) History() (history [32]types.BlockID, _ error) {
+func (m *Manager) History() ([32]types.BlockID, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	snap := m.store.Snapshot()
+	defer snap.Close()
 
 	tipHeight := m.tipState.Index.Height
 	histHeight := func(i int) uint64 {
@@ -215,46 +225,39 @@ func (m *Manager) History() (history [32]types.BlockID, _ error) {
 		}
 		return tipHeight - offset
 	}
-	m.viewStore(func(s Store) {
-		for i := range history {
-			index, ok := s.BestIndex(histHeight(i))
-			if !ok {
-				break
-			}
-			history[i] = index.ID
+	var history [32]types.BlockID
+	for i := range history {
+		index, ok := snap.BestIndex(histHeight(i))
+		if !ok {
+			break
 		}
-	})
+		history[i] = index.ID
+	}
 	return history, nil
 }
 
 // Headers returns up to max consecutive headers starting from supplied index,
 // which must be on the best chain. It also returns the number of headers
 // between the end of the returned slice and the current tip.
-func (m *Manager) Headers(index types.ChainIndex, maxHeaders uint64) (headers []types.BlockHeader, remaining uint64, err error) {
+func (m *Manager) Headers(index types.ChainIndex, maxHeaders uint64) ([]types.BlockHeader, uint64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	m.viewStore(func(s Store) {
-		if bestIndex, ok := s.BestIndex(index.Height); !ok || bestIndex != index {
-			err = fmt.Errorf("index %v is not on our best chain", index)
-			return
-		}
-		maxHeaders = min(maxHeaders, m.tipState.Index.Height-index.Height)
-		headers = make([]types.BlockHeader, maxHeaders)
-		for i := range headers {
-			next, _ := s.BestIndex(index.Height + uint64(i) + 1)
-			bh, ok := s.Header(next.ID)
-			if !ok {
-				err = fmt.Errorf("missing block header %v", next)
-				return
-			}
-			headers[i] = bh
-		}
-		remaining = m.tipState.Index.Height - (index.Height + maxHeaders)
-	})
-	if err != nil {
-		return nil, 0, err
+	snap := m.store.Snapshot()
+	defer snap.Close()
+	if bestIndex, ok := snap.BestIndex(index.Height); !ok || bestIndex != index {
+		return nil, 0, fmt.Errorf("index %v is not on our best chain", index)
 	}
-	return
+	maxHeaders = min(maxHeaders, m.tipState.Index.Height-index.Height)
+	headers := make([]types.BlockHeader, maxHeaders)
+	for i := range headers {
+		next, _ := snap.BestIndex(index.Height + uint64(i) + 1)
+		bh, ok := snap.Header(next.ID)
+		if !ok {
+			return nil, 0, fmt.Errorf("missing block header %v", next)
+		}
+		headers[i] = bh
+	}
+	return headers, m.tipState.Index.Height - (index.Height + maxHeaders), nil
 }
 
 // BlocksForHistory returns up to maxBlocks consecutive blocks from the best
@@ -262,42 +265,36 @@ func (m *Manager) Headers(index types.ChainIndex, maxHeaders uint64) (headers []
 // is present in the best chain (or, if no match is found, genesis). It also
 // returns the number of blocks between the end of the returned slice and the
 // current tip.
-func (m *Manager) BlocksForHistory(history []types.BlockID, maxBlocks uint64) (blocks []types.Block, remaining uint64, err error) {
+func (m *Manager) BlocksForHistory(history []types.BlockID, maxBlocks uint64) ([]types.Block, uint64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	m.viewStore(func(s Store) {
-		var attachHeight uint64
-		for _, id := range history {
-			if cs, ok := s.State(id); !ok {
-				continue
-			} else if index, ok := s.BestIndex(cs.Index.Height); ok && index == cs.Index {
-				attachHeight = cs.Index.Height
-				break
-			}
+	snap := m.store.Snapshot()
+	defer snap.Close()
+	var attachHeight uint64
+	for _, id := range history {
+		if cs, ok := snap.State(id); !ok {
+			continue
+		} else if index, ok := snap.BestIndex(cs.Index.Height); ok && index == cs.Index {
+			attachHeight = cs.Index.Height
+			break
 		}
-		if maxBlocks > m.tipState.Index.Height-attachHeight {
-			maxBlocks = m.tipState.Index.Height - attachHeight
-		}
-		blocks = make([]types.Block, maxBlocks)
-		for i := range blocks {
-			index, ok := s.BestIndex(attachHeight + uint64(i) + 1)
-			if !ok {
-				err = fmt.Errorf("unknown block at height %v", attachHeight+uint64(i)+1)
-				return
-			}
-			b, _, ok := s.Block(index.ID)
-			if !ok {
-				err = fmt.Errorf("missing block %v", index)
-				return
-			}
-			blocks[i] = b
-		}
-		remaining = m.tipState.Index.Height - (attachHeight + maxBlocks)
-	})
-	if err != nil {
-		return nil, 0, err
 	}
-	return
+	if maxBlocks > m.tipState.Index.Height-attachHeight {
+		maxBlocks = m.tipState.Index.Height - attachHeight
+	}
+	blocks := make([]types.Block, maxBlocks)
+	for i := range blocks {
+		index, ok := snap.BestIndex(attachHeight + uint64(i) + 1)
+		if !ok {
+			return nil, 0, fmt.Errorf("unknown block at height %v", attachHeight+uint64(i)+1)
+		}
+		b, _, ok := snap.Block(index.ID)
+		if !ok {
+			return nil, 0, fmt.Errorf("missing block %v", index)
+		}
+		blocks[i] = b
+	}
+	return blocks, m.tipState.Index.Height - (attachHeight + maxBlocks), nil
 }
 
 // AddBlocks ingests a chain of blocks. If the blocks are valid, the chain they
@@ -615,53 +612,45 @@ func (m *Manager) PruneBlocks(height uint64) {
 func (m *Manager) UpdatesSince(index types.ChainIndex, maxBlocks int) (rus []RevertUpdate, aus []ApplyUpdate, err error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	m.viewStore(func(s Store) {
-		onBestChain := func(index types.ChainIndex) bool {
-			bi, _ := s.BestIndex(index.Height)
-			return bi.ID == index.ID || index == types.ChainIndex{}
-		}
+	snap := m.store.Snapshot()
+	defer snap.Close()
+	onBestChain := func(index types.ChainIndex) bool {
+		bi, _ := snap.BestIndex(index.Height)
+		return bi.ID == index.ID || index == types.ChainIndex{}
+	}
 
-		for index != m.tipState.Index && len(rus)+len(aus) < maxBlocks {
-			// revert until we are on the best chain, then apply
-			if !onBestChain(index) {
-				b, bs, cs, ok := blockAndParent(s, index.ID)
-				if !ok {
-					err = fmt.Errorf("%w %v", ErrMissingBlock, index)
-					return
-				} else if bs == nil {
-					err = fmt.Errorf("missing supplement for block %v", index)
-					return
-				}
-				cru := consensus.RevertBlock(cs, b, *bs)
-				rus = append(rus, RevertUpdate{cru, b, cs})
-				index = cs.Index
-			} else {
-				// special case: if index is uninitialized, we're starting from genesis
-				if index == (types.ChainIndex{}) {
-					index, _ = s.BestIndex(0)
-				} else {
-					index, _ = s.BestIndex(index.Height + 1)
-				}
-				b, bs, cs, ok := blockAndParent(s, index.ID)
-				if !ok {
-					err = fmt.Errorf("%w %v", ErrMissingBlock, index)
-					return
-				} else if bs == nil {
-					err = fmt.Errorf("missing supplement for block %v", index)
-					return
-				}
-				ancestorTimestamp, ok := s.AncestorTimestamp(b.ParentID)
-				if !ok && index.Height != 0 {
-					err = fmt.Errorf("missing ancestor timestamp for block %v", b.ParentID)
-					return
-				}
-				cs, cau := consensus.ApplyBlock(cs, b, *bs, ancestorTimestamp)
-				aus = append(aus, ApplyUpdate{cau, b, cs})
+	for index != m.tipState.Index && len(rus)+len(aus) < maxBlocks {
+		// revert until we are on the best chain, then apply
+		if !onBestChain(index) {
+			b, bs, cs, ok := blockAndParent(snap, index.ID)
+			if !ok {
+				return nil, nil, fmt.Errorf("%w %v", ErrMissingBlock, index)
+			} else if bs == nil {
+				return nil, nil, fmt.Errorf("missing supplement for block %v", index)
 			}
+			cru := consensus.RevertBlock(cs, b, *bs)
+			rus = append(rus, RevertUpdate{cru, b, cs})
+			index = cs.Index
+		} else {
+			// special case: if index is uninitialized, we're starting from genesis
+			if index == (types.ChainIndex{}) {
+				index, _ = snap.BestIndex(0)
+			} else {
+				index, _ = snap.BestIndex(index.Height + 1)
+			}
+			b, bs, cs, ok := blockAndParent(snap, index.ID)
+			if !ok {
+				return nil, nil, fmt.Errorf("%w %v", ErrMissingBlock, index)
+			} else if bs == nil {
+				return nil, nil, fmt.Errorf("missing supplement for block %v", index)
+			}
+			ancestorTimestamp, ok := snap.AncestorTimestamp(b.ParentID)
+			if !ok && index.Height != 0 {
+				return nil, nil, fmt.Errorf("missing ancestor timestamp for block %v", b.ParentID)
+			}
+			cs, cau := consensus.ApplyBlock(cs, b, *bs, ancestorTimestamp)
+			aus = append(aus, ApplyUpdate{cau, b, cs})
 		}
-	})
-	if err != nil {
-		return nil, nil, err
 	}
 	return
 }

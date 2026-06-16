@@ -78,38 +78,34 @@ func (db *BoltChainDB) Cancel() {
 	db.tx = nil
 }
 
-// View implements chain.DB. It runs fn against a read-only bbolt transaction,
-// which can execute concurrently with other View calls and with the open
-// writer transaction. Writes performed via the DB passed to fn will fail.
-func (db *BoltChainDB) View(fn func(chain.DB) error) error {
-	return db.db.View(func(tx *bbolt.Tx) error {
-		return fn(&boltViewDB{tx: tx})
-	})
+// Snapshot implements chain.DB. It begins a read-only bbolt transaction, which
+// observes a consistent snapshot and can execute concurrently with other
+// snapshots and with the open writer transaction.
+func (db *BoltChainDB) Snapshot() chain.ReadonlyDB {
+	tx, err := db.db.Begin(false)
+	if err != nil {
+		panic(err)
+	}
+	return &boltSnapshot{tx: tx}
 }
 
-// boltViewDB is a read-only chain.DB backed by a bbolt read transaction.
-type boltViewDB struct {
+// boltSnapshot is a read-only chain.ReadonlyDB backed by a bbolt read
+// transaction.
+type boltSnapshot struct {
 	tx *bbolt.Tx
 }
 
-func (db *boltViewDB) Bucket(name []byte) chain.DBBucket {
-	b := db.tx.Bucket(name)
+// Bucket implements chain.ReadonlyDB.
+func (s *boltSnapshot) Bucket(name []byte) chain.DBBucket {
+	b := s.tx.Bucket(name)
 	if b == nil {
 		return nil
 	}
 	return boltBucket{b}
 }
 
-func (db *boltViewDB) CreateBucket(_ []byte) (chain.DBBucket, error) {
-	return nil, bbolt.ErrTxNotWritable
-}
-
-func (db *boltViewDB) Flush() error { return nil }
-func (db *boltViewDB) Cancel()      {}
-
-func (db *boltViewDB) View(fn func(chain.DB) error) error {
-	return fn(db)
-}
+// Close implements chain.ReadonlyDB, ending the read transaction.
+func (s *boltSnapshot) Close() error { return s.tx.Rollback() }
 
 // Close closes the BoltDB database.
 func (db *BoltChainDB) Close() error {

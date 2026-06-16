@@ -66,14 +66,32 @@ type DB interface {
 	Flush() error
 	Cancel()
 
-	// View calls fn with a read-only DB. Implementations must guarantee
-	// that the DB passed to fn observes a consistent snapshot for the
-	// duration of fn, and that fn may run concurrently with other View
-	// calls. Buckets obtained via the DB inside fn must not be used
-	// after fn returns. Writes via the DB inside fn are not durable
-	// and may panic.
-	View(fn func(DB) error) error
+	// Snapshot returns a read-only, point-in-time view of the database.
+	// Implementations must guarantee that the returned ReadonlyDB observes a
+	// consistent snapshot and may be read concurrently with writes to the DB
+	// and with other snapshots. Callers must Close it when finished.
+	Snapshot() ReadonlyDB
 }
+
+// A ReadonlyDB is a read-only, point-in-time view of a DB. Because it exposes
+// no mutating methods, the underlying database cannot be modified through it.
+type ReadonlyDB interface {
+	Bucket(name []byte) DBBucket
+	// Close releases the resources held by the snapshot.
+	Close() error
+}
+
+// noSnapshotDB is a ReadonlyDB for databases that do not support true
+// snapshots. Reads observe live state, so callers must exclude concurrent
+// writes themselves; Close is a no-op.
+type noSnapshotDB struct {
+	db interface {
+		Bucket(name []byte) DBBucket
+	}
+}
+
+func (s noSnapshotDB) Bucket(name []byte) DBBucket { return s.db.Bucket(name) }
+func (noSnapshotDB) Close() error                  { return nil }
 
 // A DBBucket is a set of key-value pairs.
 type DBBucket interface {
@@ -113,10 +131,12 @@ func (db *MemDB) Flush() error {
 	return nil
 }
 
-// View implements DB. MemDB has no MVCC; callers must ensure that no writes
-// occur concurrently with the View call.
-func (db *MemDB) View(fn func(DB) error) error {
-	return fn(db)
+// Snapshot implements DB. MemDB has no internal locking to prevent a write
+// through db racing a read from the returned snapshot, so it must only be used
+// behind a Manager, which guards snapshot reads against writes with its
+// RWMutex.
+func (db *MemDB) Snapshot() ReadonlyDB {
+	return noSnapshotDB{db}
 }
 
 // Cancel implements DB.
@@ -350,10 +370,12 @@ func (db *CacheDB) Cancel() {
 	db.db.Cancel()
 }
 
-// View implements DB. CacheDB has no MVCC; callers must ensure that no writes
-// occur concurrently with the View call.
-func (db *CacheDB) View(fn func(DB) error) error {
-	return fn(db)
+// Snapshot implements DB. CacheDB has no internal locking to prevent a write
+// through db racing a read from the returned snapshot, so it must only be used
+// behind a Manager, which guards snapshot reads against writes with its
+// RWMutex.
+func (db *CacheDB) Snapshot() ReadonlyDB {
+	return noSnapshotDB{db}
 }
 
 // NewCacheDB returns a new CacheDB that wraps the given DB.
@@ -430,9 +452,18 @@ var (
 	keyHeight = []byte("Height")
 )
 
+// rwDB is the subset of DB that DBStore accesses directly. A read-only
+// snapshot can satisfy it (see roDB), letting a snapshot reuse DBStore's
+// accessors without exposing any write methods.
+type rwDB interface {
+	Bucket(name []byte) DBBucket
+	Flush() error
+	Snapshot() ReadonlyDB
+}
+
 // DBStore implements Store using a key-value database.
 type DBStore struct {
-	db  DB
+	db  rwDB
 	n   *consensus.Network // for getState
 	enc types.Encoder
 
@@ -968,14 +999,38 @@ func (db *DBStore) Flush() error {
 	return err
 }
 
-// View implements Store. It calls fn with a read-only Store backed by a
-// consistent snapshot of the underlying DB. The Store passed to fn must not be
-// used after fn returns. Writes performed via the Store will fail.
-func (db *DBStore) View(fn func(Store)) error {
-	return db.db.View(func(rdb DB) error {
-		fn(&DBStore{db: rdb, n: db.n})
-		return nil
-	})
+// roDB adapts a ReadonlyDB to the rwDB interface so that a read-only DBStore
+// can reuse DBStore's accessors. The snapshot is never written or
+// re-snapshotted, so Flush and Snapshot are inert.
+type roDB struct{ ReadonlyDB }
+
+func (roDB) Flush() error           { return nil }
+func (r roDB) Snapshot() ReadonlyDB { return r.ReadonlyDB }
+
+// readonlyStore is a read-only Store backed by a database snapshot. It embeds a
+// *DBStore for its read accessors but is only ever exposed as a ReadonlyStore,
+// so its inherited write methods are unreachable.
+type readonlyStore struct {
+	*DBStore
+	rdb ReadonlyDB
+}
+
+// Close releases the underlying snapshot.
+func (s *readonlyStore) Close() {
+	if err := s.rdb.Close(); err != nil {
+		panic(err)
+	}
+}
+
+// Snapshot implements Store. It returns a read-only view of the store backed by
+// a consistent snapshot of the underlying DB. The returned ReadonlyStore must
+// be closed when finished and may be read concurrently with other snapshots.
+func (db *DBStore) Snapshot() ReadonlyStore {
+	rdb := db.db.Snapshot()
+	return &readonlyStore{
+		DBStore: &DBStore{db: roDB{rdb}, n: db.n},
+		rdb:     rdb,
+	}
 }
 
 // NewDBStore creates a new DBStore using the provided database. The tip state
