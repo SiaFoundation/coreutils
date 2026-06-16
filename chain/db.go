@@ -73,10 +73,10 @@ type DB interface {
 	Snapshot() ReadonlyDB
 }
 
-// A ReadonlyDB is a read-only, point-in-time view of a DB. Because it exposes
-// no mutating methods, the underlying database cannot be modified through it.
+// A ReadonlyDB is a read-only, point-in-time view of a DB. It exposes
+// no mutating methods. The underlying database cannot be modified through it.
 type ReadonlyDB interface {
-	Bucket(name []byte) DBBucket
+	Bucket(name []byte) ReadonlyDBBucket
 	// Close releases the resources held by the snapshot.
 	Close() error
 }
@@ -90,15 +90,21 @@ type noSnapshotDB struct {
 	}
 }
 
-func (s noSnapshotDB) Bucket(name []byte) DBBucket { return s.db.Bucket(name) }
-func (noSnapshotDB) Close() error                  { return nil }
+func (s noSnapshotDB) Bucket(name []byte) ReadonlyDBBucket { return s.db.Bucket(name) }
+func (noSnapshotDB) Close() error                          { return nil }
+
+// A ReadonlyDBBucket is a read-only view of a DBBucket; it exposes no mutating
+// methods, so a bucket obtained from a ReadonlyDB cannot be written to.
+type ReadonlyDBBucket interface {
+	Get(key []byte) []byte
+	Iter() iter.Seq2[[]byte, []byte]
+}
 
 // A DBBucket is a set of key-value pairs.
 type DBBucket interface {
-	Get(key []byte) []byte
+	ReadonlyDBBucket
 	Put(key, value []byte) error
 	Delete(key []byte) error
-	Iter() iter.Seq2[[]byte, []byte]
 }
 
 // MemDB implements DB with an in-memory map.
@@ -395,8 +401,15 @@ func check(err error) {
 
 // dbBucket is a helper type for implementing Store.
 type dbBucket struct {
-	b  DBBucket
+	b  ReadonlyDBBucket
 	db *DBStore
+}
+
+// writable returns the bucket as a DBBucket for mutation. It is only reached
+// from write paths, which only run on a writable DBStore; such a store is
+// always backed by a full DB, so its buckets always implement DBBucket.
+func (b *dbBucket) writable() DBBucket {
+	return b.b.(DBBucket)
 }
 
 func (b *dbBucket) getRaw(key []byte) []byte {
@@ -421,7 +434,7 @@ func (b *dbBucket) get(key []byte, v types.DecoderFrom) bool {
 }
 
 func (b *dbBucket) putRaw(key, value []byte) {
-	check(b.b.Put(key, value))
+	check(b.writable().Put(key, value))
 	b.db.unflushed += len(value)
 }
 
@@ -434,7 +447,7 @@ func (b *dbBucket) put(key []byte, v types.EncoderTo) {
 }
 
 func (b *dbBucket) delete(key []byte) {
-	check(b.b.Delete(key))
+	check(b.writable().Delete(key))
 	b.db.unflushed += len(key)
 }
 
@@ -456,10 +469,18 @@ var (
 // snapshot can satisfy it (see roDB), letting a snapshot reuse DBStore's
 // accessors without exposing any write methods.
 type rwDB interface {
-	Bucket(name []byte) DBBucket
+	Bucket(name []byte) ReadonlyDBBucket
 	Flush() error
 	Snapshot() ReadonlyDB
 }
+
+// rwView adapts a full DB to the rwDB interface, narrowing Bucket's return type
+// to ReadonlyDBBucket so that DBStore's shared read path cannot mutate through
+// it. Write paths recover the full DBBucket via dbBucket.writable, which is
+// sound because a writable DBStore is always backed by a full DB.
+type rwView struct{ DB }
+
+func (v rwView) Bucket(name []byte) ReadonlyDBBucket { return v.DB.Bucket(name) }
 
 // DBStore implements Store using a key-value database.
 type DBStore struct {
@@ -1053,7 +1074,7 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 	}
 
 	dbs := &DBStore{
-		db: db,
+		db: rwView{db},
 		n:  n,
 	}
 
@@ -1129,7 +1150,7 @@ func NewDBStoreAtCheckpoint(db DB, cs consensus.State, b types.Block, logger Mig
 	}
 
 	dbs := &DBStore{
-		db: db,
+		db: rwView{db},
 		n:  cs.Network,
 	}
 

@@ -96,7 +96,7 @@ type boltSnapshot struct {
 }
 
 // Bucket implements chain.ReadonlyDB.
-func (s *boltSnapshot) Bucket(name []byte) chain.DBBucket {
+func (s *boltSnapshot) Bucket(name []byte) chain.ReadonlyDBBucket {
 	b := s.tx.Bucket(name)
 	if b == nil {
 		return nil
