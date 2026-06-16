@@ -81,8 +81,8 @@ type ReadonlyStore interface {
 	Header(id types.BlockID) (types.BlockHeader, bool)
 	State(id types.BlockID) (consensus.State, bool)
 	AncestorTimestamp(id types.BlockID) (time.Time, bool)
-	// Close releases the snapshot.
-	Close()
+	// Close releases the snapshot. Callers may ignore the returned error.
+	Close() error
 }
 
 // blockReader provides the reads needed by blockAndParent. Both Store and

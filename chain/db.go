@@ -1016,10 +1016,8 @@ type readonlyStore struct {
 }
 
 // Close releases the underlying snapshot.
-func (s *readonlyStore) Close() {
-	if err := s.rdb.Close(); err != nil {
-		panic(err)
-	}
+func (s *readonlyStore) Close() error {
+	return s.rdb.Close()
 }
 
 // Snapshot implements Store. It returns a read-only view of the store backed by
