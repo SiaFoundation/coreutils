@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -640,5 +641,212 @@ func TestShareNodesMalformed(t *testing.T) {
 			t.Fatal("peer discovery did not add any peers")
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// blockingManager wraps a chain.Manager and blocks every BlocksForHistory call
+// until unblock is called, signalling on entered each time a call begins. This
+// lets a test pin inbound RPC handlers in-flight to exercise the per-subnet cap.
+type blockingManager struct {
+	*chain.Manager
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingManager) BlocksForHistory(history []types.BlockID, maxBlocks uint64) ([]types.Block, uint64, error) {
+	select {
+	case b.entered <- struct{}{}:
+	default:
+	}
+	<-b.release
+	return b.Manager.BlocksForHistory(history, maxBlocks)
+}
+
+// unblock releases all blocked (and future) BlocksForHistory calls. It is safe
+// to call multiple times.
+func (b *blockingManager) unblock() { b.once.Do(func() { close(b.release) }) }
+
+// newBlockingSyncer starts a syncer backed by a blockingManager, listening on
+// loopback so that every peer maps to a single subnet. Periodic sync and peer
+// discovery are disabled so the only RPCs the server handles are the ones the
+// test issues explicitly.
+func newBlockingSyncer(t *testing.T, log *zap.Logger, opts ...syncer.Option) (*syncer.Syncer, *blockingManager) {
+	t.Helper()
+	n, genesis := testutil.Network()
+	store, ts, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bm := &blockingManager{
+		Manager: chain.NewManager(store, ts),
+		entered: make(chan struct{}, 64),
+		release: make(chan struct{}),
+	}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+
+	base := []syncer.Option{
+		syncer.WithLogger(log),
+		syncer.WithSyncInterval(time.Hour),
+		syncer.WithPeerDiscoveryInterval(time.Hour),
+	}
+	s := syncer.New(l, bm, testutil.NewEphemeralPeerStore(), gateway.Header{
+		GenesisID:  genesis.ID(),
+		UniqueID:   gateway.GenerateUniqueID(),
+		NetAddress: l.Addr().String(),
+	}, append(base, opts...)...)
+	go s.Run()
+	t.Cleanup(func() { s.Close() })
+	// unblock handlers before the syncer is closed so its threadgroup can drain;
+	// runs first (cleanups are LIFO) since it is registered last.
+	t.Cleanup(bm.unblock)
+	return s, bm
+}
+
+// newQuietClient starts a client syncer with background sync and discovery
+// disabled so it does not issue RPCs to the server on its own.
+func newQuietClient(t *testing.T, log *zap.Logger) (*syncer.Syncer, *chain.Manager) {
+	t.Helper()
+	s, cm := newTestSyncer(t, syncer.WithLogger(log),
+		syncer.WithSyncInterval(time.Hour),
+		syncer.WithPeerDiscoveryInterval(time.Hour))
+	t.Cleanup(func() { s.Close() })
+	return s, cm
+}
+
+// waitEntered blocks until n RPC handlers have entered BlocksForHistory.
+func waitEntered(t *testing.T, ch <-chan struct{}, n int, d time.Duration) {
+	t.Helper()
+	deadline := time.After(d)
+	for i := 0; i < n; i++ {
+		select {
+		case <-ch:
+		case <-deadline:
+			t.Fatalf("only %d/%d RPC handlers became in-flight", i, n)
+		}
+	}
+}
+
+// TestMaxInflightRPCsPerSubnetDropsOverflow verifies that once a subnet has
+// filled its in-flight budget, a further RPC — even from a different peer in the
+// same subnet — is dropped (the stream is closed) rather than backpressured.
+func TestMaxInflightRPCsPerSubnetDropsOverflow(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	srv, bm := newBlockingSyncer(t, log.Named("srv"),
+		syncer.WithMaxInflightRPCsPerSubnet(2),
+		syncer.WithMaxInflightRPCs(64))
+
+	// two peers from the same subnet
+	c1, cm1 := newQuietClient(t, log.Named("c1"))
+	c2, _ := newQuietClient(t, log.Named("c2"))
+
+	p1, err := c1.Connect(context.Background(), srv.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2, err := c2.Connect(context.Background(), srv.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hist := []types.BlockID{cm1.Tip().ID}
+
+	// fill the subnet's 2 slots with blocking RPCs from c1
+	for range 2 {
+		go p1.SendV2Blocks(context.Background(), hist, 10, 10*time.Second)
+	}
+	waitEntered(t, bm.entered, 2, 5*time.Second)
+
+	// a 3rd RPC from a different peer in the same subnet must be dropped, so it
+	// returns promptly with an error and never reaches the handler.
+	errCh := make(chan error, 1)
+	go func() {
+		_, _, err := p2.SendV2Blocks(context.Background(), hist, 10, 10*time.Second)
+		errCh <- err
+	}()
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("overflow RPC should have been dropped, got success")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("overflow RPC hung; it was backpressured, not dropped")
+	}
+	select {
+	case <-bm.entered:
+		t.Fatal("dropped RPC reached the handler")
+	default:
+	}
+}
+
+// TestMaxInflightRPCsPerSubnetDisabled verifies that a value <= 0 disables the
+// per-subnet cap: many concurrent RPCs that would exceed a finite cap (see
+// TestMaxInflightRPCsPerSubnetDropsOverflow) all reach the handler.
+func TestMaxInflightRPCsPerSubnetDisabled(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	srv, bm := newBlockingSyncer(t, log.Named("srv"),
+		syncer.WithMaxInflightRPCsPerSubnet(0),
+		syncer.WithMaxInflightRPCs(64))
+
+	c1, cm1 := newQuietClient(t, log.Named("c1"))
+	p1, err := c1.Connect(context.Background(), srv.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hist := []types.BlockID{cm1.Tip().ID}
+
+	const rpcs = 8
+	for range rpcs {
+		go p1.SendV2Blocks(context.Background(), hist, 10, 10*time.Second)
+	}
+	waitEntered(t, bm.entered, rpcs, 5*time.Second)
+}
+
+// TestMaxInflightRPCsBackpressureNotDropped verifies the per-peer limit
+// backpressures rather than drops: with the subnet cap disabled and a per-peer
+// limit of 1, a second RPC neither errors nor completes while the first holds
+// the slot, then succeeds once the slot is freed.
+func TestMaxInflightRPCsBackpressureNotDropped(t *testing.T) {
+	log := zaptest.NewLogger(t)
+	srv, bm := newBlockingSyncer(t, log.Named("srv"),
+		syncer.WithMaxInflightRPCsPerSubnet(0),
+		syncer.WithMaxInflightRPCs(1))
+
+	c1, cm1 := newQuietClient(t, log.Named("c1"))
+	p1, err := c1.Connect(context.Background(), srv.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hist := []types.BlockID{cm1.Tip().ID}
+
+	// RPC #1 occupies the single per-peer slot and blocks in the handler.
+	go p1.SendV2Blocks(context.Background(), hist, 10, 30*time.Second)
+	waitEntered(t, bm.entered, 1, 5*time.Second)
+
+	// RPC #2 must be backpressured: while #1 holds the slot it neither errors
+	// nor completes, and never reaches the handler.
+	errCh := make(chan error, 1)
+	go func() {
+		_, _, err := p1.SendV2Blocks(context.Background(), hist, 10, 30*time.Second)
+		errCh <- err
+	}()
+	select {
+	case err := <-errCh:
+		t.Fatalf("second RPC returned while the slot was held (err=%v); expected backpressure", err)
+	case <-time.After(time.Second):
+	}
+	select {
+	case <-bm.entered:
+		t.Fatal("backpressured RPC reached the handler before the slot was freed")
+	default:
+	}
+
+	// releasing #1 frees the slot; #2 then proceeds and completes successfully.
+	bm.unblock()
+	if err := <-errCh; err != nil {
+		t.Fatalf("backpressured RPC failed after the slot was freed: %v", err)
 	}
 }

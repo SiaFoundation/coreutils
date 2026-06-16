@@ -3,6 +3,7 @@ package chain
 import (
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"sort"
 	"sync"
@@ -492,9 +493,13 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 	return nil
 }
 
-func (m *Manager) reorgPath(a, b types.ChainIndex) (revert, apply []types.ChainIndex, err error) {
+func (m *Manager) reorgPath(a, b types.ChainIndex, maxLen int) (revert, apply []types.ChainIndex, err error) {
 	// helper function for "rewinding" to the parent index
 	rewind := func(index *types.ChainIndex) bool {
+		if len(revert)+len(apply) > maxLen {
+			err = fmt.Errorf("reorg path is too long (-%d +%d, max %d)", len(revert), len(apply), maxLen)
+			return false
+		}
 		bh, ok := m.store.Header(index.ID)
 		if !ok {
 			err = fmt.Errorf("%w %v", ErrMissingBlock, *index)
@@ -538,7 +543,7 @@ func (m *Manager) reorgPath(a, b types.ChainIndex) (revert, apply []types.ChainI
 }
 
 func (m *Manager) reorgTo(index types.ChainIndex) error {
-	revert, apply, err := m.reorgPath(m.tipState.Index, index)
+	revert, apply, err := m.reorgPath(m.tipState.Index, index, math.MaxInt)
 	if err != nil {
 		return err
 	}
@@ -1283,11 +1288,9 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		}
 	}
 
-	revert, apply, err := m.reorgPath(from, to)
+	revert, apply, err := m.reorgPath(from, to, 144)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't determine reorg path from %v to %v: %w", from, to, err)
-	} else if len(revert)+len(apply) > 144 {
-		return nil, fmt.Errorf("reorg path from %v to %v is too long (-%v +%v)", from, to, len(revert), len(apply))
 	}
 
 	// work on a deep copy of the transactions
