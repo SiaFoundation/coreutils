@@ -864,10 +864,14 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	}, usage)
 	if err != nil {
 		return fmt.Errorf("failed to add contract: %w", err)
-	} else if err := s.wallet.BroadcastV2TransactionSet(basis, formationSet); err != nil {
+	}
+	// the contract is committed; do not release the inputs or remove the
+	// transaction from the pool even if the broadcast to peers fails (the
+	// wallet has stored the set for rebroadcast)
+	broadcast = true
+	if err := s.wallet.BroadcastV2TransactionSet(basis, formationSet); err != nil {
 		return fmt.Errorf("failed to broadcast transaction set: %w", err)
 	}
-	broadcast = true // set broadcast so the UTXOs will not be released if the renter happens to disconnect before receiving the last response
 
 	// send the finalized transaction set to the renter
 	return rhp4.WriteResponse(stream, &rhp4.RPCFormContractThirdResponse{
@@ -1052,10 +1056,14 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn, partial bool) error {
 	}, usage)
 	if err != nil {
 		return fmt.Errorf("failed to add contract: %w", err)
-	} else if err := s.wallet.BroadcastV2TransactionSet(basis, renewalSet); err != nil {
+	}
+	// the contract is committed; do not release the inputs or remove the
+	// transaction from the pool even if the broadcast to peers fails (the
+	// wallet has stored the set for rebroadcast)
+	broadcast = true
+	if err := s.wallet.BroadcastV2TransactionSet(basis, renewalSet); err != nil {
 		return fmt.Errorf("failed to broadcast transaction set: %w", err)
 	}
-	broadcast = true // set broadcast so the UTXOs will not be released if the renter happens to disconnect before receiving the last response
 
 	// send the finalized transaction set to the renter
 	return rhp4.WriteResponse(stream, &rhp4.RPCRefreshContractThirdResponse{
@@ -1235,10 +1243,14 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	}, usage)
 	if err != nil {
 		return fmt.Errorf("failed to add contract: %w", err)
-	} else if err := s.wallet.BroadcastV2TransactionSet(basis, renewalSet); err != nil {
+	}
+	// the contract is committed; do not release the inputs or remove the
+	// transaction from the pool even if the broadcast to peers fails (the
+	// wallet has stored the set for rebroadcast)
+	broadcast = true
+	if err := s.wallet.BroadcastV2TransactionSet(basis, renewalSet); err != nil {
 		return fmt.Errorf("failed to broadcast transaction set: %w", err)
 	}
-	broadcast = true // set broadcast so the UTXOs will not be released if the renter happens to disconnect before receiving the last response
 
 	// send the finalized transaction set to the renter
 	return rhp4.WriteResponse(stream, &rhp4.RPCRenewContractThirdResponse{
