@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1367,6 +1368,138 @@ func TestRPCRenew(t *testing.T) {
 			t.Fatal("expected contract to not be revisable")
 		}
 	})
+}
+
+// failingContractor wraps an EphemeralContractor and can be configured to fail
+// AddV2Contract and RenewV2Contract, simulating a host that fails to persist a
+// contract after the transaction set has already been added to the pool but
+// before it is broadcast.
+type failingContractor struct {
+	*testutil.EphemeralContractor
+	failAdd   atomic.Bool
+	failRenew atomic.Bool
+}
+
+func (fc *failingContractor) AddV2Contract(ts rhp4.TransactionSet, usage proto4.Usage) error {
+	if fc.failAdd.Load() {
+		return errors.New("injected formation failure")
+	}
+	return fc.EphemeralContractor.AddV2Contract(ts, usage)
+}
+
+func (fc *failingContractor) RenewV2Contract(ts rhp4.TransactionSet, usage proto4.Usage) error {
+	if fc.failRenew.Load() {
+		return errors.New("injected renewal failure")
+	}
+	return fc.EphemeralContractor.RenewV2Contract(ts, usage)
+}
+
+// TestRPCRenewRecoverAfterPoolAdd ensures that when the host fails to persist a
+// renewal after the renewal set has already been added to the transaction pool,
+// the transaction is removed from the pool so that the contract is not left
+// resolved and a subsequent renewal can succeed.
+func TestRPCRenewRecoverAfterPoolAdd(t *testing.T) {
+	n, genesis := testutil.V2Network()
+	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
+	cm, w := startTestNode(t, n, genesis)
+
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
+
+	sr := testutil.NewEphemeralSettingsReporter()
+	sr.Update(proto4.HostSettings{
+		Release:             "test",
+		AcceptingContracts:  true,
+		WalletAddress:       w.Address(),
+		MaxCollateral:       types.Siacoins(10000),
+		MaxContractDuration: 1000,
+		RemainingStorage:    100 * proto4.SectorSize,
+		TotalStorage:        100 * proto4.SectorSize,
+		Prices: proto4.HostPrices{
+			ContractPrice: types.Siacoins(1).Div64(5), // 0.2 SC
+			StoragePrice:  types.NewCurrency64(100),   // 100 H / byte / block
+			IngressPrice:  types.NewCurrency64(100),   // 100 H / byte
+			EgressPrice:   types.NewCurrency64(100),   // 100 H / byte
+			Collateral:    types.NewCurrency64(200),
+		},
+	})
+	ss := testutil.NewEphemeralSectorStore()
+	c := &failingContractor{EphemeralContractor: testutil.NewEphemeralContractor(cm)}
+
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, w, c, sr, ss, zap.NewNop())
+
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fundAndSign := &fundAndSign{w, renterKey}
+
+	// form a contract and confirm it
+	formResult, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+		RenterPublicKey: renterKey.PublicKey(),
+		RenterAddress:   w.Address(),
+		Allowance:       types.Siacoins(100),
+		Collateral:      types.Siacoins(200),
+		ProofHeight:     cm.Tip().Height + 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cm.AddV2PoolTransactions(formResult.FormationSet.Basis, formResult.FormationSet.Transactions); err != nil {
+		t.Fatal(err)
+	}
+	mineAndSync(t, cm, types.VoidAddress, 10, w, c)
+
+	revision := formResult.Contract
+	renewParams := proto4.RPCRenewContractParams{
+		ContractID:  revision.ID,
+		Allowance:   types.Siacoins(150),
+		Collateral:  types.Siacoins(300),
+		ProofHeight: revision.Revision.ProofHeight + 10,
+	}
+
+	// the pool should be empty now that the formation is confirmed
+	if n := len(cm.V2PoolTransactions()); n != 0 {
+		t.Fatalf("expected empty pool before renewal, got %d", n)
+	}
+
+	// configure the host to fail persisting the renewal; this happens after the
+	// renewal set is added to the pool but before it is broadcast
+	c.failRenew.Store(true)
+	if _, err := rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, settings.WalletAddress, revision.Revision, renewParams); err == nil {
+		t.Fatal("expected renewal to fail")
+	}
+
+	// the failed renewal must have been removed from the pool, leaving the
+	// parent contract unresolved and revisable
+	if n := len(cm.V2PoolTransactions()); n != 0 {
+		t.Fatalf("expected failed renewal to be removed from the pool, got %d", n)
+	}
+	rs, err := rhp4.RPCLatestRevision(context.Background(), transport, revision.ID)
+	if err != nil {
+		t.Fatal(err)
+	} else if rs.Renewed {
+		t.Fatal("expected contract to not be renewed after failed renewal")
+	} else if !rs.Revisable {
+		t.Fatal("expected contract to still be revisable after failed renewal")
+	}
+
+	// retrying the renewal must now succeed
+	c.failRenew.Store(false)
+	renewResult, err := rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, settings.WalletAddress, revision.Revision, renewParams)
+	if err != nil {
+		t.Fatalf("expected renewal to succeed after recovery, got %v", err)
+	}
+	if known, err := cm.AddV2PoolTransactions(renewResult.RenewalSet.Basis, renewResult.RenewalSet.Transactions); err != nil {
+		t.Fatal(err)
+	} else if !known {
+		t.Fatal("expected renewal set to be known")
+	}
+	if rs, err := rhp4.RPCLatestRevision(context.Background(), transport, revision.ID); err != nil {
+		t.Fatal(err)
+	} else if !rs.Renewed {
+		t.Fatal("expected contract to be renewed after successful retry")
+	}
 }
 
 func TestRPCTimeout(t *testing.T) {
