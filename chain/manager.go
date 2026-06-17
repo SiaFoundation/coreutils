@@ -1546,6 +1546,49 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 	return false, nil
 }
 
+// RemoveV2PoolTransactions removes the given transactions from the transaction
+// pool, along with any pooled transactions that depend on them. It is intended
+// for abandoning a locally-added transaction set that will not be broadcast.
+// Transactions that are not in the pool are ignored.
+func (m *Manager) RemoveV2PoolTransactions(ids []types.TransactionID) {
+	sp, unlock := m.scratchpad()
+	defer unlock()
+
+	remove := make(map[types.TransactionID]bool, len(ids))
+	for _, id := range ids {
+		remove[id] = true
+	}
+
+	filtered := m.txpool.v2txns[:0]
+	var removed bool
+	for _, txn := range m.txpool.v2txns {
+		if remove[txn.ID()] {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, txn)
+	}
+	if !removed {
+		return
+	}
+	m.txpool.v2txns = filtered
+
+	// force a full revalidation
+	m.txpool.ms = nil
+	m.txpool.medianFee = nil
+	m.revalidatePool(sp)
+
+	// notify listeners, without holding the write lock
+	fns := make([]func(), 0, len(m.onPool))
+	for _, fn := range m.onPool {
+		fns = append(fns, fn)
+	}
+	unlock()
+	for _, fn := range fns {
+		fn()
+	}
+}
+
 // NewManager returns a Manager initialized with the provided Store. The Store
 // must not have any unflushed writes.
 func NewManager(store Store, opts ...ManagerOption) *Manager {
