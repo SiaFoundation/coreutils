@@ -42,6 +42,10 @@ type (
 		// AddV2PoolTransactions validates a transaction set and adds it to the
 		// transaction pool.
 		AddV2PoolTransactions(types.ChainIndex, []types.V2Transaction) (known bool, err error)
+		// RemoveV2PoolTransactions removes the given transactions from the
+		// transaction pool, along with any pooled transactions that depend on
+		// them. Transactions that are not in the pool are ignored.
+		RemoveV2PoolTransactions([]types.TransactionID)
 		// RecommendedFee returns the recommended fee per weight
 		RecommendedFee() types.Currency
 
@@ -787,8 +791,10 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 		if broadcast {
 			return
 		}
-		// release the inputs if the transaction is not going to be broadcast
+		// release the inputs and remove the transaction from the pool if it is
+		// not going to be broadcast
 		s.wallet.ReleaseInputs(nil, []types.V2Transaction{formationTxn})
+		s.chain.RemoveV2PoolTransactions([]types.TransactionID{formationTxn.ID()})
 	}()
 	// sign the transaction inputs
 	s.wallet.SignV2Inputs(&formationTxn, toSign)
@@ -953,8 +959,10 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn, partial bool) error {
 		if broadcast {
 			return
 		}
-		// release the locked UTXOs if the transaction is not going to be broadcast
+		// release the inputs and remove the transaction from the pool if it is
+		// not going to be broadcast
 		s.wallet.ReleaseInputs(nil, []types.V2Transaction{renewalTxn})
+		s.chain.RemoveV2PoolTransactions([]types.TransactionID{renewalTxn.ID()})
 	}()
 
 	// update renter inputs to reflect our chain state
@@ -1134,8 +1142,10 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 		if broadcast {
 			return
 		}
-		// release the locked UTXOs if the transaction is not going to be broadcast
+		// release the inputs and remove the transaction from the pool if it is
+		// not going to be broadcast
 		s.wallet.ReleaseInputs(nil, []types.V2Transaction{renewalTxn})
+		s.chain.RemoveV2PoolTransactions([]types.TransactionID{renewalTxn.ID()})
 	}()
 
 	// update renter inputs to reflect our chain state
