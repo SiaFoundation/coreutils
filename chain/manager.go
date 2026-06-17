@@ -1576,6 +1576,7 @@ func (m *Manager) RemoveV2PoolTransactions(ids []types.TransactionID) {
 	// force a full revalidation
 	m.txpool.ms = nil
 	m.txpool.medianFee = nil
+	m.txpool.weight = 0
 	m.revalidatePool(sp)
 
 	// notify listeners, without holding the write lock
