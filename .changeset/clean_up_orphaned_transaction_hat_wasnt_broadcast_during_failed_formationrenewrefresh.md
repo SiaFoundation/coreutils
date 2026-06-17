@@ -2,4 +2,4 @@
 default: patch
 ---
 
-# Clean up orphaned transaction hat wasn't broadcast during failed formation/renew/refresh.
+# Clean up orphaned transaction that wasn't broadcast during failed formation/renew/refresh
