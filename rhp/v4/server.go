@@ -81,7 +81,7 @@ type (
 		HasSector(root types.Hash256) (bool, error)
 		// ReadSector retrieves a segment of a sector by its root and returns the data and a proof for the segment.
 		ReadSector(root types.Hash256, offset, length uint64) ([]byte, []types.Hash256, error)
-		// StoreSector writes a sector to disk
+		// StoreSector writes a sector to disk.
 		StoreSector(root types.Hash256, data *[rhp4.SectorSize]byte, subtrees []types.Hash256, expiration uint64) error
 	}
 
@@ -245,14 +245,14 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 		return errorDecodingError("failed to read sector data: %v", err)
 	}
 
-	subtrees := rhp4.CachedSectorSubtrees(buf.Bytes())
-	// compute the root from the subtrees instead of hashing the sector again.
-	root := rhp4.MetaRoot(subtrees)
-
 	usage := prices.RPCWriteSectorCost(req.DataLength)
 	if err := s.contractor.DebitAccount(req.Token.Account, usage); err != nil {
 		return fmt.Errorf("failed to debit account: %w", err)
 	}
+
+	subtrees := rhp4.CachedSectorSubtrees(buf.Bytes())
+	// compute the root from the subtrees instead of hashing the sector again.
+	root := rhp4.MetaRoot(subtrees)
 
 	if err := s.sectors.StoreSector(root, buf.Bytes(), subtrees, prices.TipHeight+rhp4.TempSectorDuration); err != nil {
 		return fmt.Errorf("failed to store sector: %w", err)
