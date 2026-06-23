@@ -81,8 +81,8 @@ type (
 		HasSector(root types.Hash256) (bool, error)
 		// ReadSector retrieves a segment of a sector by its root and returns the data and a proof for the segment.
 		ReadSector(root types.Hash256, offset, length uint64) ([]byte, []types.Hash256, error)
-		// StoreSector writes a sector to disk
-		StoreSector(root types.Hash256, data *[rhp4.SectorSize]byte, expiration uint64) error
+		// StoreSector writes a sector to disk.
+		StoreSector(root types.Hash256, data *[rhp4.SectorSize]byte, subtrees []types.Hash256, expiration uint64) error
 	}
 
 	// A RevisionState pairs a contract revision with its sector roots.
@@ -240,26 +240,21 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 	}
 	prices := req.Prices
 
-	sr := io.LimitReader(stream, int64(req.DataLength))
-	if req.DataLength < rhp4.SectorSize {
-		// if the data is less than a full sector, the reader needs to be padded
-		// with zeros to calculate the sector root
-		padding := int64(rhp4.SectorSize - req.DataLength)
-		sr = io.MultiReader(sr, io.LimitReader(zeros, padding))
-	}
-
 	buf := newSectorBuffer()
-	root, err := rhp4.ReadSectorRoot(io.TeeReader(sr, buf))
-	if err != nil {
+	if _, err := io.CopyN(buf, stream, int64(req.DataLength)); err != nil {
 		return errorDecodingError("failed to read sector data: %v", err)
 	}
 
 	usage := prices.RPCWriteSectorCost(req.DataLength)
-	if err = s.contractor.DebitAccount(req.Token.Account, usage); err != nil {
+	if err := s.contractor.DebitAccount(req.Token.Account, usage); err != nil {
 		return fmt.Errorf("failed to debit account: %w", err)
 	}
 
-	if err := s.sectors.StoreSector(root, buf.Bytes(), prices.TipHeight+rhp4.TempSectorDuration); err != nil {
+	subtrees := rhp4.CachedSectorSubtrees(buf.Bytes())
+	// compute the root from the subtrees instead of hashing the sector again.
+	root := rhp4.MetaRoot(subtrees)
+
+	if err := s.sectors.StoreSector(root, buf.Bytes(), subtrees, prices.TipHeight+rhp4.TempSectorDuration); err != nil {
 		return fmt.Errorf("failed to store sector: %w", err)
 	}
 	return rhp4.WriteResponse(stream, &rhp4.RPCWriteSectorResponse{
