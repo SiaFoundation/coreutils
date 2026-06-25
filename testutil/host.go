@@ -72,7 +72,7 @@ func (es *EphemeralSectorStore) ReadSector(root types.Hash256, offset, length ui
 }
 
 // StoreSector stores a sector in the EphemeralSectorStore.
-func (es *EphemeralSectorStore) StoreSector(root types.Hash256, sector *[proto4.SectorSize]byte, _ uint64) error {
+func (es *EphemeralSectorStore) StoreSector(root types.Hash256, sector *[proto4.SectorSize]byte, _ []types.Hash256, _ uint64) error {
 	es.mu.Lock()
 	defer es.mu.Unlock()
 	es.sectors[root] = sector

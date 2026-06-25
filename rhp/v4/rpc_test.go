@@ -1706,14 +1706,16 @@ func TestAccounts(t *testing.T) {
 
 	cs := cm.TipState()
 
-	var sector *[proto4.SectorSize]byte
-	if err := ss.StoreSector(types.Hash256{1}, sector, 0); err != nil {
+	sector := [proto4.SectorSize]byte{1}
+	subtrees := proto4.CachedSectorSubtrees(&sector)
+	root := proto4.MetaRoot(subtrees)
+	if err := ss.StoreSector(root, &sector, subtrees, 0); err != nil {
 		t.Fatal(err)
 	}
 
 	// test operations against unknown account
 	token := proto4.NewAccountToken(renterKey, hostKey.PublicKey())
-	_, err = rhp4.RPCVerifySector(context.Background(), transport, settings.Prices, token, types.Hash256{1})
+	_, err = rhp4.RPCVerifySector(context.Background(), transport, settings.Prices, token, root)
 	if err == nil || !strings.Contains(err.Error(), proto4.ErrNotEnoughFunds.Error()) {
 		t.Fatal(err)
 	}
@@ -1772,7 +1774,7 @@ func TestAccounts(t *testing.T) {
 
 	// drain account and try using it
 	_ = c.DebitAccount(account, proto4.Usage{RPC: accountFundAmount})
-	_, err = rhp4.RPCVerifySector(context.Background(), transport, settings.Prices, token, types.Hash256{1})
+	_, err = rhp4.RPCVerifySector(context.Background(), transport, settings.Prices, token, root)
 	if err == nil || !strings.Contains(err.Error(), proto4.ErrNotEnoughFunds.Error()) {
 		t.Fatal(err)
 	}
