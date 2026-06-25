@@ -92,6 +92,18 @@ type blockReader interface {
 	State(id types.BlockID) (consensus.State, bool)
 }
 
+// storeReader is the subset of Store reads used to compute reorg paths and
+// update transaction proofs. Both Store and ReadonlyStore satisfy it, so these
+// (read-only) operations can run against the live store under the write lock or
+// against a Snapshot under a read lock.
+type storeReader interface {
+	BestIndex(height uint64) (types.ChainIndex, bool)
+	State(id types.BlockID) (consensus.State, bool)
+	Header(id types.BlockID) (types.BlockHeader, bool)
+	Block(id types.BlockID) (types.Block, *consensus.V1BlockSupplement, bool)
+	AncestorTimestamp(id types.BlockID) (time.Time, bool)
+}
+
 // blockAndParent returns the block with the specified ID, along with its parent
 // state.
 func blockAndParent(s blockReader, id types.BlockID) (types.Block, *consensus.V1BlockSupplement, consensus.State, bool) {
@@ -490,14 +502,14 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 	return nil
 }
 
-func (m *Manager) reorgPath(a, b types.ChainIndex, maxLen int) (revert, apply []types.ChainIndex, err error) {
+func (m *Manager) reorgPath(s storeReader, a, b types.ChainIndex, maxLen int) (revert, apply []types.ChainIndex, err error) {
 	// helper function for "rewinding" to the parent index
 	rewind := func(index *types.ChainIndex) bool {
 		if len(revert)+len(apply) > maxLen {
 			err = fmt.Errorf("reorg path is too long (-%d +%d, max %d)", len(revert), len(apply), maxLen)
 			return false
 		}
-		bh, ok := m.store.Header(index.ID)
+		bh, ok := s.Header(index.ID)
 		if !ok {
 			err = fmt.Errorf("%w %v", ErrMissingBlock, *index)
 		} else {
@@ -522,7 +534,7 @@ func (m *Manager) reorgPath(a, b types.ChainIndex, maxLen int) (revert, apply []
 
 	// special case: if a is uninitialized, we're starting from genesis
 	if a == (types.ChainIndex{}) {
-		a, _ = m.store.BestIndex(0)
+		a, _ = s.BestIndex(0)
 		apply = append(apply, a)
 	}
 
@@ -540,7 +552,7 @@ func (m *Manager) reorgPath(a, b types.ChainIndex, maxLen int) (revert, apply []
 }
 
 func (m *Manager) reorgTo(index types.ChainIndex) error {
-	revert, apply, err := m.reorgPath(m.tipState.Index, index, math.MaxInt)
+	revert, apply, err := m.reorgPath(m.store, m.tipState.Index, index, math.MaxInt)
 	if err != nil {
 		return err
 	}
@@ -1232,7 +1244,7 @@ func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transacti
 	}
 
 	// update the transaction's basis to match tip
-	txns, err := m.updateV2TransactionProofs(append(parents, txn), basis, m.tipState.Index)
+	txns, err := m.updateV2TransactionProofs(m.store, append(parents, txn), basis, m.tipState.Index)
 	if err != nil {
 		return types.ChainIndex{}, nil, fmt.Errorf("failed to update transaction set basis: %w", err)
 	}
@@ -1264,10 +1276,10 @@ func (m *Manager) checkTxnSet(txns []types.Transaction, v2txns []types.V2Transac
 	return allInPool, nil
 }
 
-func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to types.ChainIndex) (updated []types.V2Transaction, err error) {
+func (m *Manager) updateV2TransactionProofs(s storeReader, txns []types.V2Transaction, from, to types.ChainIndex) (updated []types.V2Transaction, err error) {
 	// first validate the transaction set against its claimed basis; attempting
 	// to update an invalid proof can cause a panic
-	basisState, ok := m.store.State(from.ID)
+	basisState, ok := s.State(from.ID)
 	if !ok {
 		return nil, fmt.Errorf("couldn't find state for basis %v", from)
 	}
@@ -1277,7 +1289,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		}
 	}
 
-	revert, apply, err := m.reorgPath(from, to, 144)
+	revert, apply, err := m.reorgPath(s, from, to, 144)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't determine reorg path from %v to %v: %w", from, to, err)
 	}
@@ -1288,7 +1300,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		updated = append(updated, txn.DeepCopy())
 	}
 	for _, index := range revert {
-		b, bs, cs, ok := blockAndParent(m.store, index.ID)
+		b, bs, cs, ok := blockAndParent(s, index.ID)
 		if !ok {
 			return nil, fmt.Errorf("missing reverted block at index %v", index)
 		} else if bs == nil {
@@ -1305,7 +1317,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 	}
 
 	for _, index := range apply {
-		b, bs, cs, ok := blockAndParent(m.store, index.ID)
+		b, bs, cs, ok := blockAndParent(s, index.ID)
 		if !ok {
 			return nil, fmt.Errorf("missing applied block at index %v", index)
 		} else if bs == nil {
@@ -1313,7 +1325,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		} else if err := m.overwriteExpirations(b, bs); err != nil {
 			return nil, fmt.Errorf("failed to overwrite expirations for block %v: %w", index, err)
 		}
-		ancestorTimestamp, _ := m.store.AncestorTimestamp(b.ParentID)
+		ancestorTimestamp, _ := s.AncestorTimestamp(b.ParentID)
 		cs, cau := consensus.ApplyBlock(cs, b, *bs, ancestorTimestamp)
 
 		// get the transactions that were confirmed in this block
@@ -1434,9 +1446,11 @@ func (m *Manager) UpdateV2TransactionSet(txns []types.V2Transaction, from, to ty
 	if from == to {
 		return txns, nil
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.updateV2TransactionProofs(txns, from, to)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	snap := m.store.Snapshot()
+	defer snap.Close()
+	return m.updateV2TransactionProofs(snap, txns, from, to)
 }
 
 // AddV2PoolTransactions validates a transaction set and adds it to the txpool.
@@ -1463,7 +1477,7 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 	for i := range txns {
 		txns[i] = txns[i].DeepCopy()
 	}
-	txns, err := m.updateV2TransactionProofs(txns, basis, m.tipState.Index)
+	txns, err := m.updateV2TransactionProofs(m.store, txns, basis, m.tipState.Index)
 	if err != nil {
 		return false, fmt.Errorf("failed to update set basis: %w", err)
 	}
