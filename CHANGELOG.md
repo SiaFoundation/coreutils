@@ -1,3 +1,13 @@
+## 0.22.1 (2026-06-23)
+
+### Fixes
+
+- Add MaxInflightRPCsPerSubnet - a per-subnet limit on concurrent inbound RPCS
+- enforce reorg path length limit inside reorgPath
+- Only set default timeout in openStream when the context has no deadline and handle context deadlines via goroutine.
+- Reduced host sector hashing in RPCWriteSector.
+- Update mux to v1.5.1.
+
 ## 0.22.0 (2026-05-12)
 
 ### Breaking Changes
