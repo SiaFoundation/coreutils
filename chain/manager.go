@@ -66,11 +66,47 @@ type Store interface {
 	ApplyBlock(s consensus.State, cau consensus.ApplyUpdate)
 	RevertBlock(s consensus.State, cru consensus.RevertUpdate)
 	Flush() error
+
+	// Snapshot returns a read-only, point-in-time view of the Store. It may be
+	// read concurrently with other snapshots and must be closed when finished.
+	Snapshot() ReadonlyStore
+}
+
+// A ReadonlyStore is a read-only, point-in-time view of a Store. It exposes
+// only the Store's read methods, so the underlying storage cannot be modified
+// through it.
+type ReadonlyStore interface {
+	BestIndex(height uint64) (types.ChainIndex, bool)
+	Block(id types.BlockID) (types.Block, *consensus.V1BlockSupplement, bool)
+	Header(id types.BlockID) (types.BlockHeader, bool)
+	State(id types.BlockID) (consensus.State, bool)
+	AncestorTimestamp(id types.BlockID) (time.Time, bool)
+	// Close releases the snapshot. Callers may ignore the returned error.
+	Close() error
+}
+
+// blockReader provides the reads needed by blockAndParent. Both Store and
+// ReadonlyStore satisfy it.
+type blockReader interface {
+	Block(id types.BlockID) (types.Block, *consensus.V1BlockSupplement, bool)
+	State(id types.BlockID) (consensus.State, bool)
+}
+
+// storeReader is the subset of Store reads used to compute reorg paths and
+// update transaction proofs. Both Store and ReadonlyStore satisfy it, so these
+// (read-only) operations can run against the live store under the write lock or
+// against a Snapshot under a read lock.
+type storeReader interface {
+	BestIndex(height uint64) (types.ChainIndex, bool)
+	State(id types.BlockID) (consensus.State, bool)
+	Header(id types.BlockID) (types.BlockHeader, bool)
+	Block(id types.BlockID) (types.Block, *consensus.V1BlockSupplement, bool)
+	AncestorTimestamp(id types.BlockID) (time.Time, bool)
 }
 
 // blockAndParent returns the block with the specified ID, along with its parent
 // state.
-func blockAndParent(s Store, id types.BlockID) (types.Block, *consensus.V1BlockSupplement, consensus.State, bool) {
+func blockAndParent(s blockReader, id types.BlockID) (types.Block, *consensus.V1BlockSupplement, consensus.State, bool) {
 	b, bs, ok := s.Block(id)
 	cs, ok2 := s.State(b.ParentID)
 	return b, bs, cs, ok && ok2
@@ -99,13 +135,32 @@ type Manager struct {
 		lastRevertedV2 []types.V2Transaction
 	}
 
-	mu sync.Mutex
+	mu sync.RWMutex
+}
+
+// flushStore commits any pending store writes. Writer paths must not release
+// m.mu without flushing first, or concurrent View readers would observe a
+// snapshot older than m.tipState; use writeUnlock to release the write lock so
+// the two cannot drift apart.
+func (m *Manager) flushStore() {
+	if err := m.store.Flush(); err != nil {
+		panic(err)
+	}
+}
+
+// writeUnlock flushes pending store writes, then releases the write lock. It
+// must be used (never m.mu.Unlock directly) to release a lock taken with
+// m.mu.Lock in a store-mutating path, so that flush-before-unlock cannot be
+// forgotten. Pool-only writers that don't touch the store use m.mu.Unlock.
+func (m *Manager) writeUnlock() {
+	m.flushStore()
+	m.mu.Unlock()
 }
 
 // TipState returns the consensus state for the current tip.
 func (m *Manager) TipState() consensus.State {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.tipState
 }
 
@@ -116,36 +171,44 @@ func (m *Manager) Tip() types.ChainIndex {
 
 // Block returns the block with the specified ID.
 func (m *Manager) Block(id types.BlockID) (types.Block, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	b, _, ok := m.store.Block(id)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	snap := m.store.Snapshot()
+	defer snap.Close()
+	b, _, ok := snap.Block(id)
 	return b, ok
 }
 
 // State returns the state with the specified ID.
 func (m *Manager) State(id types.BlockID) (consensus.State, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.store.State(id)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	snap := m.store.Snapshot()
+	defer snap.Close()
+	return snap.State(id)
 }
 
 // BestIndex returns the index of the block at the specified height within the
 // best chain.
 func (m *Manager) BestIndex(height uint64) (types.ChainIndex, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.store.BestIndex(height)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	snap := m.store.Snapshot()
+	defer snap.Close()
+	return snap.BestIndex(height)
 }
 
 // MinReorgIndex returns the index on the best chain below which the manager
 // cannot perform a reorg.
 func (m *Manager) MinReorgIndex() types.ChainIndex {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	snap := m.store.Snapshot()
+	defer snap.Close()
 	index := m.tipState.Index
 	for index.Height > 0 {
-		prevIndex, ok := m.store.BestIndex(index.Height - 1)
-		_, _, ok2 := m.store.Block(prevIndex.ID)
+		prevIndex, ok := snap.BestIndex(index.Height - 1)
+		_, _, ok2 := snap.Block(prevIndex.ID)
 		if !ok || !ok2 {
 			break
 		}
@@ -158,8 +221,10 @@ func (m *Manager) MinReorgIndex() types.ChainIndex {
 // the 10 most-recent blocks, and subsequently spaced exponentionally farther
 // apart until reaching the genesis block.
 func (m *Manager) History() ([32]types.BlockID, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	snap := m.store.Snapshot()
+	defer snap.Close()
 
 	tipHeight := m.tipState.Index.Height
 	histHeight := func(i int) uint64 {
@@ -174,7 +239,7 @@ func (m *Manager) History() ([32]types.BlockID, error) {
 	}
 	var history [32]types.BlockID
 	for i := range history {
-		index, ok := m.store.BestIndex(histHeight(i))
+		index, ok := snap.BestIndex(histHeight(i))
 		if !ok {
 			break
 		}
@@ -187,18 +252,20 @@ func (m *Manager) History() ([32]types.BlockID, error) {
 // which must be on the best chain. It also returns the number of headers
 // between the end of the returned slice and the current tip.
 func (m *Manager) Headers(index types.ChainIndex, maxHeaders uint64) ([]types.BlockHeader, uint64, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if bestIndex, ok := m.store.BestIndex(index.Height); !ok || bestIndex != index {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	snap := m.store.Snapshot()
+	defer snap.Close()
+	if bestIndex, ok := snap.BestIndex(index.Height); !ok || bestIndex != index {
 		return nil, 0, fmt.Errorf("index %v is not on our best chain", index)
 	}
 	maxHeaders = min(maxHeaders, m.tipState.Index.Height-index.Height)
 	headers := make([]types.BlockHeader, maxHeaders)
 	for i := range headers {
-		index, _ := m.store.BestIndex(index.Height + uint64(i) + 1)
-		bh, ok := m.store.Header(index.ID)
+		next, _ := snap.BestIndex(index.Height + uint64(i) + 1)
+		bh, ok := snap.Header(next.ID)
 		if !ok {
-			return nil, 0, fmt.Errorf("missing block header %v", index)
+			return nil, 0, fmt.Errorf("missing block header %v", next)
 		}
 		headers[i] = bh
 	}
@@ -211,13 +278,15 @@ func (m *Manager) Headers(index types.ChainIndex, maxHeaders uint64) ([]types.Bl
 // returns the number of blocks between the end of the returned slice and the
 // current tip.
 func (m *Manager) BlocksForHistory(history []types.BlockID, maxBlocks uint64) ([]types.Block, uint64, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	snap := m.store.Snapshot()
+	defer snap.Close()
 	var attachHeight uint64
 	for _, id := range history {
-		if cs, ok := m.store.State(id); !ok {
+		if cs, ok := snap.State(id); !ok {
 			continue
-		} else if index, ok := m.store.BestIndex(cs.Index.Height); ok && index == cs.Index {
+		} else if index, ok := snap.BestIndex(cs.Index.Height); ok && index == cs.Index {
 			attachHeight = cs.Index.Height
 			break
 		}
@@ -227,11 +296,11 @@ func (m *Manager) BlocksForHistory(history []types.BlockID, maxBlocks uint64) ([
 	}
 	blocks := make([]types.Block, maxBlocks)
 	for i := range blocks {
-		index, ok := m.store.BestIndex(attachHeight + uint64(i) + 1)
+		index, ok := snap.BestIndex(attachHeight + uint64(i) + 1)
 		if !ok {
 			return nil, 0, fmt.Errorf("unknown block at height %v", attachHeight+uint64(i)+1)
 		}
-		b, _, ok := m.store.Block(index.ID)
+		b, _, ok := snap.Block(index.ID)
 		if !ok {
 			return nil, 0, fmt.Errorf("missing block %v", index)
 		}
@@ -244,7 +313,7 @@ func (m *Manager) BlocksForHistory(history []types.BlockID, maxBlocks uint64) ([
 // belong to may become the new best chain, triggering a reorg.
 func (m *Manager) AddBlocks(blocks []types.Block) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer m.writeUnlock()
 	if len(blocks) == 0 {
 		return nil
 	}
@@ -298,7 +367,7 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 		for _, fn := range m.onPool {
 			fns = append(fns, fn)
 		}
-		m.mu.Unlock()
+		m.writeUnlock()
 		for _, fn := range fns {
 			fn()
 		}
@@ -312,7 +381,7 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 // sufficient work, it may become the new best chain, triggering a reorg.
 func (m *Manager) AddValidatedV2Blocks(blocks []types.Block, states []consensus.State) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer m.writeUnlock()
 	if len(blocks) == 0 {
 		return nil
 	} else if len(states) != len(blocks) {
@@ -349,7 +418,7 @@ func (m *Manager) AddValidatedV2Blocks(blocks []types.Block, states []consensus.
 		for _, fn := range m.onPool {
 			fns = append(fns, fn)
 		}
-		m.mu.Unlock()
+		m.writeUnlock()
 		for _, fn := range fns {
 			fn()
 		}
@@ -433,14 +502,14 @@ func (m *Manager) applyTip(index types.ChainIndex) error {
 	return nil
 }
 
-func (m *Manager) reorgPath(a, b types.ChainIndex, maxLen int) (revert, apply []types.ChainIndex, err error) {
+func (m *Manager) reorgPath(s storeReader, a, b types.ChainIndex, maxLen int) (revert, apply []types.ChainIndex, err error) {
 	// helper function for "rewinding" to the parent index
 	rewind := func(index *types.ChainIndex) bool {
 		if len(revert)+len(apply) > maxLen {
 			err = fmt.Errorf("reorg path is too long (-%d +%d, max %d)", len(revert), len(apply), maxLen)
 			return false
 		}
-		bh, ok := m.store.Header(index.ID)
+		bh, ok := s.Header(index.ID)
 		if !ok {
 			err = fmt.Errorf("%w %v", ErrMissingBlock, *index)
 		} else {
@@ -465,7 +534,7 @@ func (m *Manager) reorgPath(a, b types.ChainIndex, maxLen int) (revert, apply []
 
 	// special case: if a is uninitialized, we're starting from genesis
 	if a == (types.ChainIndex{}) {
-		a, _ = m.store.BestIndex(0)
+		a, _ = s.BestIndex(0)
 		apply = append(apply, a)
 	}
 
@@ -483,7 +552,7 @@ func (m *Manager) reorgPath(a, b types.ChainIndex, maxLen int) (revert, apply []
 }
 
 func (m *Manager) reorgTo(index types.ChainIndex) error {
-	revert, apply, err := m.reorgPath(m.tipState.Index, index, math.MaxInt)
+	revert, apply, err := m.reorgPath(m.store, m.tipState.Index, index, math.MaxInt)
 	if err != nil {
 		return err
 	}
@@ -537,7 +606,7 @@ func (m *Manager) reorgTo(index types.ChainIndex) error {
 // a large backlog.
 func (m *Manager) PruneBlocks(height uint64) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer m.writeUnlock()
 
 	for h := height; h > 0; h-- {
 		index, ok := m.store.BestIndex(h - 1)
@@ -553,17 +622,19 @@ func (m *Manager) PruneBlocks(height uint64) {
 // UpdatesSince returns at most max updates on the path between index and the
 // Manager's current tip.
 func (m *Manager) UpdatesSince(index types.ChainIndex, maxBlocks int) (rus []RevertUpdate, aus []ApplyUpdate, err error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	snap := m.store.Snapshot()
+	defer snap.Close()
 	onBestChain := func(index types.ChainIndex) bool {
-		bi, _ := m.store.BestIndex(index.Height)
+		bi, _ := snap.BestIndex(index.Height)
 		return bi.ID == index.ID || index == types.ChainIndex{}
 	}
 
 	for index != m.tipState.Index && len(rus)+len(aus) < maxBlocks {
 		// revert until we are on the best chain, then apply
 		if !onBestChain(index) {
-			b, bs, cs, ok := blockAndParent(m.store, index.ID)
+			b, bs, cs, ok := blockAndParent(snap, index.ID)
 			if !ok {
 				return nil, nil, fmt.Errorf("%w %v", ErrMissingBlock, index)
 			} else if bs == nil {
@@ -575,17 +646,17 @@ func (m *Manager) UpdatesSince(index types.ChainIndex, maxBlocks int) (rus []Rev
 		} else {
 			// special case: if index is uninitialized, we're starting from genesis
 			if index == (types.ChainIndex{}) {
-				index, _ = m.store.BestIndex(0)
+				index, _ = snap.BestIndex(0)
 			} else {
-				index, _ = m.store.BestIndex(index.Height + 1)
+				index, _ = snap.BestIndex(index.Height + 1)
 			}
-			b, bs, cs, ok := blockAndParent(m.store, index.ID)
+			b, bs, cs, ok := blockAndParent(snap, index.ID)
 			if !ok {
 				return nil, nil, fmt.Errorf("%w %v", ErrMissingBlock, index)
 			} else if bs == nil {
 				return nil, nil, fmt.Errorf("missing supplement for block %v", index)
 			}
-			ancestorTimestamp, ok := m.store.AncestorTimestamp(b.ParentID)
+			ancestorTimestamp, ok := snap.AncestorTimestamp(b.ParentID)
 			if !ok && index.Height != 0 {
 				return nil, nil, fmt.Errorf("missing ancestor timestamp for block %v", b.ParentID)
 			}
@@ -1173,7 +1244,7 @@ func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transacti
 	}
 
 	// update the transaction's basis to match tip
-	txns, err := m.updateV2TransactionProofs(append(parents, txn), basis, m.tipState.Index)
+	txns, err := m.updateV2TransactionProofs(m.store, append(parents, txn), basis, m.tipState.Index)
 	if err != nil {
 		return types.ChainIndex{}, nil, fmt.Errorf("failed to update transaction set basis: %w", err)
 	}
@@ -1205,10 +1276,10 @@ func (m *Manager) checkTxnSet(txns []types.Transaction, v2txns []types.V2Transac
 	return allInPool, nil
 }
 
-func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to types.ChainIndex) (updated []types.V2Transaction, err error) {
+func (m *Manager) updateV2TransactionProofs(s storeReader, txns []types.V2Transaction, from, to types.ChainIndex) (updated []types.V2Transaction, err error) {
 	// first validate the transaction set against its claimed basis; attempting
 	// to update an invalid proof can cause a panic
-	basisState, ok := m.store.State(from.ID)
+	basisState, ok := s.State(from.ID)
 	if !ok {
 		return nil, fmt.Errorf("couldn't find state for basis %v", from)
 	}
@@ -1218,7 +1289,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		}
 	}
 
-	revert, apply, err := m.reorgPath(from, to, 144)
+	revert, apply, err := m.reorgPath(s, from, to, 144)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't determine reorg path from %v to %v: %w", from, to, err)
 	}
@@ -1229,7 +1300,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		updated = append(updated, txn.DeepCopy())
 	}
 	for _, index := range revert {
-		b, bs, cs, ok := blockAndParent(m.store, index.ID)
+		b, bs, cs, ok := blockAndParent(s, index.ID)
 		if !ok {
 			return nil, fmt.Errorf("missing reverted block at index %v", index)
 		} else if bs == nil {
@@ -1246,7 +1317,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 	}
 
 	for _, index := range apply {
-		b, bs, cs, ok := blockAndParent(m.store, index.ID)
+		b, bs, cs, ok := blockAndParent(s, index.ID)
 		if !ok {
 			return nil, fmt.Errorf("missing applied block at index %v", index)
 		} else if bs == nil {
@@ -1254,7 +1325,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		} else if err := m.overwriteExpirations(b, bs); err != nil {
 			return nil, fmt.Errorf("failed to overwrite expirations for block %v: %w", index, err)
 		}
-		ancestorTimestamp, _ := m.store.AncestorTimestamp(b.ParentID)
+		ancestorTimestamp, _ := s.AncestorTimestamp(b.ParentID)
 		cs, cau := consensus.ApplyBlock(cs, b, *bs, ancestorTimestamp)
 
 		// get the transactions that were confirmed in this block
@@ -1375,9 +1446,11 @@ func (m *Manager) UpdateV2TransactionSet(txns []types.V2Transaction, from, to ty
 	if from == to {
 		return txns, nil
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.updateV2TransactionProofs(txns, from, to)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	snap := m.store.Snapshot()
+	defer snap.Close()
+	return m.updateV2TransactionProofs(snap, txns, from, to)
 }
 
 // AddV2PoolTransactions validates a transaction set and adds it to the txpool.
@@ -1404,7 +1477,7 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 	for i := range txns {
 		txns[i] = txns[i].DeepCopy()
 	}
-	txns, err := m.updateV2TransactionProofs(txns, basis, m.tipState.Index)
+	txns, err := m.updateV2TransactionProofs(m.store, txns, basis, m.tipState.Index)
 	if err != nil {
 		return false, fmt.Errorf("failed to update set basis: %w", err)
 	}

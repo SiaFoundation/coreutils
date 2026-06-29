@@ -615,7 +615,7 @@ func TestReorgPathMaxLen(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := cm.reorgPath(genesisIdx, tip, tc.maxLen)
+			_, _, err := cm.reorgPath(cm.store, genesisIdx, tip, tc.maxLen)
 			if tc.shouldErr {
 				if err == nil {
 					t.Fatalf("expected error, got nil")
@@ -660,7 +660,7 @@ func TestReorgPathBogusBasisBailsFast(t *testing.T) {
 	bogus := types.ChainIndex{Height: math.MaxUint64, ID: tip.ID}
 
 	const maxLen = 144
-	revert, apply, err := cm.reorgPath(bogus, tip, maxLen)
+	revert, apply, err := cm.reorgPath(cm.store, bogus, tip, maxLen)
 	if err == nil {
 		t.Fatal("expected error for bogus basis, got nil")
 	}

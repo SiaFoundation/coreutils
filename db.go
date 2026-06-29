@@ -78,6 +78,35 @@ func (db *BoltChainDB) Cancel() {
 	db.tx = nil
 }
 
+// Snapshot implements chain.DB. It begins a read-only bbolt transaction, which
+// observes a consistent snapshot and can execute concurrently with other
+// snapshots and with the open writer transaction.
+func (db *BoltChainDB) Snapshot() chain.ReadonlyDB {
+	tx, err := db.db.Begin(false)
+	if err != nil {
+		panic(err)
+	}
+	return &boltSnapshot{tx: tx}
+}
+
+// boltSnapshot is a read-only chain.ReadonlyDB backed by a bbolt read
+// transaction.
+type boltSnapshot struct {
+	tx *bbolt.Tx
+}
+
+// Bucket implements chain.ReadonlyDB.
+func (s *boltSnapshot) Bucket(name []byte) chain.ReadonlyDBBucket {
+	b := s.tx.Bucket(name)
+	if b == nil {
+		return nil
+	}
+	return boltBucket{b}
+}
+
+// Close implements chain.ReadonlyDB, ending the read transaction.
+func (s *boltSnapshot) Close() error { return s.tx.Rollback() }
+
 // Close closes the BoltDB database.
 func (db *BoltChainDB) Close() error {
 	db.Flush()
