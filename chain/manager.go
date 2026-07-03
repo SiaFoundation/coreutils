@@ -841,6 +841,37 @@ func updateTxnProofs(txn *types.V2Transaction, updateElementProof func(*types.St
 	return
 }
 
+// checkEphemeralOutputs verifies that any ephemeral output spent within the set
+// claims the same output it was created with.
+func checkEphemeralOutputs(txns []types.V2Transaction) error {
+	sces := make(map[types.SiacoinOutputID]types.SiacoinOutput)
+	sfes := make(map[types.SiafundOutputID]types.SiafundOutput)
+	for _, txn := range txns {
+		txid := txn.ID()
+		for i, sci := range txn.SiacoinInputs {
+			if sci.Parent.StateElement.LeafIndex != types.UnassignedLeafIndex {
+				continue
+			} else if sco, ok := sces[sci.Parent.ID]; ok && sci.Parent.SiacoinOutput != sco {
+				return fmt.Errorf("transaction %v siacoin input %v claims incorrect value (%v) for ephemeral output %v", txid, i, sci.Parent.SiacoinOutput.Value, sci.Parent.ID)
+			}
+		}
+		for i, sfi := range txn.SiafundInputs {
+			if sfi.Parent.StateElement.LeafIndex != types.UnassignedLeafIndex {
+				continue
+			} else if sfo, ok := sfes[sfi.Parent.ID]; ok && sfi.Parent.SiafundOutput != sfo {
+				return fmt.Errorf("transaction %v siafund input %v claims incorrect value (%v) for ephemeral output %v", txid, i, sfi.Parent.SiafundOutput.Value, sfi.Parent.ID)
+			}
+		}
+		for i, sco := range txn.SiacoinOutputs {
+			sces[txn.SiacoinOutputID(txid, i)] = sco
+		}
+		for i, sfo := range txn.SiafundOutputs {
+			sfes[txn.SiafundOutputID(txid, i)] = sfo
+		}
+	}
+	return nil
+}
+
 func (m *Manager) revertPoolUpdate(cru consensus.RevertUpdate, cs consensus.State) {
 	// applying a block can make ephemeral elements in the txpool non-ephemeral;
 	// here, we undo that
@@ -1181,6 +1212,9 @@ func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transacti
 }
 
 func (m *Manager) checkTxnSet(txns []types.Transaction, v2txns []types.V2Transaction) (bool, error) {
+	if err := checkEphemeralOutputs(v2txns); err != nil {
+		return false, err
+	}
 	allInPool := true
 	ms := consensus.NewMidState(m.tipState)
 	for _, txn := range txns {
