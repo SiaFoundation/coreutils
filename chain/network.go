@@ -91,7 +91,7 @@ func Mainnet() (*consensus.Network, types.Block) {
 			AllowHeight:           526000, // June 6th, 2025 @ 6:00am UTC
 			RequireHeight:         530000, // July 4th, 2025 @ 2:00am UTC
 			FinalCutHeight:        552100, // December 1st, 2025 @ 11:00am UTC
-			EphemeralOutputHeight: 583000,
+			EphemeralOutputHeight: 582500,
 		},
 	}
 
