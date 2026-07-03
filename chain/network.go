@@ -83,13 +83,15 @@ func Mainnet() (*consensus.Network, types.Block) {
 		},
 
 		HardforkV2: struct {
-			AllowHeight    uint64 `json:"allowHeight"`
-			RequireHeight  uint64 `json:"requireHeight"`
-			FinalCutHeight uint64 `json:"finalCutHeight"`
+			AllowHeight           uint64 `json:"allowHeight"`
+			RequireHeight         uint64 `json:"requireHeight"`
+			FinalCutHeight        uint64 `json:"finalCutHeight"`
+			EphemeralOutputHeight uint64 `json:"ephemeralOutputHeight"`
 		}{
-			AllowHeight:    526000, // June 6th, 2025 @ 6:00am UTC
-			RequireHeight:  530000, // July 4th, 2025 @ 2:00am UTC
-			FinalCutHeight: 552100, // December 1st, 2025 @ 11:00am UTC
+			AllowHeight:           526000, // June 6th, 2025 @ 6:00am UTC
+			RequireHeight:         530000, // July 4th, 2025 @ 2:00am UTC
+			FinalCutHeight:        552100, // December 1st, 2025 @ 11:00am UTC
+			EphemeralOutputHeight: 583000,
 		},
 	}
 
@@ -218,13 +220,15 @@ func TestnetZen() (*consensus.Network, types.Block) {
 		},
 
 		HardforkV2: struct {
-			AllowHeight    uint64 `json:"allowHeight"`
-			RequireHeight  uint64 `json:"requireHeight"`
-			FinalCutHeight uint64 `json:"finalCutHeight"`
+			AllowHeight           uint64 `json:"allowHeight"`
+			RequireHeight         uint64 `json:"requireHeight"`
+			FinalCutHeight        uint64 `json:"finalCutHeight"`
+			EphemeralOutputHeight uint64 `json:"ephemeralOutputHeight"`
 		}{
-			AllowHeight:    40,
-			RequireHeight:  50,
-			FinalCutHeight: 7 * 144, // 1 week after genesis
+			AllowHeight:           40,
+			RequireHeight:         50,
+			FinalCutHeight:        7 * 144, // 1 week after genesis
+			EphemeralOutputHeight: 48000,
 		},
 	}
 
