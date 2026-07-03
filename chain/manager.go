@@ -841,8 +841,6 @@ func updateTxnProofs(txn *types.V2Transaction, updateElementProof func(*types.St
 	return
 }
 
-// checkEphemeralOutputs verifies that any ephemeral output spent within the set
-// claims the same output it was created with.
 func checkEphemeralOutputs(txns []types.V2Transaction) error {
 	sces := make(map[types.SiacoinOutputID]types.SiacoinOutput)
 	sfes := make(map[types.SiafundOutputID]types.SiafundOutput)
