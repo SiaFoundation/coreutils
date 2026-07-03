@@ -1,3 +1,9 @@
+## 0.23.1 (2026-07-03)
+
+### Fixes
+
+- Updated readme
+
 ## 0.23.0 (2026-07-03)
 
 ### Breaking Changes
