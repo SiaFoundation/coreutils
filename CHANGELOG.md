@@ -1,3 +1,9 @@
+## 0.23.0 (2026-07-03)
+
+### Breaking Changes
+
+- Update coreutils to v0.21.2
+
 ## 0.22.1 (2026-06-23)
 
 ### Fixes
