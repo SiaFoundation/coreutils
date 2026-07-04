@@ -373,6 +373,16 @@ func testDBSnapshot(t *testing.T, db chain.DB) {
 	} else if !bytes.Equal(b.Get([]byte("baz")), []byte("quux")) {
 		t.Fatal("expected unflushed write to be visible via the scratchpad")
 	}
+	var iterated int
+	for k, v := range b.Iter() {
+		if !bytes.Equal(k, []byte("baz")) || !bytes.Equal(v, []byte("quux")) {
+			t.Fatal("unexpected key-value pair:", string(k), string(v))
+		}
+		iterated++
+	}
+	if iterated != 1 {
+		t.Fatal("expected unflushed write to be visible via scratchpad iteration")
+	}
 	snapshot, release := db.Snapshot()
 	if vb := snapshot.Bucket([]byte("nonexistent")); vb != nil {
 		t.Fatal("expected nil bucket for nonexistent bucket")
