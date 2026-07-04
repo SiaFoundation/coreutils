@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"maps"
 	"math/bits"
 	"sort"
+	"sync"
 	"time"
 
 	"go.sia.tech/core/consensus"
@@ -59,8 +61,32 @@ func (vs *versionedState) DecodeFrom(d *types.Decoder) {
 	vs.State.DecodeFrom(d)
 }
 
-// A DB is a generic key-value database.
+// A DB is a generic key-value database, comprising a mutable "scratchpad" and
+// read-only snapshots of its committed state.
 type DB interface {
+	// Snapshot returns a read-only snapshot of the DB's data as of the most
+	// recent Flush. Snapshots are unaffected by concurrent scratchpad writes
+	// and Flushes. The release function must be called when the snapshot is
+	// no longer needed.
+	Snapshot() (dbs DBSnapshot, release func())
+	// Scratchpad returns a handle to the current scratchpad, which observes
+	// the DB's uncommitted data.
+	Scratchpad() DBScratchpad
+}
+
+// A DBSnapshot is a read-only snapshot of a DB.
+type DBSnapshot interface {
+	Bucket(name []byte) DBBucket
+}
+
+// A DBScratchpad accumulates writes to a DB, which become durable when Flush
+// is called. Its methods observe the accumulated writes. It is not safe for
+// concurrent use.
+//
+// Unlike a StoreScratchpad, a DBScratchpad must not flush autonomously:
+// callers batch writes across multiple method calls, so only they know when
+// the accumulated writes form a consistent snapshot.
+type DBScratchpad interface {
 	Bucket(name []byte) DBBucket
 	CreateBucket(name []byte) (DBBucket, error)
 	Flush() error
@@ -70,42 +96,69 @@ type DB interface {
 // A DBBucket is a set of key-value pairs.
 type DBBucket interface {
 	Get(key []byte) []byte
+	Iter() iter.Seq2[[]byte, []byte]
+	// these methods MAY return errors if the bucket is read-only
 	Put(key, value []byte) error
 	Delete(key []byte) error
-	Iter() iter.Seq2[[]byte, []byte]
+}
+
+// a memGen is a "generation" of committed MemDB state. Each open snapshot pins
+// the generation it was created from; Flush mutates the current generation in
+// place if it is unpinned, and otherwise leaves it frozen, applying writes to
+// a copy instead.
+type memGen struct {
+	buckets map[string]map[string][]byte
+	pins    int
 }
 
 // MemDB implements DB with an in-memory map.
 type MemDB struct {
-	buckets map[string]map[string][]byte
-	puts    map[string]map[string][]byte
-	dels    map[string]map[string]struct{}
+	mu   sync.Mutex // guards gen pointer and pin counts
+	gen  *memGen
+	puts map[string]map[string][]byte
+	dels map[string]map[string]struct{}
 }
 
-// Flush implements DB.
+// Flush implements DBScratchpad.
 func (db *MemDB) Flush() error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if len(db.puts) == 0 && len(db.dels) == 0 {
+		return nil
+	} else if db.gen.pins > 0 {
+		// the current generation is pinned by one or more snapshots; leave it
+		// frozen, applying our writes to a copy
+		//
+		// NOTE: bucket maps must not be shared between generations, as a
+		// later Flush may mutate buckets that this Flush did not
+		buckets := make(map[string]map[string][]byte, len(db.gen.buckets))
+		for name, kvs := range db.gen.buckets {
+			buckets[name] = maps.Clone(kvs)
+		}
+		db.gen = &memGen{buckets: buckets}
+	}
 	for bucket, puts := range db.puts {
-		if db.buckets[bucket] == nil {
-			db.buckets[bucket] = make(map[string][]byte)
+		if db.gen.buckets[bucket] == nil {
+			db.gen.buckets[bucket] = make(map[string][]byte)
 		}
 		for key, val := range puts {
-			db.buckets[bucket][key] = val
+			db.gen.buckets[bucket][key] = val
 		}
 		delete(db.puts, bucket)
 	}
 	for bucket, dels := range db.dels {
-		if db.buckets[bucket] == nil {
-			db.buckets[bucket] = make(map[string][]byte)
+		if db.gen.buckets[bucket] == nil {
+			db.gen.buckets[bucket] = make(map[string][]byte)
 		}
 		for key := range dels {
-			delete(db.buckets[bucket], key)
+			delete(db.gen.buckets[bucket], key)
 		}
 		delete(db.dels, bucket)
 	}
 	return nil
 }
 
-// Cancel implements DB.
+// Cancel implements DBScratchpad.
 func (db *MemDB) Cancel() {
 	for k := range db.puts {
 		delete(db.puts, k)
@@ -121,12 +174,12 @@ func (db *MemDB) get(bucket string, key []byte) []byte {
 	} else if _, ok := db.dels[bucket][string(key)]; ok {
 		return nil
 	}
-	return db.buckets[bucket][string(key)]
+	return db.gen.buckets[bucket][string(key)]
 }
 
 func (db *MemDB) put(bucket string, key, value []byte) error {
 	if db.puts[bucket] == nil {
-		if db.buckets[bucket] == nil {
+		if db.gen.buckets[bucket] == nil {
 			return errors.New("bucket does not exist")
 		}
 		db.puts[bucket] = make(map[string][]byte)
@@ -138,7 +191,7 @@ func (db *MemDB) put(bucket string, key, value []byte) error {
 
 func (db *MemDB) delete(bucket string, key []byte) error {
 	if db.dels[bucket] == nil {
-		if db.buckets[bucket] == nil {
+		if db.gen.buckets[bucket] == nil {
 			return errors.New("bucket does not exist")
 		}
 		db.dels[bucket] = make(map[string]struct{})
@@ -148,9 +201,12 @@ func (db *MemDB) delete(bucket string, key []byte) error {
 	return nil
 }
 
-// Bucket implements DB.
+// Scratchpad implements DB.
+func (db *MemDB) Scratchpad() DBScratchpad { return db }
+
+// Bucket implements DBScratchpad.
 func (db *MemDB) Bucket(name []byte) DBBucket {
-	if db.buckets[string(name)] == nil &&
+	if db.gen.buckets[string(name)] == nil &&
 		db.puts[string(name)] == nil &&
 		db.dels[string(name)] == nil {
 		return nil
@@ -158,14 +214,63 @@ func (db *MemDB) Bucket(name []byte) DBBucket {
 	return memBucket{string(name), db}
 }
 
-// CreateBucket implements DB.
+// CreateBucket implements DBScratchpad.
 func (db *MemDB) CreateBucket(name []byte) (DBBucket, error) {
-	if db.buckets[string(name)] != nil {
+	if db.gen.buckets[string(name)] != nil {
 		return nil, errors.New("bucket already exists")
 	}
 	db.puts[string(name)] = make(map[string][]byte)
 	db.dels[string(name)] = make(map[string]struct{})
 	return db.Bucket(name), nil
+}
+
+type memSnapshotBucket struct {
+	kvs map[string][]byte
+}
+
+func (b memSnapshotBucket) Get(key []byte) []byte { return b.kvs[string(key)] }
+func (b memSnapshotBucket) Iter() iter.Seq2[[]byte, []byte] {
+	return func(yield func([]byte, []byte) bool) {
+		for key, val := range b.kvs {
+			if !yield([]byte(key), val) {
+				return
+			}
+		}
+	}
+}
+func (b memSnapshotBucket) Put(_, _ []byte) error { return errors.New("bucket is read-only") }
+func (b memSnapshotBucket) Delete(_ []byte) error { return errors.New("bucket is read-only") }
+
+type memDBSnapshot struct {
+	db       *MemDB
+	gen      *memGen
+	released bool
+}
+
+func (v *memDBSnapshot) Bucket(name []byte) DBBucket {
+	kvs, ok := v.gen.buckets[string(name)]
+	if !ok {
+		return nil
+	}
+	return memSnapshotBucket{kvs}
+}
+
+func (v *memDBSnapshot) release() {
+	v.db.mu.Lock()
+	defer v.db.mu.Unlock()
+	if !v.released {
+		v.released = true
+		v.gen.pins--
+	}
+}
+
+// Snapshot implements DB.
+func (db *MemDB) Snapshot() (DBSnapshot, func()) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	db.gen.pins++
+	s := &memDBSnapshot{db: db, gen: db.gen}
+	return s, s.release
 }
 
 type memBucket struct {
@@ -178,7 +283,7 @@ func (b memBucket) Put(key, value []byte) error { return b.db.put(b.name, key, v
 func (b memBucket) Delete(key []byte) error     { return b.db.delete(b.name, key) }
 func (b memBucket) Iter() iter.Seq2[[]byte, []byte] {
 	return func(yield func([]byte, []byte) bool) {
-		for key, val := range b.db.buckets[b.name] {
+		for key, val := range b.db.gen.buckets[b.name] {
 			if pval, ok := b.db.puts[b.name][string(key)]; ok {
 				val = pval
 			} else if _, ok := b.db.dels[b.name][string(key)]; ok {
@@ -194,9 +299,9 @@ func (b memBucket) Iter() iter.Seq2[[]byte, []byte] {
 // NewMemDB returns an in-memory DB for use with DBStore.
 func NewMemDB() *MemDB {
 	return &MemDB{
-		buckets: make(map[string]map[string][]byte),
-		puts:    make(map[string]map[string][]byte),
-		dels:    make(map[string]map[string]struct{}),
+		gen:  &memGen{buckets: make(map[string]map[string][]byte)},
+		puts: make(map[string]map[string][]byte),
+		dels: make(map[string]map[string]struct{}),
 	}
 }
 
@@ -248,9 +353,12 @@ type CacheDB struct {
 	kvs map[string][][2][]byte
 }
 
-// Bucket implements DB.
+// Scratchpad implements DB.
+func (db *CacheDB) Scratchpad() DBScratchpad { return db }
+
+// Bucket implements DBScratchpad.
 func (db *CacheDB) Bucket(name []byte) DBBucket {
-	b := db.db.Bucket(name)
+	b := db.db.Scratchpad().Bucket(name)
 	if b == nil {
 		return nil
 	} else if db.mem.Bucket(name) == nil {
@@ -259,16 +367,17 @@ func (db *CacheDB) Bucket(name []byte) DBBucket {
 	return cacheBucket{memBucket{string(name), db.mem}, b}
 }
 
-// CreateBucket implements DB.
+// CreateBucket implements DBScratchpad.
 func (db *CacheDB) CreateBucket(name []byte) (DBBucket, error) {
-	if _, err := db.db.CreateBucket(name); err != nil {
+	if _, err := db.db.Scratchpad().CreateBucket(name); err != nil {
 		return nil, err
 	}
 	return db.mem.CreateBucket(name)
 }
 
-// Flush implements DB.
+// Flush implements DBScratchpad.
 func (db *CacheDB) Flush() error {
+	sp := db.db.Scratchpad()
 	// puts
 	for name, puts := range db.mem.puts {
 		bucket := db.kvs[name]
@@ -281,7 +390,7 @@ func (db *CacheDB) Flush() error {
 		db.kvs[name] = bucket
 	}
 	for bucket, kvs := range db.kvs {
-		bucket := db.db.Bucket([]byte(bucket))
+		bucket := sp.Bucket([]byte(bucket))
 		sort.Slice(kvs, func(i, j int) bool {
 			return bytes.Compare(kvs[i][0], kvs[j][0]) < 0
 		})
@@ -304,7 +413,7 @@ func (db *CacheDB) Flush() error {
 		db.kvs[name] = bucket
 	}
 	for name, kvs := range db.kvs {
-		bucket := db.db.Bucket([]byte(name))
+		bucket := sp.Bucket([]byte(name))
 		sort.Slice(kvs, func(i, j int) bool {
 			return bytes.Compare(kvs[i][0], kvs[j][0]) < 0
 		})
@@ -318,7 +427,10 @@ func (db *CacheDB) Flush() error {
 	}
 
 	// clear MemDB
-	for _, bucket := range db.mem.buckets {
+	//
+	// NOTE: the MemDB is internal to the CacheDB and never has open snapshots, so
+	// its current generation can be mutated freely
+	for _, bucket := range db.mem.gen.buckets {
 		clear(bucket)
 	}
 	for _, bucket := range db.mem.puts {
@@ -327,13 +439,20 @@ func (db *CacheDB) Flush() error {
 	for _, bucket := range db.mem.dels {
 		clear(bucket)
 	}
-	return db.db.Flush()
+	return sp.Flush()
 }
 
-// Cancel implements DB.
+// Cancel implements DBScratchpad.
 func (db *CacheDB) Cancel() {
 	db.mem.Cancel()
-	db.db.Cancel()
+	db.db.Scratchpad().Cancel()
+}
+
+// Snapshot implements DB.
+func (db *CacheDB) Snapshot() (DBSnapshot, func()) {
+	// unflushed writes are cached in memory, so the underlying DB always
+	// reflects the state as of the last Flush
+	return db.db.Snapshot()
 }
 
 // NewCacheDB returns a new CacheDB that wraps the given DB.
@@ -351,20 +470,19 @@ func check(err error) {
 	}
 }
 
-// dbBucket is a helper type for implementing Store.
-type dbBucket struct {
-	b  DBBucket
-	db *DBStore
+// dbBucketReader is a helper type for implementing the read half of Store.
+type dbBucketReader struct {
+	b DBBucket
 }
 
-func (b *dbBucket) getRaw(key []byte) []byte {
+func (b dbBucketReader) getRaw(key []byte) []byte {
 	if b.b == nil {
 		return nil
 	}
 	return b.b.Get(key)
 }
 
-func (b *dbBucket) get(key []byte, v types.DecoderFrom) bool {
+func (b dbBucketReader) get(key []byte, v types.DecoderFrom) bool {
 	val := b.getRaw(key)
 	if val == nil {
 		return false
@@ -378,22 +496,31 @@ func (b *dbBucket) get(key []byte, v types.DecoderFrom) bool {
 	return true
 }
 
-func (b *dbBucket) putRaw(key, value []byte) {
-	check(b.b.Put(key, value))
-	b.db.unflushed += len(value)
+// dbBucket is a helper type for implementing the write half of Store.
+type dbBucket struct {
+	b  DBBucket
+	sp *dbScratchpad
 }
 
-func (b *dbBucket) put(key []byte, v types.EncoderTo) {
+func (b dbBucket) getRaw(key []byte) []byte                 { return dbBucketReader{b.b}.getRaw(key) }
+func (b dbBucket) get(key []byte, v types.DecoderFrom) bool { return dbBucketReader{b.b}.get(key, v) }
+
+func (b dbBucket) putRaw(key, value []byte) {
+	check(b.b.Put(key, value))
+	b.sp.unflushed += len(value)
+}
+
+func (b dbBucket) put(key []byte, v types.EncoderTo) {
 	var buf bytes.Buffer
-	b.db.enc.Reset(&buf)
-	v.EncodeTo(&b.db.enc)
-	b.db.enc.Flush()
+	b.sp.enc.Reset(&buf)
+	v.EncodeTo(&b.sp.enc)
+	b.sp.enc.Flush()
 	b.putRaw(key, buf.Bytes())
 }
 
-func (b *dbBucket) delete(key []byte) {
+func (b dbBucket) delete(key []byte) {
 	check(b.b.Delete(key))
-	b.db.unflushed += len(key)
+	b.sp.unflushed += len(key)
 }
 
 var (
@@ -412,56 +539,49 @@ var (
 
 // DBStore implements Store using a key-value database.
 type DBStore struct {
-	db  DB
-	n   *consensus.Network // for getState
-	enc types.Encoder
-
-	unflushed int
-	lastFlush time.Time
+	db         DB
+	n          *consensus.Network
+	scratchpad *dbScratchpad
 }
 
-func (db *DBStore) bucket(name []byte) *dbBucket {
-	return &dbBucket{db.db.Bucket(name), db}
+// bucket returns a writeable handle for the named bucket.
+func (s *dbScratchpad) bucket(name []byte) dbBucket {
+	return dbBucket{s.sp.Bucket(name), s}
 }
 
-func (db *DBStore) encHeight(height uint64) []byte {
+func readBucket(ss DBSnapshot, name []byte) dbBucketReader {
+	return dbBucketReader{ss.Bucket(name)}
+}
+
+func encHeight(height uint64) []byte {
 	var buf [8]byte
 	return binary.BigEndian.AppendUint64(buf[:0], height)
 }
 
-func (db *DBStore) putBestIndex(index types.ChainIndex) {
-	db.bucket(bMainChain).put(db.encHeight(index.Height), &index.ID)
-}
-
-func (db *DBStore) deleteBestIndex(height uint64) {
-	db.bucket(bMainChain).delete(db.encHeight(height))
-}
-
-func (db *DBStore) getHeight() (height uint64) {
-	if val := db.bucket(bMainChain).getRaw(keyHeight); len(val) == 8 {
+func getHeight(ss DBSnapshot) (height uint64) {
+	if val := readBucket(ss, bMainChain).getRaw(keyHeight); len(val) == 8 {
 		height = binary.BigEndian.Uint64(val)
 	}
 	return
 }
 
-func (db *DBStore) putHeight(height uint64) {
-	db.bucket(bMainChain).putRaw(keyHeight, db.encHeight(height))
-}
-
-func (db *DBStore) getState(id types.BlockID) (consensus.State, bool) {
+func getState(ss DBSnapshot, n *consensus.Network, id types.BlockID) (consensus.State, bool) {
 	var vs versionedState
-	ok := db.bucket(bStates).get(id[:], &vs)
-	vs.State.Network = db.n
+	ok := readBucket(ss, bStates).get(id[:], &vs)
+	vs.State.Network = n
 	return vs.State, ok
 }
 
-func (db *DBStore) putState(cs consensus.State) {
-	db.bucket(bStates).put(cs.Index.ID[:], versionedState{cs})
+// tipState returns the consensus state of the best chain.s tip.
+func tipState(ss DBSnapshot, n *consensus.Network) consensus.State {
+	index, _ := bestIndex(ss, getHeight(ss))
+	cs, _ := getState(ss, n, index.ID)
+	return cs
 }
 
-func (db *DBStore) getBlock(id types.BlockID) (bh types.BlockHeader, b *types.Block, bs *consensus.V1BlockSupplement, _ bool) {
+func getBlock(ss DBSnapshot, id types.BlockID) (bh types.BlockHeader, b *types.Block, bs *consensus.V1BlockSupplement, _ bool) {
 	var sb supplementedBlock
-	if ok := db.bucket(bBlocks).get(id[:], &sb); !ok {
+	if ok := readBucket(ss, bBlocks).get(id[:], &sb); !ok {
 		return types.BlockHeader{}, nil, nil, false
 	} else if sb.Header == nil {
 		sb.Header = new(types.BlockHeader)
@@ -470,13 +590,13 @@ func (db *DBStore) getBlock(id types.BlockID) (bh types.BlockHeader, b *types.Bl
 	return *sb.Header, sb.Block, sb.Supplement, true
 }
 
-func (db *DBStore) putBlock(bh types.BlockHeader, b *types.Block, bs *consensus.V1BlockSupplement) {
+func (s *dbScratchpad) putBlock(bh types.BlockHeader, b *types.Block, bs *consensus.V1BlockSupplement) {
 	id := bh.ID()
-	db.bucket(bBlocks).put(id[:], supplementedBlock{&bh, b, bs})
+	s.bucket(bBlocks).put(id[:], supplementedBlock{&bh, b, bs})
 }
 
-func (db *DBStore) getAncestorInfo(id types.BlockID) (parentID types.BlockID, timestamp time.Time, ok bool) {
-	ok = db.bucket(bBlocks).get(id[:], types.DecoderFunc(func(d *types.Decoder) {
+func getAncestorInfo(ss DBSnapshot, id types.BlockID) (parentID types.BlockID, timestamp time.Time, ok bool) {
+	ok = readBucket(ss, bBlocks).get(id[:], types.DecoderFunc(func(d *types.Decoder) {
 		v := d.ReadUint8()
 		if v != 2 && v != 3 {
 			d.SetErr(fmt.Errorf("incompatible version (%d)", v))
@@ -494,8 +614,8 @@ func (db *DBStore) getAncestorInfo(id types.BlockID) (parentID types.BlockID, ti
 	return
 }
 
-func (db *DBStore) getBlockHeader(id types.BlockID) (bh types.BlockHeader, ok bool) {
-	ok = db.bucket(bBlocks).get(id[:], types.DecoderFunc(func(d *types.Decoder) {
+func getBlockHeader(ss DBSnapshot, id types.BlockID) (bh types.BlockHeader, ok bool) {
+	ok = readBucket(ss, bBlocks).get(id[:], types.DecoderFunc(func(d *types.Decoder) {
 		v := d.ReadUint8()
 		if v != 2 && v != 3 {
 			d.SetErr(fmt.Errorf("incompatible version (%d)", v))
@@ -519,7 +639,7 @@ func (db *DBStore) getBlockHeader(id types.BlockID) (bh types.BlockHeader, ok bo
 	return
 }
 
-func (db *DBStore) treeKey(row, col uint64) []byte {
+func treeKey(row, col uint64) []byte {
 	// If we assume that the total number of elements is less than 2^32, we can
 	// pack row and col into one uint32 key. We do this by setting the top 'row'
 	// bits of 'col' to 1. Since each successive row has half as many columns,
@@ -528,7 +648,7 @@ func (db *DBStore) treeKey(row, col uint64) []byte {
 	return binary.BigEndian.AppendUint32(buf[:0], uint32(((1<<row)-1)<<(32-row)|col))
 }
 
-func (db *DBStore) getElementProof(leafIndex, numLeaves uint64) (proof []types.Hash256) {
+func getElementProof(ss DBSnapshot, leafIndex, numLeaves uint64) (proof []types.Hash256) {
 	if leafIndex >= numLeaves {
 		panic(fmt.Sprintf("leafIndex %v exceeds accumulator size %v", leafIndex, numLeaves)) // should never happen
 	}
@@ -540,67 +660,67 @@ func (db *DBStore) getElementProof(leafIndex, numLeaves uint64) (proof []types.H
 	proof = make([]types.Hash256, bits.Len64(leafIndex^numLeaves)-1)
 	for i := range proof {
 		row, col := uint64(i), (leafIndex>>i)^1
-		if !db.bucket(bTree).get(db.treeKey(row, col), &proof[i]) {
+		if !readBucket(ss, bTree).get(treeKey(row, col), &proof[i]) {
 			panic(fmt.Sprintf("missing proof element %v for leaf %v", i, leafIndex))
 		}
 	}
 	return
 }
 
-func (db *DBStore) getSiacoinElement(id types.SiacoinOutputID, numLeaves uint64) (sce types.SiacoinElement, ok bool) {
-	ok = db.bucket(bSiacoinElements).get(id[:], &sce)
+func getSiacoinElement(ss DBSnapshot, id types.SiacoinOutputID, numLeaves uint64) (sce types.SiacoinElement, ok bool) {
+	ok = readBucket(ss, bSiacoinElements).get(id[:], &sce)
 	if ok {
-		sce.StateElement.MerkleProof = db.getElementProof(sce.StateElement.LeafIndex, numLeaves)
+		sce.StateElement.MerkleProof = getElementProof(ss, sce.StateElement.LeafIndex, numLeaves)
 	}
 	return
 }
 
-func (db *DBStore) putSiacoinElement(sce types.SiacoinElement) {
+func (s *dbScratchpad) putSiacoinElement(sce types.SiacoinElement) {
 	sce.StateElement.MerkleProof = nil
-	db.bucket(bSiacoinElements).put(sce.ID[:], sce.Share())
+	s.bucket(bSiacoinElements).put(sce.ID[:], sce.Share())
 }
 
-func (db *DBStore) deleteSiacoinElement(id types.SiacoinOutputID) {
-	db.bucket(bSiacoinElements).delete(id[:])
+func (s *dbScratchpad) deleteSiacoinElement(id types.SiacoinOutputID) {
+	s.bucket(bSiacoinElements).delete(id[:])
 }
 
-func (db *DBStore) getSiafundElement(id types.SiafundOutputID, numLeaves uint64) (sfe types.SiafundElement, ok bool) {
-	ok = db.bucket(bSiafundElements).get(id[:], &sfe)
+func getSiafundElement(ss DBSnapshot, id types.SiafundOutputID, numLeaves uint64) (sfe types.SiafundElement, ok bool) {
+	ok = readBucket(ss, bSiafundElements).get(id[:], &sfe)
 	if ok {
-		sfe.StateElement.MerkleProof = db.getElementProof(sfe.StateElement.LeafIndex, numLeaves)
+		sfe.StateElement.MerkleProof = getElementProof(ss, sfe.StateElement.LeafIndex, numLeaves)
 	}
 	return
 }
 
-func (db *DBStore) putSiafundElement(sfe types.SiafundElement) {
+func (s *dbScratchpad) putSiafundElement(sfe types.SiafundElement) {
 	sfe.StateElement.MerkleProof = nil
-	db.bucket(bSiafundElements).put(sfe.ID[:], sfe.Share())
+	s.bucket(bSiafundElements).put(sfe.ID[:], sfe.Share())
 }
 
-func (db *DBStore) deleteSiafundElement(id types.SiafundOutputID) {
-	db.bucket(bSiafundElements).delete(id[:])
+func (s *dbScratchpad) deleteSiafundElement(id types.SiafundOutputID) {
+	s.bucket(bSiafundElements).delete(id[:])
 }
 
-func (db *DBStore) getFileContractElement(id types.FileContractID, numLeaves uint64) (fce types.FileContractElement, ok bool) {
-	ok = db.bucket(bFileContractElements).get(id[:], &fce)
+func getFileContractElement(ss DBSnapshot, id types.FileContractID, numLeaves uint64) (fce types.FileContractElement, ok bool) {
+	ok = readBucket(ss, bFileContractElements).get(id[:], &fce)
 	if ok {
-		fce.StateElement.MerkleProof = db.getElementProof(fce.StateElement.LeafIndex, numLeaves)
+		fce.StateElement.MerkleProof = getElementProof(ss, fce.StateElement.LeafIndex, numLeaves)
 	}
 	return
 }
 
-func (db *DBStore) putFileContractElement(fce types.FileContractElement) {
+func (s *dbScratchpad) putFileContractElement(fce types.FileContractElement) {
 	fce.StateElement.MerkleProof = nil
-	db.bucket(bFileContractElements).put(fce.ID[:], fce.Share())
+	s.bucket(bFileContractElements).put(fce.ID[:], fce.Share())
 }
 
-func (db *DBStore) deleteFileContractElement(id types.FileContractID) {
-	db.bucket(bFileContractElements).delete(id[:])
+func (s *dbScratchpad) deleteFileContractElement(id types.FileContractID) {
+	s.bucket(bFileContractElements).delete(id[:])
 }
 
-func (db *DBStore) putFileContractExpiration(id types.FileContractID, windowEnd uint64, apply bool) {
-	b := db.bucket(bFileContractElements)
-	key := db.encHeight(windowEnd)
+func (s *dbScratchpad) putFileContractExpiration(id types.FileContractID, windowEnd uint64, apply bool) {
+	b := s.bucket(bFileContractElements)
+	key := encHeight(windowEnd)
 	// When applying, we append; when reverting, we prepend. This ensures that
 	// the order of the IDs -- and consequently, the ExpiringFileContracts in a
 	// V1BlockSupplement -- remain stable across reorgs. Without this adjustment,
@@ -613,9 +733,8 @@ func (db *DBStore) putFileContractExpiration(id types.FileContractID, windowEnd 
 	}
 }
 
-// ExpiringFileContractIDs returns the expiring file contract IDs at the given height.
-func (db *DBStore) ExpiringFileContractIDs(height uint64) []types.FileContractID {
-	buf := db.bucket(bFileContractElements).getRaw(db.encHeight(height))
+func expiringFileContractIDs(ss DBSnapshot, height uint64) []types.FileContractID {
+	buf := readBucket(ss, bFileContractElements).getRaw(encHeight(height))
 	ids := make([]types.FileContractID, 0, len(buf)/32)
 	for i := 0; i < len(buf); i += 32 {
 		ids = append(ids, (types.FileContractID)(buf[i:]))
@@ -623,20 +742,9 @@ func (db *DBStore) ExpiringFileContractIDs(height uint64) []types.FileContractID
 	return ids
 }
 
-// OverwriteExpiringFileContractIDs overwrites the expiring file contract IDs at the given height.
-// This should not be called unless the IDs are known to be correct, as it will overwrite
-// any existing IDs at that height.
-func (db *DBStore) OverwriteExpiringFileContractIDs(height uint64, ids []types.FileContractID) {
-	buf := make([]byte, len(ids)*32)
-	for i, id := range ids {
-		copy(buf[i*32:], id[:])
-	}
-	db.bucket(bFileContractElements).putRaw(db.encHeight(height), buf)
-}
-
-func (db *DBStore) deleteFileContractExpiration(id types.FileContractID, windowEnd uint64) {
-	b := db.bucket(bFileContractElements)
-	key := db.encHeight(windowEnd)
+func (s *dbScratchpad) deleteFileContractExpiration(id types.FileContractID, windowEnd uint64) {
+	b := s.bucket(bFileContractElements)
+	key := encHeight(windowEnd)
 	val := append([]byte(nil), b.getRaw(key)...)
 	for i := 0; i < len(val); i += 32 {
 		if *(*types.FileContractID)(val[i:]) == id {
@@ -650,37 +758,27 @@ func (db *DBStore) deleteFileContractExpiration(id types.FileContractID, windowE
 	panic("missing file contract expiration")
 }
 
-func (db *DBStore) applyState(next consensus.State) {
-	db.putBestIndex(next.Index)
-	db.putHeight(next.Index.Height)
-}
-
-func (db *DBStore) revertState(prev consensus.State) {
-	db.deleteBestIndex(prev.Index.Height + 1)
-	db.putHeight(prev.Index.Height)
-}
-
-func (db *DBStore) applyElements(cau consensus.ApplyUpdate) {
+func (s *dbScratchpad) applyElements(cau consensus.ApplyUpdate) {
 	cau.ForEachTreeNode(func(row, col uint64, h types.Hash256) {
-		db.bucket(bTree).putRaw(db.treeKey(row, col), h[:])
+		s.bucket(bTree).putRaw(treeKey(row, col), h[:])
 	})
 
 	for _, sced := range cau.SiacoinElementDiffs() {
 		if sced.Created && sced.Spent {
 			continue // ephemeral
 		} else if sced.Spent {
-			db.deleteSiacoinElement(sced.SiacoinElement.ID)
+			s.deleteSiacoinElement(sced.SiacoinElement.ID)
 		} else {
-			db.putSiacoinElement(sced.SiacoinElement.Share())
+			s.putSiacoinElement(sced.SiacoinElement.Share())
 		}
 	}
 	for _, sfed := range cau.SiafundElementDiffs() {
 		if sfed.Created && sfed.Spent {
 			continue // ephemeral
 		} else if sfed.Spent {
-			db.deleteSiafundElement(sfed.SiafundElement.ID)
+			s.deleteSiafundElement(sfed.SiafundElement.ID)
 		} else {
-			db.putSiafundElement(sfed.SiafundElement.Share())
+			s.putSiafundElement(sfed.SiafundElement.Share())
 		}
 	}
 	for _, fced := range cau.FileContractElementDiffs() {
@@ -688,45 +786,45 @@ func (db *DBStore) applyElements(cau consensus.ApplyUpdate) {
 		if fced.Created && fced.Resolved {
 			continue
 		} else if fced.Resolved {
-			db.deleteFileContractElement(fce.ID)
-			db.deleteFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
+			s.deleteFileContractElement(fce.ID)
+			s.deleteFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
 		} else if fced.Revision != nil {
 			rev := fce.Share()
 			rev.FileContract = *fced.Revision
-			db.putFileContractElement(rev.Share())
+			s.putFileContractElement(rev.Share())
 			if rev.FileContract.WindowEnd != fce.FileContract.WindowEnd {
-				db.deleteFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
-				db.putFileContractExpiration(fce.ID, rev.FileContract.WindowEnd, true)
+				s.deleteFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
+				s.putFileContractExpiration(fce.ID, rev.FileContract.WindowEnd, true)
 			}
 		} else {
-			db.putFileContractElement(fce.Share())
-			db.putFileContractExpiration(fce.ID, fce.FileContract.WindowEnd, true)
+			s.putFileContractElement(fce.Share())
+			s.putFileContractExpiration(fce.ID, fce.FileContract.WindowEnd, true)
 		}
 	}
 }
 
-func (db *DBStore) revertElements(cru consensus.RevertUpdate) {
+func (s *dbScratchpad) revertElements(cru consensus.RevertUpdate) {
 	for _, fced := range cru.FileContractElementDiffs() {
 		fce := &fced.FileContractElement
 		if fced.Created && fced.Resolved {
 			continue
 		} else if fced.Resolved {
 			// contract no longer resolved; restore it
-			db.putFileContractElement(fce.Share())
-			db.putFileContractExpiration(fce.ID, fce.FileContract.WindowEnd, false)
+			s.putFileContractElement(fce.Share())
+			s.putFileContractExpiration(fce.ID, fce.FileContract.WindowEnd, false)
 		} else if fced.Revision != nil {
 			// contract no longer revised; restore prior revision
 			rev := fce.Share()
 			rev.FileContract = *fced.Revision
-			db.putFileContractElement(fce.Share())
+			s.putFileContractElement(fce.Share())
 			if rev.FileContract.WindowEnd != fce.FileContract.WindowEnd {
-				db.deleteFileContractExpiration(fce.ID, rev.FileContract.WindowEnd)
-				db.putFileContractExpiration(fce.ID, fce.FileContract.WindowEnd, false)
+				s.deleteFileContractExpiration(fce.ID, rev.FileContract.WindowEnd)
+				s.putFileContractExpiration(fce.ID, fce.FileContract.WindowEnd, false)
 			}
 		} else {
 			// contract no longer exists; delete it
-			db.deleteFileContractElement(fce.ID)
-			db.deleteFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
+			s.deleteFileContractElement(fce.ID)
+			s.deleteFileContractExpiration(fce.ID, fce.FileContract.WindowEnd)
 		}
 	}
 
@@ -735,10 +833,10 @@ func (db *DBStore) revertElements(cru consensus.RevertUpdate) {
 			continue // ephemeral
 		} else if sfed.Spent {
 			// output no longer spent; restore it
-			db.putSiafundElement(sfed.SiafundElement.Share())
+			s.putSiafundElement(sfed.SiafundElement.Share())
 		} else {
 			// output no longer exists; delete it
-			db.deleteSiafundElement(sfed.SiafundElement.ID)
+			s.deleteSiafundElement(sfed.SiafundElement.ID)
 		}
 	}
 	for _, sced := range cru.SiacoinElementDiffs() {
@@ -746,15 +844,15 @@ func (db *DBStore) revertElements(cru consensus.RevertUpdate) {
 			continue // ephemeral
 		} else if sced.Spent {
 			// output no longer spent; restore it
-			db.putSiacoinElement(sced.SiacoinElement.Share())
+			s.putSiacoinElement(sced.SiacoinElement.Share())
 		} else {
 			// output no longer exists; delete it
-			db.deleteSiacoinElement(sced.SiacoinElement.ID)
+			s.deleteSiacoinElement(sced.SiacoinElement.ID)
 		}
 	}
 
 	cru.ForEachTreeNode(func(row, col uint64, h types.Hash256) {
-		db.bucket(bTree).putRaw(db.treeKey(row, col), h[:])
+		s.bucket(bTree).putRaw(treeKey(row, col), h[:])
 	})
 
 	// NOTE: Although the element tree has shrunk, we do not need to explicitly
@@ -765,42 +863,38 @@ func (db *DBStore) revertElements(cru consensus.RevertUpdate) {
 	// reclaim it immediately.)
 }
 
-// BestIndex implements Store.
-func (db *DBStore) BestIndex(height uint64) (index types.ChainIndex, ok bool) {
+func bestIndex(ss DBSnapshot, height uint64) (index types.ChainIndex, ok bool) {
 	index.Height = height
-	ok = db.bucket(bMainChain).get(db.encHeight(height), &index.ID)
+	ok = readBucket(ss, bMainChain).get(encHeight(height), &index.ID)
 	return
 }
 
-// SupplementTipTransaction implements Store.
-func (db *DBStore) SupplementTipTransaction(txn types.Transaction) (ts consensus.V1TransactionSupplement) {
-	height := db.getHeight()
-	if height >= db.n.HardforkV2.RequireHeight {
+func supplementTipTransaction(ss DBSnapshot, n *consensus.Network, txn types.Transaction) (ts consensus.V1TransactionSupplement) {
+	if getHeight(ss) >= n.HardforkV2.RequireHeight {
 		return consensus.V1TransactionSupplement{}
 	}
 	// get tip state, for proof-trimming
-	index, _ := db.BestIndex(height)
-	cs, _ := db.State(index.ID)
+	cs := tipState(ss, n)
 	numLeaves := cs.Elements.NumLeaves
 
 	for _, sci := range txn.SiacoinInputs {
-		if sce, ok := db.getSiacoinElement(sci.ParentID, numLeaves); ok {
+		if sce, ok := getSiacoinElement(ss, sci.ParentID, numLeaves); ok {
 			ts.SiacoinInputs = append(ts.SiacoinInputs, sce.Move())
 		}
 	}
 	for _, sfi := range txn.SiafundInputs {
-		if sfe, ok := db.getSiafundElement(sfi.ParentID, numLeaves); ok {
+		if sfe, ok := getSiafundElement(ss, sfi.ParentID, numLeaves); ok {
 			ts.SiafundInputs = append(ts.SiafundInputs, sfe.Move())
 		}
 	}
 	for _, fcr := range txn.FileContractRevisions {
-		if fce, ok := db.getFileContractElement(fcr.ParentID, numLeaves); ok {
+		if fce, ok := getFileContractElement(ss, fcr.ParentID, numLeaves); ok {
 			ts.RevisedFileContracts = append(ts.RevisedFileContracts, fce.Move())
 		}
 	}
 	for _, sp := range txn.StorageProofs {
-		if fce, ok := db.getFileContractElement(sp.ParentID, numLeaves); ok {
-			if windowIndex, ok := db.BestIndex(fce.FileContract.WindowStart - 1); ok {
+		if fce, ok := getFileContractElement(ss, sp.ParentID, numLeaves); ok {
+			if windowIndex, ok := bestIndex(ss, fce.FileContract.WindowStart-1); ok {
 				ts.StorageProofs = append(ts.StorageProofs, consensus.V1StorageProofSupplement{
 					FileContract: fce.Move(),
 					WindowID:     windowIndex.ID,
@@ -811,27 +905,23 @@ func (db *DBStore) SupplementTipTransaction(txn types.Transaction) (ts consensus
 	return
 }
 
-// SupplementTipBlock implements Store.
-func (db *DBStore) SupplementTipBlock(b types.Block) (bs consensus.V1BlockSupplement) {
-	height := db.getHeight()
-	if height >= db.n.HardforkV2.RequireHeight {
+func supplementTipBlock(ss DBSnapshot, n *consensus.Network, b types.Block) (bs consensus.V1BlockSupplement) {
+	if getHeight(ss) >= n.HardforkV2.RequireHeight {
 		return consensus.V1BlockSupplement{Transactions: make([]consensus.V1TransactionSupplement, len(b.Transactions))}
 	}
 
 	// get tip state, for proof-trimming
-	index, _ := db.BestIndex(height)
-	cs, _ := db.State(index.ID)
+	cs := tipState(ss, n)
 	numLeaves := cs.Elements.NumLeaves
 
 	bs = consensus.V1BlockSupplement{
 		Transactions: make([]consensus.V1TransactionSupplement, len(b.Transactions)),
 	}
 	for i, txn := range b.Transactions {
-		bs.Transactions[i] = db.SupplementTipTransaction(txn)
+		bs.Transactions[i] = supplementTipTransaction(ss, n, txn)
 	}
-	ids := db.bucket(bFileContractElements).getRaw(db.encHeight(db.getHeight() + 1))
-	for i := 0; i < len(ids); i += 32 {
-		fce, ok := db.getFileContractElement(*(*types.FileContractID)(ids[i:]), numLeaves)
+	for _, id := range expiringFileContractIDs(ss, cs.Index.Height+1) {
+		fce, ok := getFileContractElement(ss, id, numLeaves)
 		if !ok {
 			panic("missing FileContractElement")
 		}
@@ -840,16 +930,15 @@ func (db *DBStore) SupplementTipBlock(b types.Block) (bs consensus.V1BlockSupple
 	return bs
 }
 
-// AncestorTimestamp implements Store.
-func (db *DBStore) AncestorTimestamp(id types.BlockID) (t time.Time, ok bool) {
-	cs, _ := db.State(id)
-	if cs.Index.Height > db.n.HardforkOak.Height {
+func ancestorTimestamp(ss DBSnapshot, n *consensus.Network, id types.BlockID) (t time.Time, ok bool) {
+	cs, _ := getState(ss, n, id)
+	if cs.Index.Height > n.HardforkOak.Height {
 		return time.Time{}, true
 	}
 
-	getBestID := func(height uint64) (id types.BlockID) {
-		db.bucket(bMainChain).get(db.encHeight(height), &id)
-		return
+	getBestID := func(height uint64) types.BlockID {
+		index, _ := bestIndex(ss, height)
+		return index.ID
 	}
 	ancestorID := id
 	for i := uint64(0); i < cs.AncestorDepth() && i < cs.Index.Height; i++ {
@@ -861,121 +950,268 @@ func (db *DBStore) AncestorTimestamp(id types.BlockID) (t time.Time, ok bool) {
 			}
 			break
 		}
-		ancestorID, _, _ = db.getAncestorInfo(ancestorID)
+		ancestorID, _, _ = getAncestorInfo(ss, ancestorID)
 	}
-	_, t, ok = db.getAncestorInfo(ancestorID)
+	_, t, ok = getAncestorInfo(ss, ancestorID)
 	return
 }
 
-// State implements Store.
-func (db *DBStore) State(id types.BlockID) (consensus.State, bool) {
-	return db.getState(id)
+// NOTE: these values were chosen empirically and should constitute a
+// sensible default; if necessary, we can make them configurable
+const (
+	flushSizeThreshold     = 100e6
+	flushDurationThreshold = 5 * time.Second
+)
+
+func (s *dbScratchpad) shouldFlush() bool {
+	return s.unflushed >= flushSizeThreshold || time.Since(s.lastFlush) >= flushDurationThreshold
 }
 
-// AddState implements Store.
-func (db *DBStore) AddState(cs consensus.State) {
-	db.putState(cs)
+// flushIfFull flushes the accumulated writes if they exceed the size
+// threshold. Unlike shouldFlush, it ignores their age; it is used by methods
+// for which an age-triggered flush would be undesirable, either because it
+// would commit twice in quick succession (AddState/AddBlock, whose writes are
+// shortly followed by an ApplyBlock or an explicit Flush) or because it would
+// publish an intermediate reverted tip to snapshot readers (RevertBlock).
+func (s *dbScratchpad) flushIfFull() {
+	if s.unflushed >= flushSizeThreshold {
+		s.mustFlush()
+	}
 }
 
-// Block implements Store.
-func (db *DBStore) Block(id types.BlockID) (types.Block, *consensus.V1BlockSupplement, bool) {
-	_, b, bs, ok := db.getBlock(id)
+func (s *dbScratchpad) mustFlush() { check(s.Flush()) }
+
+// dbScratchpad implements StoreScratchpad. Its read methods observe the
+// unflushed writes of the underlying DB scratchpad.
+type dbScratchpad struct {
+	sp  DBScratchpad
+	n   *consensus.Network
+	enc types.Encoder
+
+	unflushed int
+	lastFlush time.Time
+	tip       consensus.State // updated by ApplyBlock/RevertBlock
+}
+
+// TipState implements StoreSnapshot.
+func (s *dbScratchpad) TipState() consensus.State { return s.tip }
+
+// BestIndex implements StoreSnapshot.
+func (s *dbScratchpad) BestIndex(height uint64) (types.ChainIndex, bool) {
+	return bestIndex(s.sp, height)
+}
+
+// Block implements StoreSnapshot.
+func (s *dbScratchpad) Block(id types.BlockID) (types.Block, *consensus.V1BlockSupplement, bool) {
+	_, b, bs, ok := getBlock(s.sp, id)
 	if !ok || b == nil {
 		return types.Block{}, nil, false
 	}
 	return *b, bs, ok
 }
 
-// AddBlock implements Store.
-func (db *DBStore) AddBlock(b types.Block, bs *consensus.V1BlockSupplement) {
-	db.putBlock(b.Header(), &b, bs)
+// Header implements StoreSnapshot.
+func (s *dbScratchpad) Header(id types.BlockID) (types.BlockHeader, bool) {
+	return getBlockHeader(s.sp, id)
 }
 
-// PruneBlock implements Store.
-func (db *DBStore) PruneBlock(id types.BlockID) {
-	if bh, _, _, ok := db.getBlock(id); ok {
-		db.putBlock(bh, nil, nil)
+// State implements StoreSnapshot.
+func (s *dbScratchpad) State(id types.BlockID) (consensus.State, bool) {
+	return getState(s.sp, s.n, id)
+}
+
+// ExpiringFileContractIDs implements StoreSnapshot.
+func (s *dbScratchpad) ExpiringFileContractIDs(height uint64) []types.FileContractID {
+	return expiringFileContractIDs(s.sp, height)
+}
+
+// AncestorTimestamp implements StoreSnapshot.
+func (s *dbScratchpad) AncestorTimestamp(id types.BlockID) (time.Time, bool) {
+	return ancestorTimestamp(s.sp, s.n, id)
+}
+
+// SupplementTipTransaction implements StoreSnapshot.
+func (s *dbScratchpad) SupplementTipTransaction(txn types.Transaction) consensus.V1TransactionSupplement {
+	return supplementTipTransaction(s.sp, s.n, txn)
+}
+
+// SupplementTipBlock implements StoreSnapshot.
+func (s *dbScratchpad) SupplementTipBlock(b types.Block) consensus.V1BlockSupplement {
+	return supplementTipBlock(s.sp, s.n, b)
+}
+
+// AddState implements StoreScratchpad.
+func (s *dbScratchpad) AddState(cs consensus.State) {
+	s.bucket(bStates).put(cs.Index.ID[:], versionedState{cs})
+	s.flushIfFull()
+}
+
+// AddBlock implements StoreScratchpad.
+func (s *dbScratchpad) AddBlock(b types.Block, bs *consensus.V1BlockSupplement) {
+	s.putBlock(b.Header(), &b, bs)
+	s.flushIfFull()
+}
+
+// PruneBlock implements StoreScratchpad.
+func (s *dbScratchpad) PruneBlock(id types.BlockID) {
+	if bh, _, _, ok := getBlock(s.sp, id); ok {
+		s.putBlock(bh, nil, nil)
+	}
+	if s.shouldFlush() {
+		s.mustFlush()
 	}
 }
 
-// Header implements Store.
-func (db *DBStore) Header(id types.BlockID) (bh types.BlockHeader, exists bool) {
-	return db.getBlockHeader(id)
-}
-
-func (db *DBStore) shouldFlush() bool {
-	// NOTE: these values were chosen empirically and should constitute a
-	// sensible default; if necessary, we can make them configurable
-	const flushSizeThreshold = 100e6
-	const flushDurationThreshold = 5 * time.Second
-	return db.unflushed >= flushSizeThreshold || time.Since(db.lastFlush) >= flushDurationThreshold
-}
-
-// ApplyBlock implements Store.
-func (db *DBStore) ApplyBlock(s consensus.State, cau consensus.ApplyUpdate) {
-	db.applyState(s)
-	if s.Index.Height <= db.n.HardforkV2.RequireHeight {
-		db.applyElements(cau)
+// OverwriteExpiringFileContractIDs implements StoreScratchpad. This should
+// not be called unless the IDs are known to be correct, as it will overwrite
+// any existing IDs at that height.
+func (s *dbScratchpad) OverwriteExpiringFileContractIDs(height uint64, ids []types.FileContractID) {
+	buf := make([]byte, len(ids)*32)
+	for i, id := range ids {
+		copy(buf[i*32:], id[:])
 	}
-	if db.shouldFlush() {
-		if err := db.Flush(); err != nil {
-			panic(err)
+	s.bucket(bFileContractElements).putRaw(encHeight(height), buf)
+}
+
+// ApplyBlock implements StoreScratchpad.
+func (s *dbScratchpad) ApplyBlock(cs consensus.State, cau consensus.ApplyUpdate) {
+	s.bucket(bMainChain).put(encHeight(cs.Index.Height), &cs.Index.ID)
+	s.bucket(bMainChain).putRaw(keyHeight, encHeight(cs.Index.Height))
+	if cs.Index.Height <= s.n.HardforkV2.RequireHeight {
+		s.applyElements(cau)
+	}
+	s.tip = cs
+	if s.shouldFlush() {
+		s.mustFlush()
+	}
+}
+
+// RevertBlock implements StoreScratchpad.
+func (s *dbScratchpad) RevertBlock(cs consensus.State, cru consensus.RevertUpdate) {
+	if cs.Index.Height <= s.n.HardforkV2.RequireHeight {
+		s.revertElements(cru)
+	}
+	s.bucket(bMainChain).delete(encHeight(cs.Index.Height + 1))
+	s.bucket(bMainChain).putRaw(keyHeight, encHeight(cs.Index.Height))
+	s.tip = cs
+	s.flushIfFull()
+}
+
+// Flush implements StoreScratchpad.
+func (s *dbScratchpad) Flush() error {
+	if s.unflushed > 0 {
+		if err := s.sp.Flush(); err != nil {
+			return err
 		}
+		s.unflushed = 0
+		s.lastFlush = time.Now()
 	}
+	return nil
 }
 
-// RevertBlock implements Store.
-func (db *DBStore) RevertBlock(s consensus.State, cru consensus.RevertUpdate) {
-	if s.Index.Height <= db.n.HardforkV2.RequireHeight {
-		db.revertElements(cru)
-	}
-	db.revertState(s)
-	if db.shouldFlush() {
-		if err := db.Flush(); err != nil {
-			panic(err)
-		}
-	}
+// Scratchpad implements Store.
+func (db *DBStore) Scratchpad() StoreScratchpad { return db.scratchpad }
+
+// dbSnapshot implements StoreSnapshot.
+type dbSnapshot struct {
+	ss DBSnapshot
+	n  *consensus.Network
+
+	tipOnce sync.Once
+	tip     consensus.State
 }
 
-// Flush flushes any uncommitted data to the underlying DB.
-func (db *DBStore) Flush() error {
-	if db.unflushed == 0 {
-		return nil
-	}
-	err := db.db.Flush()
-	db.unflushed = 0
-	db.lastFlush = time.Now()
-	return err
+// TipState implements StoreSnapshot.
+func (s *dbSnapshot) TipState() consensus.State {
+	// The tip is derived from the snapshot itself, so it is always consistent
+	// with the snapshot's data; no synchronization with the scratchpad is
+	// required.
+	s.tipOnce.Do(func() {
+		s.tip = tipState(s.ss, s.n)
+	})
+	return s.tip
 }
 
-// NewDBStore creates a new DBStore using the provided database. The tip state
-// is also returned. The DB will be automatically migrated if necessary. The
-// provided logger may be nil.
-func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger MigrationLogger) (_ *DBStore, _ consensus.State, err error) {
+// BestIndex implements StoreSnapshot.
+func (s *dbSnapshot) BestIndex(height uint64) (types.ChainIndex, bool) {
+	return bestIndex(s.ss, height)
+}
+
+// Block implements StoreSnapshot.
+func (s *dbSnapshot) Block(id types.BlockID) (types.Block, *consensus.V1BlockSupplement, bool) {
+	_, b, bs, ok := getBlock(s.ss, id)
+	if !ok || b == nil {
+		return types.Block{}, nil, false
+	}
+	return *b, bs, ok
+}
+
+// Header implements StoreSnapshot.
+func (s *dbSnapshot) Header(id types.BlockID) (types.BlockHeader, bool) {
+	return getBlockHeader(s.ss, id)
+}
+
+// State implements StoreSnapshot.
+func (s *dbSnapshot) State(id types.BlockID) (consensus.State, bool) {
+	return getState(s.ss, s.n, id)
+}
+
+// ExpiringFileContractIDs implements StoreSnapshot.
+func (s *dbSnapshot) ExpiringFileContractIDs(height uint64) []types.FileContractID {
+	return expiringFileContractIDs(s.ss, height)
+}
+
+// AncestorTimestamp implements StoreSnapshot.
+func (s *dbSnapshot) AncestorTimestamp(id types.BlockID) (time.Time, bool) {
+	return ancestorTimestamp(s.ss, s.n, id)
+}
+
+// SupplementTipTransaction implements StoreSnapshot.
+func (s *dbSnapshot) SupplementTipTransaction(txn types.Transaction) consensus.V1TransactionSupplement {
+	return supplementTipTransaction(s.ss, s.n, txn)
+}
+
+// SupplementTipBlock implements StoreSnapshot.
+func (s *dbSnapshot) SupplementTipBlock(b types.Block) consensus.V1BlockSupplement {
+	return supplementTipBlock(s.ss, s.n, b)
+}
+
+// Snapshot implements Store.
+func (db *DBStore) Snapshot() (StoreSnapshot, func()) {
+	ss, release := db.db.Snapshot()
+	return &dbSnapshot{ss: ss, n: db.n}, release
+}
+
+// NewDBStore creates a new DBStore using the provided database. The DB will
+// be automatically migrated if necessary. The provided logger may be nil.
+func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger MigrationLogger) (_ *DBStore, err error) {
+	sp := db.Scratchpad()
 	// during initialization, we should return an error instead of panicking
 	defer func() {
 		if r := recover(); r != nil {
-			db.Cancel()
+			sp.Cancel()
 			err = fmt.Errorf("panic during database initialization: %v", r)
 		}
 	}()
 
 	if err := sanityCheckNetwork(n); err != nil {
-		return nil, consensus.State{}, fmt.Errorf("invalid network: %w", err)
+		return nil, fmt.Errorf("invalid network: %w", err)
 	}
 
 	// don't accidentally overwrite a siad database
-	if db.Bucket([]byte("ChangeLog")) != nil {
-		return nil, consensus.State{}, errors.New("detected siad database, refusing to proceed")
+	if sp.Bucket([]byte("ChangeLog")) != nil {
+		return nil, errors.New("detected siad database, refusing to proceed")
 	}
 
 	dbs := &DBStore{
-		db: db,
-		n:  n,
+		db:         db,
+		n:          n,
+		scratchpad: &dbScratchpad{sp: sp, n: n, lastFlush: time.Now()},
 	}
+	scratch := dbs.scratchpad
 
 	// if the db is empty, initialize it
-	if version := dbs.bucket(bVersion).getRaw(bVersion); len(version) != 1 {
+	if version := readBucket(sp, bVersion).getRaw(bVersion); len(version) != 1 {
 		for _, bucket := range [][]byte{
 			bVersion,
 			bNetwork,
@@ -987,71 +1223,73 @@ func NewDBStore(db DB, n *consensus.Network, genesisBlock types.Block, logger Mi
 			bSiafundElements,
 			bTree,
 		} {
-			if _, err := db.CreateBucket(bucket); err != nil {
+			if _, err := sp.CreateBucket(bucket); err != nil {
 				panic(err)
 			}
 		}
-		dbs.bucket(bVersion).putRaw(bVersion, []byte{4})
-		dbs.bucket(bNetwork).putRaw(bNetwork, []byte(n.Name))
+		scratch.bucket(bVersion).putRaw(bVersion, []byte{4})
+		scratch.bucket(bNetwork).putRaw(bNetwork, []byte(n.Name))
 
 		// store genesis state and apply genesis block to it
 		genesisState := n.GenesisState()
-		dbs.putState(genesisState)
+		scratch.AddState(genesisState)
 		bs := consensus.V1BlockSupplement{Transactions: make([]consensus.V1TransactionSupplement, len(genesisBlock.Transactions))}
 		cs, cau := consensus.ApplyBlock(genesisState, genesisBlock, bs, time.Time{})
-		dbs.putBlock(genesisBlock.Header(), &genesisBlock, &bs)
-		dbs.putState(cs)
-		dbs.ApplyBlock(cs, cau)
-		if err := dbs.Flush(); err != nil {
-			return nil, consensus.State{}, err
+		scratch.AddBlock(genesisBlock, &bs)
+		scratch.AddState(cs)
+		scratch.ApplyBlock(cs, cau)
+		if err := scratch.Flush(); err != nil {
+			return nil, err
 		}
 	} else if version[0] != 4 {
 		if logger == nil {
 			logger = noopLogger{}
 		}
 		if err := migrateDB(dbs, logger); err != nil {
-			return nil, consensus.State{}, fmt.Errorf("failed to migrate database: %w", err)
+			return nil, fmt.Errorf("failed to migrate database: %w", err)
 		}
 	}
-	if network := dbs.bucket(bNetwork).getRaw(bNetwork); len(network) != 0 && string(network) != n.Name {
-		return nil, consensus.State{}, fmt.Errorf("database previously initialized with different network (%s)", string(network))
+	if network := readBucket(sp, bNetwork).getRaw(bNetwork); len(network) != 0 && string(network) != n.Name {
+		return nil, fmt.Errorf("database previously initialized with different network (%s)", string(network))
 	}
 
 	// load tip state
-	index, _ := dbs.BestIndex(dbs.getHeight())
-	cs, _ := dbs.State(index.ID)
-	return dbs, cs, err
+	dbs.scratchpad.tip = tipState(sp, n)
+	return dbs, err
 }
 
 // NewDBStoreAtCheckpoint creates a DBStore initialized at the provided
 // checkpoint. The checkpoint must be a v2 block. If the DB already exists, the
 // checkpoint will be set as its new tip. The DB will be automatically migrated
 // if necessary. The provided logger may be nil.
-func NewDBStoreAtCheckpoint(db DB, cs consensus.State, b types.Block, logger MigrationLogger) (_ *DBStore, _ consensus.State, err error) {
+func NewDBStoreAtCheckpoint(db DB, cs consensus.State, b types.Block, logger MigrationLogger) (_ *DBStore, err error) {
+	sp := db.Scratchpad()
 	// during initialization, we should return an error instead of panicking
 	defer func() {
 		if r := recover(); r != nil {
-			db.Cancel()
+			sp.Cancel()
 			err = fmt.Errorf("panic during database initialization: %v", r)
 		}
 	}()
 
 	if err := sanityCheckNetwork(cs.Network); err != nil {
-		return nil, consensus.State{}, fmt.Errorf("invalid network: %w", err)
+		return nil, fmt.Errorf("invalid network: %w", err)
 	}
 
 	// don't accidentally overwrite a siad database
-	if db.Bucket([]byte("ChangeLog")) != nil {
-		return nil, consensus.State{}, errors.New("detected siad database, refusing to proceed")
+	if sp.Bucket([]byte("ChangeLog")) != nil {
+		return nil, errors.New("detected siad database, refusing to proceed")
 	}
 
 	dbs := &DBStore{
-		db: db,
-		n:  cs.Network,
+		db:         db,
+		n:          cs.Network,
+		scratchpad: &dbScratchpad{sp: sp, n: cs.Network, lastFlush: time.Now()},
 	}
+	scratch := dbs.scratchpad
 
 	// if the db is empty, initialize it
-	if version := dbs.bucket(bVersion).getRaw(bVersion); len(version) != 1 {
+	if version := readBucket(sp, bVersion).getRaw(bVersion); len(version) != 1 {
 		for _, bucket := range [][]byte{
 			bVersion,
 			bNetwork,
@@ -1063,32 +1301,32 @@ func NewDBStoreAtCheckpoint(db DB, cs consensus.State, b types.Block, logger Mig
 			bSiafundElements,
 			bTree,
 		} {
-			if _, err := db.CreateBucket(bucket); err != nil {
+			if _, err := sp.CreateBucket(bucket); err != nil {
 				panic(err)
 			}
 		}
-		dbs.bucket(bVersion).putRaw(bVersion, []byte{4})
-		dbs.bucket(bNetwork).putRaw(bNetwork, []byte(cs.Network.Name))
+		scratch.bucket(bVersion).putRaw(bVersion, []byte{4})
+		scratch.bucket(bNetwork).putRaw(bNetwork, []byte(cs.Network.Name))
 	} else if version[0] != 4 {
 		if logger == nil {
 			logger = noopLogger{}
 		}
 		if err := migrateDB(dbs, logger); err != nil {
-			return nil, consensus.State{}, fmt.Errorf("failed to migrate database: %w", err)
+			return nil, fmt.Errorf("failed to migrate database: %w", err)
 		}
 	}
-	if network := dbs.bucket(bNetwork).getRaw(bNetwork); len(network) != 0 && string(network) != cs.Network.Name {
-		return nil, consensus.State{}, fmt.Errorf("database previously initialized with different network (%s)", string(network))
+	if network := readBucket(sp, bNetwork).getRaw(bNetwork); len(network) != 0 && string(network) != cs.Network.Name {
+		return nil, fmt.Errorf("database previously initialized with different network (%s)", string(network))
 	}
 
-	dbs.putState(cs)
+	scratch.AddState(cs)
 	bs := consensus.V1BlockSupplement{Transactions: make([]consensus.V1TransactionSupplement, len(b.Transactions))}
 	cs, cau := consensus.ApplyBlock(cs, b, bs, time.Time{})
-	dbs.putBlock(b.Header(), &b, &bs)
-	dbs.putState(cs)
-	dbs.ApplyBlock(cs, cau)
-	if err := dbs.Flush(); err != nil {
-		return nil, consensus.State{}, err
+	scratch.AddBlock(b, &bs)
+	scratch.AddState(cs)
+	scratch.ApplyBlock(cs, cau)
+	if err := scratch.Flush(); err != nil {
+		return nil, err
 	}
-	return dbs, cs, nil
+	return dbs, nil
 }

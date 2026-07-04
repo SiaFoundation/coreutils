@@ -4,6 +4,7 @@ import (
 	"math"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,10 +17,13 @@ import (
 // the tip is valid or not. This is useful for testing purposes, where we want to
 // simulate a reorganization of the blockchain.
 func (m *Manager) ForceRevertTip() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	sp, unlock := m.scratchpad()
+	defer unlock()
 
-	return m.revertTip()
+	if err := m.revertTip(sp); err != nil {
+		return err
+	}
+	return sp.Flush()
 }
 
 func findBlockNonce(cs consensus.State, b *types.Block) {
@@ -37,12 +41,13 @@ func TestManager(t *testing.T) {
 
 	n.InitialTarget = types.BlockID{0xFF}
 
-	store, tipState, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
+	store, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm := NewManager(store, tipState)
+	cm := NewManager(store)
 
+	sp := store.Scratchpad()
 	mine := func(cs consensus.State, n int) (blocks []types.Block) {
 		for i := 0; i < n; i++ {
 			b := types.Block{
@@ -54,8 +59,8 @@ func TestManager(t *testing.T) {
 				}},
 			}
 			findBlockNonce(cs, &b)
-			ancestorTimestamp, _ := store.AncestorTimestamp(b.ParentID)
-			cs, _ = consensus.ApplyBlock(cs, b, store.SupplementTipBlock(b), ancestorTimestamp)
+			ancestorTimestamp, _ := sp.AncestorTimestamp(b.ParentID)
+			cs, _ = consensus.ApplyBlock(cs, b, sp.SupplementTipBlock(b), ancestorTimestamp)
 			blocks = append(blocks, b)
 		}
 		return
@@ -131,11 +136,11 @@ func TestTxPool(t *testing.T) {
 	}
 	genesisBlock.Transactions = []types.Transaction{giftTxn}
 
-	store, tipState, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
+	store, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm := NewManager(store, tipState)
+	cm := NewManager(store)
 
 	// add a listener
 	var changeSets [][]types.TransactionID
@@ -279,11 +284,12 @@ func TestUpdateV2TransactionSet(t *testing.T) {
 	}
 
 	// initialize chain manager and mine a mix of v1 and v2 blocks
-	store, genesisState, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
+	store, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm := NewManager(store, genesisState)
+	cm := NewManager(store)
+	genesisState := cm.TipState()
 	for range 10 {
 		cs := cm.TipState()
 		b := types.Block{
@@ -343,11 +349,11 @@ func TestFullTxPool(t *testing.T) {
 	}
 	genesisBlock.Transactions = []types.Transaction{giftTxn}
 
-	store, tipState, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
+	store, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm := NewManager(store, tipState)
+	cm := NewManager(store)
 
 	signTxn := func(txn *types.Transaction) {
 		for _, sci := range txn.SiacoinInputs {
@@ -427,44 +433,44 @@ func TestNewDBStoreAtCheckpoint(t *testing.T) {
 
 	t.Run("DBThenCheckpoint", func(t *testing.T) {
 		db := NewMemDB()
-		_, _, _ = NewDBStore(db, n, genesisBlock, nil)
+		_, _ = NewDBStore(db, n, genesisBlock, nil)
 		db.Flush()
-		_, tipState, err := NewDBStoreAtCheckpoint(db, checkpointParent, checkpointBlock, nil)
+		store, err := NewDBStoreAtCheckpoint(db, checkpointParent, checkpointBlock, nil)
 		if err != nil {
 			t.Fatal(err)
-		} else if tipState.Index != checkpointState.Index {
+		} else if store.Scratchpad().TipState().Index != checkpointState.Index {
 			t.Fatal("DB should be initialized at checkpoint")
 		}
 	})
 
 	t.Run("CheckpointThenDB", func(t *testing.T) {
 		db := NewMemDB()
-		_, _, err := NewDBStoreAtCheckpoint(db, checkpointParent, checkpointBlock, nil)
+		_, err := NewDBStoreAtCheckpoint(db, checkpointParent, checkpointBlock, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		db.Flush()
-		_, tipState, err := NewDBStore(db, n, genesisBlock, nil)
+		store, err := NewDBStore(db, n, genesisBlock, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if tipState.Index != checkpointState.Index {
+		if store.Scratchpad().TipState().Index != checkpointState.Index {
 			t.Fatal("DB should remain at checkpoint")
 		}
 	})
 
 	t.Run("CheckpointTwice", func(t *testing.T) {
 		db := NewMemDB()
-		_, _, err := NewDBStoreAtCheckpoint(db, checkpointParent, checkpointBlock, nil)
+		_, err := NewDBStoreAtCheckpoint(db, checkpointParent, checkpointBlock, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		db.Flush()
-		_, tipState, err := NewDBStoreAtCheckpoint(db, checkpointParent, checkpointBlock, nil)
+		store, err := NewDBStoreAtCheckpoint(db, checkpointParent, checkpointBlock, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if tipState.Index != checkpointState.Index {
+		if store.Scratchpad().TipState().Index != checkpointState.Index {
 			t.Fatal("DB should remain at checkpoint")
 		}
 	})
@@ -472,11 +478,11 @@ func TestNewDBStoreAtCheckpoint(t *testing.T) {
 	t.Run("DifferentNetwork", func(t *testing.T) {
 		mainnet, mainnetGenesis := Mainnet()
 		db := NewMemDB()
-		_, _, err := NewDBStore(db, mainnet, mainnetGenesis, nil)
+		_, err := NewDBStore(db, mainnet, mainnetGenesis, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, _, err = NewDBStoreAtCheckpoint(db, checkpointParent, checkpointBlock, nil)
+		_, err = NewDBStoreAtCheckpoint(db, checkpointParent, checkpointBlock, nil)
 		if err == nil {
 			t.Fatal("expected error when initializing with different network")
 		}
@@ -519,22 +525,22 @@ func TestMinReorgIndex(t *testing.T) {
 	checkpointState, _ := consensus.ApplyBlock(cs, b, consensus.V1BlockSupplement{}, time.Time{})
 
 	// initialize manager at checkpoint
-	store, tipState, err := NewDBStoreAtCheckpoint(NewMemDB(), cs, b, nil)
+	store, err := NewDBStoreAtCheckpoint(NewMemDB(), cs, b, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm := NewManager(store, tipState)
+	cm := NewManager(store)
 	// min reorg index should be at checkpoint
 	if minReorg := cm.MinReorgIndex(); minReorg != checkpointState.Index {
 		t.Fatal("unexpected min reorg index:", minReorg, "expected:", checkpointState.Index)
 	}
 
 	// reinitialize at genesis
-	store, tipState, err = NewDBStore(NewMemDB(), n, genesisBlock, nil)
+	store, err = NewDBStore(NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm = NewManager(store, tipState)
+	cm = NewManager(store)
 	if minReorg := cm.MinReorgIndex(); minReorg.ID != genesisBlock.ID() {
 		t.Fatal("unexpected min reorg index:", minReorg, "expected:", genesisBlock.ID())
 	}
@@ -590,11 +596,11 @@ func TestReorgPathMaxLen(t *testing.T) {
 	n.HardforkV2.AllowHeight = 1
 	n.HardforkV2.RequireHeight = 1
 	n.HardforkV2.FinalCutHeight = 1
-	store, tipState, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
+	store, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm := NewManager(store, tipState)
+	cm := NewManager(store)
 
 	const chainLen = 200
 	tip := mineEmptyBlocks(t, cm, chainLen)
@@ -615,7 +621,9 @@ func TestReorgPathMaxLen(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := cm.reorgPath(genesisIdx, tip, tc.maxLen)
+			sp, unlock := cm.scratchpad()
+			defer unlock()
+			_, _, err := cm.reorgPath(sp, genesisIdx, tip, tc.maxLen)
 			if tc.shouldErr {
 				if err == nil {
 					t.Fatalf("expected error, got nil")
@@ -646,11 +654,11 @@ func TestReorgPathBogusBasisBailsFast(t *testing.T) {
 	n.HardforkV2.AllowHeight = 1
 	n.HardforkV2.RequireHeight = 1
 	n.HardforkV2.FinalCutHeight = 1
-	store, tipState, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
+	store, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm := NewManager(store, tipState)
+	cm := NewManager(store)
 
 	// mine enough real blocks that the in-loop cap fires before the rewind
 	// reaches genesis (and would otherwise error with ErrMissingBlock).
@@ -660,7 +668,9 @@ func TestReorgPathBogusBasisBailsFast(t *testing.T) {
 	bogus := types.ChainIndex{Height: math.MaxUint64, ID: tip.ID}
 
 	const maxLen = 144
-	revert, apply, err := cm.reorgPath(bogus, tip, maxLen)
+	sp, unlock := cm.scratchpad()
+	defer unlock()
+	revert, apply, err := cm.reorgPath(sp, bogus, tip, maxLen)
 	if err == nil {
 		t.Fatal("expected error for bogus basis, got nil")
 	}
@@ -672,5 +682,174 @@ func TestReorgPathBogusBasisBailsFast(t *testing.T) {
 	// is missing or has regressed.
 	if pathLen := len(revert) + len(apply); pathLen > maxLen+2 {
 		t.Fatalf("revert+apply grew to %d, expected ≤ %d (maxLen+2)", pathLen, maxLen+2)
+	}
+}
+
+func TestReadsDoNotBlockOnWriters(t *testing.T) {
+	n, genesisBlock := TestnetZen()
+	genesisBlock.Transactions = nil
+	store, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm := NewManager(store)
+	tipState := cm.TipState()
+
+	// simulate a long-running writer by holding the write lock; readers
+	// should still be able to observe the snapshot
+	_, unlock := cm.scratchpad()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if cm.TipState().Index != tipState.Index {
+			t.Error("unexpected tip state")
+		}
+		if _, ok := cm.Block(genesisBlock.ID()); !ok {
+			t.Error("missing genesis block")
+		}
+		if _, ok := cm.BestIndex(0); !ok {
+			t.Error("missing genesis index")
+		}
+		if _, _, err := cm.UpdatesSince(types.ChainIndex{}, 10); err != nil {
+			t.Error(err)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reads blocked while writer held the write lock")
+	}
+	unlock()
+}
+
+// TestManagerConcurrentReads exercises the Manager's read methods from many
+// goroutines while blocks are concurrently added, verifying (particularly
+// under the race detector) that readers observe consistent snapshots without
+// blocking on writers.
+func TestManagerConcurrentReads(t *testing.T) {
+	n, genesisBlock := TestnetZen()
+	genesisBlock.Transactions = nil
+	n.InitialTarget = types.BlockID{0xFF}
+	n.BlockInterval = time.Second
+	n.MaturityDelay = 5
+	n.HardforkDevAddr.Height = 1
+	n.HardforkTax.Height = 1
+	n.HardforkStorageProof.Height = 1
+	n.HardforkOak.Height = 1
+	n.HardforkASIC.Height = 1
+	n.HardforkFoundation.Height = 1
+	n.HardforkV2.AllowHeight = 1
+	n.HardforkV2.RequireHeight = 1
+	n.HardforkV2.FinalCutHeight = 1
+	store, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm := NewManager(store)
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				// each of these should observe a consistent snapshot; since
+				// the chain is extended linearly, blocks and best indices
+				// visible in one call must remain visible in the next
+				tip := cm.Tip()
+				if cs := cm.TipState(); cs.Index.Height < tip.Height {
+					t.Error("tip height regressed:", cs.Index, tip)
+				}
+				if index, ok := cm.BestIndex(tip.Height); !ok || index != tip {
+					t.Error("tip not on best chain:", tip, index)
+				}
+				if b, ok := cm.Block(tip.ID); !ok {
+					t.Error("missing tip block:", tip)
+				} else if b.ID() != tip.ID {
+					t.Error("block ID mismatch:", b.ID(), tip.ID)
+				}
+				if _, ok := cm.State(tip.ID); !ok {
+					t.Error("missing tip state:", tip)
+				}
+				if _, err := cm.History(); err != nil {
+					t.Error(err)
+				}
+				if _, _, err := cm.UpdatesSince(tip, 10); err != nil {
+					t.Error(err)
+				}
+				if _, _, err := cm.Headers(tip, 10); err != nil {
+					t.Error(err)
+				}
+				if _, _, err := cm.BlocksForHistory([]types.BlockID{tip.ID}, 10); err != nil {
+					t.Error(err)
+				}
+				cm.MinReorgIndex()
+				cm.PoolTransactions()
+				cm.RecommendedFee()
+			}
+		}()
+	}
+
+	mineEmptyBlocks(t, cm, 25)
+	close(stop)
+	wg.Wait()
+
+	if cm.Tip().Height != 25 {
+		t.Fatal("expected tip height 25, got", cm.Tip().Height)
+	}
+}
+
+// TestSnapshotDoesNotBlockWrites verifies that a long-lived snapshot neither
+// stalls writers nor observes their effects.
+func TestSnapshotDoesNotBlockWrites(t *testing.T) {
+	n, genesisBlock := TestnetZen()
+	genesisBlock.Transactions = nil
+	n.InitialTarget = types.BlockID{0xFF}
+	n.BlockInterval = time.Second
+	n.MaturityDelay = 5
+	n.HardforkDevAddr.Height = 1
+	n.HardforkTax.Height = 1
+	n.HardforkStorageProof.Height = 1
+	n.HardforkOak.Height = 1
+	n.HardforkASIC.Height = 1
+	n.HardforkFoundation.Height = 1
+	n.HardforkV2.AllowHeight = 1
+	n.HardforkV2.RequireHeight = 1
+	n.HardforkV2.FinalCutHeight = 1
+	store, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm := NewManager(store)
+	tipState := cm.TipState()
+
+	// hold a snapshot across several AddBlocks calls; if snapshots excluded
+	// writers, this would deadlock
+	snap, release := store.Snapshot()
+	defer release()
+	mineEmptyBlocks(t, cm, 5)
+
+	// the Manager should have advanced...
+	if cm.Tip().Height != tipState.Index.Height+5 {
+		t.Fatal("expected tip to advance to height 5, got", cm.Tip().Height)
+	}
+	// ...while the held snapshot still reflects the old tip
+	if snap.TipState().Index != tipState.Index {
+		t.Fatal("snapshot tip changed:", snap.TipState().Index)
+	} else if _, ok := snap.BestIndex(tipState.Index.Height + 1); ok {
+		t.Fatal("snapshot should not see new blocks")
+	}
+
+	// a snapshot taken now should see the new tip
+	snap2, release2 := store.Snapshot()
+	defer release2()
+	if snap2.TipState().Index != cm.Tip() {
+		t.Fatal("new snapshot tip mismatch:", snap2.TipState().Index, cm.Tip())
 	}
 }

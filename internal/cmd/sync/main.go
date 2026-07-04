@@ -150,24 +150,23 @@ func main() {
 	}
 
 	var store *chain.DBStore
-	var tipState consensus.State
 	if checkpoint != (types.ChainIndex{}) {
 		log.Info("retrieving checkpoint", zap.Stringer("index", checkpoint))
 		cs, b, err := syncer.RetrieveCheckpoint(ctx, bootstrapPeers, checkpoint, n, genesis.ID())
 		if err != nil {
 			log.Panic("failed to retrieve checkpoint", zap.Error(err))
 		}
-		store, tipState, err = chain.NewDBStoreAtCheckpoint(db, cs, b, chain.NewZapMigrationLogger(log.Named("migrate")))
+		store, err = chain.NewDBStoreAtCheckpoint(db, cs, b, chain.NewZapMigrationLogger(log.Named("migrate")))
 		if err != nil {
 			log.Panic("failed to create store", zap.Error(err))
 		}
 	} else {
-		store, tipState, err = chain.NewDBStore(db, n, genesis, chain.NewZapMigrationLogger(log.Named("migrate")))
+		store, err = chain.NewDBStore(db, n, genesis, chain.NewZapMigrationLogger(log.Named("migrate")))
 		if err != nil {
 			log.Panic("failed to create store", zap.Error(err))
 		}
 	}
-	cm := chain.NewManager(store, tipState, chain.WithLog(log.Named("chain")))
+	cm := chain.NewManager(store, chain.WithLog(log.Named("chain")))
 	log = log.With(zap.Stringer("start", cm.Tip()))
 
 	l, err := net.Listen("tcp", ":0")

@@ -226,13 +226,14 @@ func TestWallet(t *testing.T) {
 
 	// create chain store
 	network, genesis := testutil.Network()
-	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
+	cs, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// create chain manager and subscribe the wallet
-	cm := chain.NewManager(cs, genesisState)
+	cm := chain.NewManager(cs)
+	genesisState := cm.TipState()
 
 	// create wallet
 	l := zaptest.NewLogger(t)
@@ -384,13 +385,14 @@ func TestWalletLockUnlock(t *testing.T) {
 
 	// create chain store
 	network, genesis := testutil.Network()
-	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
+	cs, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// create chain manager and subscribe the wallet
-	cm := chain.NewManager(cs, genesisState)
+	cm := chain.NewManager(cs)
+	genesisState := cm.TipState()
 	// create wallet
 	l := zaptest.NewLogger(t)
 	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
@@ -443,13 +445,13 @@ func TestWalletUnconfirmed(t *testing.T) {
 
 	// create chain store
 	network, genesis := testutil.Network()
-	cs, tipState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
+	cs, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// create chain manager and subscribe the wallet
-	cm := chain.NewManager(cs, tipState)
+	cm := chain.NewManager(cs)
 	// create wallet
 	l := zaptest.NewLogger(t)
 	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
@@ -546,13 +548,14 @@ func TestWalletRedistribute(t *testing.T) {
 	// create chain store
 	network, genesis := testutil.Network()
 	network.HardforkV2.AllowHeight = 1 // allow V2 transactions from the start
-	cs, tipState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
+	cs, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// create chain manager and subscribe the wallet
-	cm := chain.NewManager(cs, tipState)
+	cm := chain.NewManager(cs)
+	tipState := cm.TipState()
 	// create wallet
 	l := zaptest.NewLogger(t)
 	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
@@ -651,13 +654,14 @@ func TestReorg(t *testing.T) {
 
 	// create chain store
 	network, genesis := testutil.Network()
-	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
+	cs, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// create chain manager and subscribe the wallet
-	cm := chain.NewManager(cs, genesisState)
+	cm := chain.NewManager(cs)
+	genesisState := cm.TipState()
 	// create wallet
 	l := zaptest.NewLogger(t)
 	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
@@ -865,13 +869,14 @@ func TestWalletV2(t *testing.T) {
 
 	// create chain store
 	network, genesis := testutil.Network()
-	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
+	cs, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// create chain manager and subscribe the wallet
-	cm := chain.NewManager(cs, genesisState)
+	cm := chain.NewManager(cs)
+	genesisState := cm.TipState()
 	// create wallet
 	l := zaptest.NewLogger(t)
 	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
@@ -1042,13 +1047,14 @@ func TestReorgV2(t *testing.T) {
 
 	// create chain store
 	network, genesis := testutil.V2Network()
-	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
+	cs, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// create chain manager and subscribe the wallet
-	cm := chain.NewManager(cs, genesisState)
+	cm := chain.NewManager(cs)
+	genesisState := cm.TipState()
 
 	// create wallet
 	l := zaptest.NewLogger(t)
@@ -1225,8 +1231,9 @@ func TestReorgV2(t *testing.T) {
 	if !coreutils.FindBlockNonce(state, &b, time.Second) {
 		t.Fatal("failed to find nonce")
 	}
-	ancestorTimestamp, _ := cs.AncestorTimestamp(b.ParentID)
-	state, _ = consensus.ApplyBlock(state, b, cs.SupplementTipBlock(b), ancestorTimestamp)
+	csSP := cs.Scratchpad()
+	ancestorTimestamp, _ := csSP.AncestorTimestamp(b.ParentID)
+	state, _ = consensus.ApplyBlock(state, b, csSP.SupplementTipBlock(b), ancestorTimestamp)
 	reorgBlocks := []types.Block{b}
 	for i := 0; i < 5; i++ {
 		b := types.Block{
@@ -1241,8 +1248,8 @@ func TestReorgV2(t *testing.T) {
 		if !coreutils.FindBlockNonce(state, &b, time.Second) {
 			t.Fatal("failed to find nonce")
 		}
-		ancestorTimestamp, _ := cs.AncestorTimestamp(b.ParentID)
-		state, _ = consensus.ApplyBlock(state, b, cs.SupplementTipBlock(b), ancestorTimestamp)
+		ancestorTimestamp, _ := csSP.AncestorTimestamp(b.ParentID)
+		state, _ = consensus.ApplyBlock(state, b, csSP.SupplementTipBlock(b), ancestorTimestamp)
 		reorgBlocks = append(reorgBlocks, b)
 	}
 
@@ -1293,13 +1300,13 @@ func TestFundTransaction(t *testing.T) {
 	network.HardforkV2.RequireHeight = 3
 
 	// create chain store
-	cs, tipState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
+	cs, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// create chain manager and subscribe the wallet
-	cm := chain.NewManager(cs, tipState)
+	cm := chain.NewManager(cs)
 	// create wallet
 	l := zaptest.NewLogger(t)
 	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
@@ -1394,11 +1401,12 @@ func TestSingleAddressWalletEventTypes(t *testing.T) {
 	// raise the require height to test v1 events
 	network.HardforkV2.RequireHeight = 100
 	network.HardforkV2.FinalCutHeight = 200
-	store, genesisState, err := chain.NewDBStore(bdb, network, genesisBlock, nil)
+	store, err := chain.NewDBStore(bdb, network, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm := chain.NewManager(store, genesisState)
+	cm := chain.NewManager(store)
+	genesisState := cm.TipState()
 
 	ws := testutil.NewEphemeralWalletStore()
 	wm, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(log))
@@ -1781,13 +1789,13 @@ func TestV2TxPoolRace(t *testing.T) {
 
 	// create chain store
 	network, genesis := testutil.V2Network()
-	cs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
+	cs, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// create chain manager and subscribe the wallet
-	cm := chain.NewManager(cs, genesisState)
+	cm := chain.NewManager(cs)
 	// create wallet
 	l := zaptest.NewLogger(t)
 	w, err := wallet.NewSingleAddressWallet(pk, cm, ws, &testutil.MockSyncer{}, wallet.WithLogger(l.Named("wallet")))
@@ -1918,13 +1926,13 @@ func TestRebroadcastTransaction(t *testing.T) {
 	ws := testutil.NewEphemeralWalletStore()
 
 	// create chain store
-	dbs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
+	dbs, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// create chain manager and subscribe the wallet
-	cm := chain.NewManager(dbs, genesisState)
+	cm := chain.NewManager(dbs)
 
 	// create wallet
 	l := zaptest.NewLogger(t)
@@ -2073,13 +2081,13 @@ func TestReloadBroadcastedSets(t *testing.T) {
 	ws := testutil.NewEphemeralWalletStore()
 
 	// create chain store
-	dbs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
+	dbs, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// create chain manager and subscribe the wallet
-	cm := chain.NewManager(dbs, genesisState)
+	cm := chain.NewManager(dbs)
 
 	// create wallet
 	l := zaptest.NewLogger(t)
@@ -2144,13 +2152,13 @@ func TestSplitUTXO(t *testing.T) {
 	ws := testutil.NewEphemeralWalletStore()
 
 	// create chain store
-	dbs, genesisState, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
+	dbs, err := chain.NewDBStore(chain.NewMemDB(), network, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// create chain manager and subscribe the wallet
-	cm := chain.NewManager(dbs, genesisState)
+	cm := chain.NewManager(dbs)
 
 	// create wallet
 	l := zaptest.NewLogger(t)
