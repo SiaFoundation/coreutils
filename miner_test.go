@@ -23,11 +23,11 @@ func TestMiner(t *testing.T) {
 		},
 	}}
 
-	store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
+	store, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm := chain.NewManager(store, tipState)
+	cm := chain.NewManager(store)
 
 	// create a transaction
 	txn := types.Transaction{
@@ -87,11 +87,11 @@ func TestV2MineBlocks(t *testing.T) {
 		},
 	}}
 
-	store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
+	store, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm := chain.NewManager(store, tipState)
+	cm := chain.NewManager(store)
 
 	mineBlocks := func(t *testing.T, n int) {
 		for ; n > 0; n-- {

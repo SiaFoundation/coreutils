@@ -166,11 +166,11 @@ func testRenterHostPairWebTransport(tb testing.TB, hostKey types.PrivateKey, cm 
 }
 
 func startTestNode(tb testing.TB, n *consensus.Network, genesis types.Block) (*chain.Manager, *wallet.SingleAddressWallet) {
-	db, tipstate, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	db, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
 	if err != nil {
 		tb.Fatal(err)
 	}
-	cm := chain.NewManager(db, tipstate)
+	cm := chain.NewManager(db)
 
 	syncerListener, err := net.Listen("tcp", ":0")
 	if err != nil {
