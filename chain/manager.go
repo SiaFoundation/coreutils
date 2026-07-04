@@ -53,7 +53,7 @@ type Store interface {
 	// prevent the Store from shutting down.
 	Snapshot() (ss StoreSnapshot, release func())
 	// Scratchpad returns a handle to the current scratchpad, which observes
-	// the Store.s uncommitted data.
+	// the Store's uncommitted data.
 	Scratchpad() StoreScratchpad
 }
 

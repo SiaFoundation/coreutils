@@ -293,6 +293,14 @@ func (b memBucket) Iter() iter.Seq2[[]byte, []byte] {
 				return
 			}
 		}
+		for key, val := range b.db.puts[b.name] {
+			if _, ok := b.db.gen.buckets[b.name][key]; ok {
+				continue // already yielded above
+			}
+			if !yield([]byte(key), val) {
+				return
+			}
+		}
 	}
 }
 
@@ -572,7 +580,6 @@ func getState(ss DBSnapshot, n *consensus.Network, id types.BlockID) (consensus.
 	return vs.State, ok
 }
 
-// tipState returns the consensus state of the best chain.s tip.
 func tipState(ss DBSnapshot, n *consensus.Network) consensus.State {
 	index, _ := bestIndex(ss, getHeight(ss))
 	cs, _ := getState(ss, n, index.ID)
