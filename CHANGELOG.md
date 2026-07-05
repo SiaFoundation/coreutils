@@ -1,3 +1,14 @@
+## 0.23.2 (2026-07-05)
+
+### Features
+
+- Added instant sync to sync utility.
+- Updated coreutils to v0.21.4.
+
+### Fixes
+
+- Fixed `TestSyncerReorg` NDF.
+
 ## 0.23.1 (2026-07-03)
 
 ### Fixes
