@@ -843,7 +843,6 @@ func updateTxnProofs(txn *types.V2Transaction, updateElementProof func(*types.St
 
 func checkEphemeralOutputs(txns []types.V2Transaction) error {
 	sces := make(map[types.SiacoinOutputID]types.SiacoinOutput)
-	sfes := make(map[types.SiafundOutputID]types.SiafundOutput)
 	for _, txn := range txns {
 		txid := txn.ID()
 		for i, sci := range txn.SiacoinInputs {
@@ -854,17 +853,12 @@ func checkEphemeralOutputs(txns []types.V2Transaction) error {
 			}
 		}
 		for i, sfi := range txn.SiafundInputs {
-			if sfi.Parent.StateElement.LeafIndex != types.UnassignedLeafIndex {
-				continue
-			} else if sfo, ok := sfes[sfi.Parent.ID]; ok && sfi.Parent.SiafundOutput != sfo {
-				return fmt.Errorf("transaction %v siafund input %v claims incorrect value (%v) for ephemeral output %v", txid, i, sfi.Parent.SiafundOutput.Value, sfi.Parent.ID)
+			if sfi.Parent.StateElement.LeafIndex == types.UnassignedLeafIndex {
+				return fmt.Errorf("transaction %v siafund input %v spends ephemeral output %v", txid, i, sfi.Parent.ID)
 			}
 		}
 		for i, sco := range txn.SiacoinOutputs {
 			sces[txn.SiacoinOutputID(txid, i)] = sco
-		}
-		for i, sfo := range txn.SiafundOutputs {
-			sfes[txn.SiafundOutputID(txid, i)] = sfo
 		}
 	}
 	return nil

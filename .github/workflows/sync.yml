@@ -30,4 +30,4 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
       - name: Sync
         run: |
-          go run ./internal/cmd/sync --log.level=debug --network ${{ matrix.network }} --github.ref ${{ github.sha }}
+          go run ./internal/cmd/sync --log.level=debug --network ${{ matrix.network }} --github.ref ${{ github.sha }} --checkpoint="530000::0000000000000000abb98e3b587fba3a0c4e723ac1e078e9d6a4d13d1d131a2c"

@@ -20,23 +20,35 @@ import (
 	"go.uber.org/zap/zaptest"
 )
 
-// helper to wait for all provided chain managers to be synced
-func synced(t *testing.T, cm ...*chain.Manager) {
+type syncedNode struct {
+	s  *syncer.Syncer
+	cm *chain.Manager
+}
+
+// helper to wait for all provided nodes to be synced. Each node re-announces
+// its tip every iteration; a relay that raced an in-flight sync is otherwise
+// swallowed, leaving the peer marked synced and permanently stalled.
+func synced(t *testing.T, nodes ...syncedNode) {
 	t.Helper()
 
 	var heights []uint64
 	for range 100 {
 		heights = heights[:0]
-		heights = append(heights, cm[0].Tip().Height)
+		heights = append(heights, nodes[0].cm.Tip().Height)
 		allEqual := true
-		for _, c := range cm[1:] {
-			heights = append(heights, c.Tip().Height)
-			if c.Tip() != cm[0].Tip() {
+		for _, n := range nodes[1:] {
+			heights = append(heights, n.cm.Tip().Height)
+			if n.cm.Tip() != nodes[0].cm.Tip() {
 				allEqual = false
 			}
 		}
 		if allEqual {
 			return
+		}
+		for _, n := range nodes {
+			if b, ok := n.cm.Block(n.cm.Tip().ID); ok && b.V2 != nil {
+				n.s.BroadcastV2BlockOutline(gateway.OutlineBlock(b, n.cm.PoolTransactions(), n.cm.V2PoolTransactions()))
+			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -358,7 +370,7 @@ func TestSyncerReorg(t *testing.T) {
 	}
 
 	// check that all three nodes are at the same tip
-	synced(t, cm1, cm2, cm3)
+	synced(t, syncedNode{s1, cm1}, syncedNode{s2, cm2}, syncedNode{s3, cm3})
 
 	// mine conflicting chains on cm1 and cm3
 	mineBlocks(t, s1, cm1, 1)
@@ -369,7 +381,7 @@ func TestSyncerReorg(t *testing.T) {
 		t.Fatal(err)
 	}
 	log.Debug("syncer peers", zap.Int("s1", len(s1.Peers())), zap.Int("s2", len(s2.Peers())), zap.Int("s3", len(s3.Peers())))
-	synced(t, cm1, cm2, cm3)
+	synced(t, syncedNode{s1, cm1}, syncedNode{s2, cm2}, syncedNode{s3, cm3})
 }
 
 func TestParallelSyncReorgSplit(t *testing.T) {
@@ -416,7 +428,7 @@ func TestParallelSyncReorgSplit(t *testing.T) {
 	if _, err := s1.Connect(context.Background(), s3.Addr()); err != nil {
 		t.Fatal(err)
 	}
-	synced(t, cm1, cm2, cm3)
+	synced(t, syncedNode{s1, cm1}, syncedNode{s2, cm2}, syncedNode{s3, cm3})
 }
 
 func TestForkPeerSynced(t *testing.T) {
@@ -556,7 +568,7 @@ func TestParallelSyncStall(t *testing.T) {
 
 	// wait for s1 and s3 to sync, verifying that parallelSync is not blocked
 	// syncing with s2
-	synced(t, cm1, cm3)
+	synced(t, syncedNode{s1, cm1}, syncedNode{s3, cm3})
 }
 
 func TestShareNodesMalformed(t *testing.T) {

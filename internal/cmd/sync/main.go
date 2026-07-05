@@ -73,6 +73,7 @@ func main() {
 		dir             string
 		network         string
 		tipURL          string
+		checkpoint      types.ChainIndex
 		updateFrequency time.Duration
 		pruneTarget     uint64
 		logLevel        zap.AtomicLevel
@@ -83,6 +84,7 @@ func main() {
 	flag.StringVar(&network, "network", "mainnet", "Network to sync")
 	flag.StringVar(&dir, "dir", ".", "Directory to sync")
 	flag.StringVar(&tipURL, "tip.url", "", "Tip URL to sync to")
+	flag.TextVar(&checkpoint, "checkpoint", types.ChainIndex{}, "chain index (height::id) of a v2 checkpoint to instant sync from")
 	flag.DurationVar(&updateFrequency, "update.frequency", 10*time.Minute, "the time to wait for an update before failing")
 	flag.Uint64Var(&pruneTarget, "prune.target", 0, "the target number of blocks to keep")
 	flag.TextVar(&logLevel, "log.level", zap.NewAtomicLevelAt(zap.InfoLevel), "log level")
@@ -147,9 +149,23 @@ func main() {
 		}()
 	}
 
-	store, tipState, err := chain.NewDBStore(db, n, genesis, chain.NewZapMigrationLogger(log.Named("migrate")))
-	if err != nil {
-		log.Panic("failed to create store", zap.Error(err))
+	var store *chain.DBStore
+	var tipState consensus.State
+	if checkpoint != (types.ChainIndex{}) {
+		log.Info("retrieving checkpoint", zap.Stringer("index", checkpoint))
+		cs, b, err := syncer.RetrieveCheckpoint(ctx, bootstrapPeers, checkpoint, n, genesis.ID())
+		if err != nil {
+			log.Panic("failed to retrieve checkpoint", zap.Error(err))
+		}
+		store, tipState, err = chain.NewDBStoreAtCheckpoint(db, cs, b, chain.NewZapMigrationLogger(log.Named("migrate")))
+		if err != nil {
+			log.Panic("failed to create store", zap.Error(err))
+		}
+	} else {
+		store, tipState, err = chain.NewDBStore(db, n, genesis, chain.NewZapMigrationLogger(log.Named("migrate")))
+		if err != nil {
+			log.Panic("failed to create store", zap.Error(err))
+		}
 	}
 	cm := chain.NewManager(store, tipState, chain.WithLog(log.Named("chain")))
 	log = log.With(zap.Stringer("start", cm.Tip()))
