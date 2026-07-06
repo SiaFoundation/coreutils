@@ -848,7 +848,9 @@ func checkEphemeralOutputs(txns []types.V2Transaction) error {
 		for i, sci := range txn.SiacoinInputs {
 			if sci.Parent.StateElement.LeafIndex != types.UnassignedLeafIndex {
 				continue
-			} else if sco, ok := sces[sci.Parent.ID]; ok && sci.Parent.SiacoinOutput != sco {
+			} else if sco, ok := sces[sci.Parent.ID]; !ok {
+				return fmt.Errorf("transaction %v siacoin input %v claims unknown ephemeral output %v", txid, i, sci.Parent.ID)
+			} else if sci.Parent.SiacoinOutput != sco {
 				return fmt.Errorf("transaction %v siacoin input %v claims incorrect value (%v) for ephemeral output %v", txid, i, sci.Parent.SiacoinOutput.Value, sci.Parent.ID)
 			}
 		}
