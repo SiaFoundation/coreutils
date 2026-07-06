@@ -1,3 +1,9 @@
+## 0.23.3 (2026-07-06)
+
+### Fixes
+
+- Fix missing tpool check.
+
 ## 0.23.2 (2026-07-05)
 
 ### Features
