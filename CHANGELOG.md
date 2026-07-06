@@ -1,3 +1,11 @@
+## 0.23.4 (2026-07-06)
+
+### Fixes
+
+- Fixed sync CI job.
+- Fixed syncer crashes.
+- Updated coreutils to v0.21.5.
+
 ## 0.23.3 (2026-07-06)
 
 ### Fixes
