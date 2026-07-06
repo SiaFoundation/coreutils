@@ -841,6 +841,23 @@ func updateTxnProofs(txn *types.V2Transaction, updateElementProof func(*types.St
 	return
 }
 
+func checkFileContractRevisions(txns []types.V2Transaction) error {
+	for _, txn := range txns {
+		for i, fcr := range txn.FileContractRevisions {
+			if fcr.Revision.MissedHostValue.Cmp(fcr.Revision.HostOutput.Value) > 0 {
+				return fmt.Errorf("transaction %v revision %v missed host value exceeds host value", txn.ID(), i)
+			}
+		}
+		for i, fcr := range txn.FileContractResolutions {
+			if _, ok := fcr.Resolution.(*types.V2FileContractExpiration); ok &&
+				fcr.Parent.V2FileContract.MissedHostValue.Cmp(fcr.Parent.V2FileContract.HostOutput.Value) > 0 {
+				return fmt.Errorf("transaction %v resolution %v expires a contract with missed host value exceeding host value", txn.ID(), i)
+			}
+		}
+	}
+	return nil
+}
+
 func checkEphemeralOutputs(txns []types.V2Transaction) error {
 	sces := make(map[types.SiacoinOutputID]types.SiacoinOutput)
 	for _, txn := range txns {
@@ -1207,6 +1224,8 @@ func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transacti
 
 func (m *Manager) checkTxnSet(txns []types.Transaction, v2txns []types.V2Transaction) (bool, error) {
 	if err := checkEphemeralOutputs(v2txns); err != nil {
+		return false, err
+	} else if err := checkFileContractRevisions(v2txns); err != nil {
 		return false, err
 	}
 	allInPool := true
