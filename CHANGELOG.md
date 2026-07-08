@@ -1,3 +1,9 @@
+## 0.23.5 (2026-07-08)
+
+### Fixes
+
+- Update go.sia.tech/coreutils to v0.21.6.
+
 ## 0.23.4 (2026-07-06)
 
 ### Fixes
