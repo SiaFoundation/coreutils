@@ -84,8 +84,9 @@ func clientErrf(format string, args ...any) error {
 	return rhp4.NewRPCError(rhp4.ErrorCodeClientError, fmt.Sprintf(format, args...))
 }
 
-// openStream dials a stream setting the default timeout if the context has no
-// deadline. The stream lifetime is tied to the context.
+// openStream dials a stream, deriving its deadline from the context or the
+// default timeout if the context has no deadline. The stream lifetime is tied
+// to the context.
 func openStream(ctx context.Context, t TransportClient, defaultTimeout time.Duration) (net.Conn, error) {
 	if err := context.Cause(ctx); err != nil {
 		return nil, err
@@ -96,10 +97,18 @@ func openStream(ctx context.Context, t TransportClient, defaultTimeout time.Dura
 		return nil, fmt.Errorf("failed to dial stream: %w", err)
 	}
 
-	if _, ok := ctx.Deadline(); !ok && defaultTimeout != 0 {
-		if err := s.SetDeadline(time.Now().Add(defaultTimeout)); err != nil {
+	// the deadline must be set on the stream itself: closing the stream when
+	// the context expires only interrupts blocked reads, while a write that
+	// is blocked on a congested or dead connection waits for mux buffer
+	// space and only observes the stream's deadline, not its closing.
+	deadline, ok := ctx.Deadline()
+	if !ok && defaultTimeout != 0 {
+		deadline = time.Now().Add(defaultTimeout)
+	}
+	if !deadline.IsZero() {
+		if err := s.SetDeadline(deadline); err != nil {
 			_ = s.Close()
-			return nil, fmt.Errorf("failed to set default timeout %q: %w", defaultTimeout, err)
+			return nil, fmt.Errorf("failed to set deadline: %w", err)
 		}
 	}
 

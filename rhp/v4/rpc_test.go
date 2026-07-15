@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"maps"
 	"math"
 	"net"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -18,6 +20,7 @@ import (
 	"time"
 
 	"github.com/quic-go/webtransport-go"
+	"go.sia.tech/mux"
 	"go.sia.tech/core/consensus"
 	proto4 "go.sia.tech/core/rhp/v4"
 	"go.sia.tech/core/types"
@@ -1451,6 +1454,75 @@ func TestSiamuxDialUpgradeTimeout(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+// TestRPCWriteTimeoutBlockedPeer verifies that an RPC whose WRITE path is
+// blocked — the peer completed the mux handshake but stopped consuming
+// frames, like a host whose connection died with a full TCP window — fails
+// once the context deadline expires instead of hanging until the underlying
+// connection errors out.
+func TestRPCWriteTimeoutBlockedPeer(t *testing.T) {
+	hk := types.GeneratePrivateKey()
+
+	// net.Pipe is unbuffered, so the client blocks as soon as the peer's
+	// read loop stalls — the in-memory equivalent of a full TCP window.
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		clientConn.Close()
+		serverConn.Close()
+	})
+
+	// the server completes the mux handshake but never accepts a stream, so
+	// its read loop stalls on the first unconsumed frame and stops reading
+	// from the pipe.
+	stopServer := make(chan struct{})
+	t.Cleanup(func() { close(stopServer) })
+	go func() {
+		m, err := mux.Accept(serverConn, ed25519.PrivateKey(hk))
+		if err != nil {
+			t.Error("failed to accept mux:", err)
+			return
+		}
+		defer m.Close()
+		<-stopServer
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	transport, err := siamux.Upgrade(ctx, clientConn, hk.PublicKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { transport.Close() })
+
+	prices := proto4.HostPrices{
+		TipHeight:  1,
+		ValidUntil: time.Now().Add(time.Hour),
+	}
+	prices.Signature = hk.SignHash(prices.SigHash())
+	token := proto4.NewAccountToken(types.GeneratePrivateKey(), hk.PublicKey())
+
+	// a full sector far exceeds the mux write buffer, guaranteeing the RPC
+	// blocks writing data rather than waiting for a response
+	data := frand.Bytes(proto4.SectorSize)
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := rhp4.RPCWriteSector(ctx, transport, prices, token, bytes.NewReader(data), uint64(len(data)))
+		errCh <- err
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected write to a blocked peer to fail")
+		} else if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("expected %v, got: %v", os.ErrDeadlineExceeded, err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("RPCWriteSector still blocked 9 seconds after its context deadline expired")
+	}
 }
 
 func TestRPCReplenishAccounts(t *testing.T) {
