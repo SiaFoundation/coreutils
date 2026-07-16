@@ -1,5 +1,5 @@
 ---
-default: minor
+default: major
 ---
 
 # Support concurrent chain.Manager reads via MVCC snapshots
