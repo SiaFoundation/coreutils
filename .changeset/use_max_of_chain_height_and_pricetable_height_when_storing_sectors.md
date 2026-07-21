@@ -2,4 +2,4 @@
 default: patch
 ---
 
-# Use max of chain height and pricetable height when storing sectors.
+# Use max of chain height and price table height when storing sectors.
