@@ -167,47 +167,74 @@ func TestV2Attestations(t *testing.T) {
 	})
 
 	// A funded transaction carrying an attestation and arbitrary data (the host
-	// announcement flow) must still be accepted, and because it spends an input
-	// it must leave the pool once it is mined.
-	t.Run("accepts funded announcement transaction", func(t *testing.T) {
-		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cm := chain.NewManager(store, tipState)
-		ms := newMemState()
+	// announcement flow) must still be accepted, mined, and, because it spends
+	// an input, leave the pool once it is confirmed. Both the change-output and
+	// whole-input-as-fee shapes are exercised.
+	spend := map[string]func(se types.SiacoinElement) ([]types.SiacoinOutput, types.Currency){
+		"change output": func(se types.SiacoinElement) ([]types.SiacoinOutput, types.Currency) {
+			minerFee := types.Siacoins(1)
+			return []types.SiacoinOutput{{Address: addr, Value: se.SiacoinOutput.Value.Sub(minerFee)}}, minerFee
+		},
+		"no change output": func(se types.SiacoinElement) ([]types.SiacoinOutput, types.Currency) {
+			return nil, se.SiacoinOutput.Value
+		},
+	}
+	for name, fundTxn := range spend {
+		t.Run("accepts funded announcement transaction ("+name+")", func(t *testing.T) {
+			store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cm := chain.NewManager(store, tipState)
+			ms := newMemState()
 
-		// mine until a utxo is spendable
-		mineBlocks(t, cm, int(n.MaturityDelay)+1)
-		ms.Sync(t, cm)
+			// mine until a utxo is spendable
+			mineBlocks(t, cm, int(n.MaturityDelay)+1)
+			ms.Sync(t, cm)
 
-		se := ms.SpendableElement(t)
-		minerFee := types.Siacoins(1)
-		txn := types.V2Transaction{
-			SiacoinInputs: []types.V2SiacoinInput{
-				{Parent: se.Copy(), SatisfiedPolicy: types.SatisfiedPolicy{Policy: policy}},
-			},
-			SiacoinOutputs: []types.SiacoinOutput{
-				{Address: addr, Value: se.SiacoinOutput.Value.Sub(minerFee)},
-			},
-			MinerFee:      minerFee,
-			ArbitraryData: frand.Bytes(16),
-			Attestations: []types.Attestation{
-				ann.ToAttestation(cm.TipState(), sk),
-			},
-		}
+			se := ms.SpendableElement(t)
+			outputs, minerFee := fundTxn(se)
+			txn := types.V2Transaction{
+				SiacoinInputs: []types.V2SiacoinInput{
+					{Parent: se.Copy(), SatisfiedPolicy: types.SatisfiedPolicy{Policy: policy}},
+				},
+				SiacoinOutputs: outputs,
+				MinerFee:       minerFee,
+				ArbitraryData:  frand.Bytes(16),
+				Attestations: []types.Attestation{
+					ann.ToAttestation(cm.TipState(), sk),
+				},
+			}
 
-		if _, err := cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txn}); err != nil {
-			t.Fatal(err)
-		} else if len(cm.V2PoolTransactions()) != 1 {
-			t.Fatalf("expected 1 transaction in pool, got %v", len(cm.V2PoolTransactions()))
-		}
+			if _, err := cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txn}); err != nil {
+				t.Fatal(err)
+			} else if len(cm.V2PoolTransactions()) != 1 {
+				t.Fatalf("expected 1 transaction in pool, got %v", len(cm.V2PoolTransactions()))
+			}
 
-		mineBlocks(t, cm, 1)
-		ms.Sync(t, cm)
+			// the transaction must actually be included in the next block
+			b, ok := coreutils.MineBlock(cm, addr, 5*time.Second)
+			if !ok {
+				t.Fatal("failed to mine block")
+			}
+			mined := false
+			for _, mtxn := range b.V2Transactions() {
+				if mtxn.ID() == txn.ID() {
+					mined = true
+					break
+				}
+			}
+			if !mined {
+				t.Fatal("expected transaction to be included in the mined block")
+			} else if err := cm.AddBlocks([]types.Block{b}); err != nil {
+				t.Fatal(err)
+			}
+			ms.Sync(t, cm)
 
-		if len(cm.V2PoolTransactions()) != 0 {
-			t.Fatalf("expected pool to be empty after transaction was mined, got %v", len(cm.V2PoolTransactions()))
-		}
-	})
+			// and it must leave the pool now that its input has been spent
+			if len(cm.V2PoolTransactions()) != 0 {
+				t.Fatalf("expected pool to be empty after transaction was mined, got %v", len(cm.V2PoolTransactions()))
+			}
+		})
+	}
 }
