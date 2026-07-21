@@ -254,7 +254,8 @@ func (s *Server) handleRPCWriteSector(stream net.Conn) error {
 	// compute the root from the subtrees instead of hashing the sector again.
 	root := rhp4.MetaRoot(subtrees)
 
-	if err := s.sectors.StoreSector(root, buf.Bytes(), subtrees, prices.TipHeight+rhp4.TempSectorDuration); err != nil {
+	height := max(s.chain.Tip().Height, prices.TipHeight)
+	if err := s.sectors.StoreSector(root, buf.Bytes(), subtrees, height+rhp4.TempSectorDuration); err != nil {
 		return fmt.Errorf("failed to store sector: %w", err)
 	}
 	return rhp4.WriteResponse(stream, &rhp4.RPCWriteSectorResponse{
