@@ -32,6 +32,30 @@ func findBlockNonce(cs consensus.State, b *types.Block) {
 	}
 }
 
+func TestSpendsElement(t *testing.T) {
+	tests := []struct {
+		name string
+		txn  types.V2Transaction
+		want bool
+	}{
+		{"empty", types.V2Transaction{}, false},
+		{"arbitrary data only", types.V2Transaction{ArbitraryData: frand.Bytes(16)}, false},
+		{"attestation only", types.V2Transaction{Attestations: []types.Attestation{{}}}, false},
+		{"file contract creation only", types.V2Transaction{FileContracts: []types.V2FileContract{{}}}, false},
+		{"siacoin input", types.V2Transaction{SiacoinInputs: []types.V2SiacoinInput{{}}}, true},
+		{"siafund input", types.V2Transaction{SiafundInputs: []types.V2SiafundInput{{}}}, true},
+		{"file contract revision", types.V2Transaction{FileContractRevisions: []types.V2FileContractRevision{{}}}, true},
+		{"file contract resolution", types.V2Transaction{FileContractResolutions: []types.V2FileContractResolution{{}}}, true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := spendsElement(test.txn); got != test.want {
+				t.Fatalf("spendsElement = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestManager(t *testing.T) {
 	n, genesisBlock := TestnetZen()
 
