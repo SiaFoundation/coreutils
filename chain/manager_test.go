@@ -56,6 +56,83 @@ func TestSpendsElement(t *testing.T) {
 	}
 }
 
+// TestRevertedNoElementTransaction exercises the reverted-transaction re-add
+// path with a v2 transaction that spends no elements. The transaction is mined
+// directly into a block, bypassing pool admission, then reverted by a reorg.
+// It must not re-enter the pool via lastRevertedV2.
+func TestRevertedNoElementTransaction(t *testing.T) {
+	n, genesisBlock := TestnetZen()
+
+	n.InitialTarget = types.BlockID{0xFF}
+	n.HardforkDevAddr.Height = 0
+	n.HardforkTax.Height = 0
+	n.HardforkStorageProof.Height = 0
+	n.HardforkOak.Height = 0
+	n.HardforkOak.FixHeight = 0
+	n.HardforkASIC.Height = 0
+	n.HardforkFoundation.Height = 0
+	n.HardforkV2.AllowHeight = 0
+
+	store, tipState, err := NewDBStore(NewMemDB(), n, genesisBlock, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm := NewManager(store, tipState)
+
+	txn := types.V2Transaction{ArbitraryData: frand.Bytes(16)}
+
+	// the admission path rejects it
+	if _, err := cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txn}); err == nil || !strings.Contains(err.Error(), "does not spend any elements") {
+		t.Fatal("unexpected", err)
+	}
+
+	mine := func(cs consensus.State, v2txns []types.V2Transaction) (types.Block, consensus.State) {
+		b := types.Block{
+			ParentID:  cs.Index.ID,
+			Timestamp: types.CurrentTimestamp(),
+			MinerPayouts: []types.SiacoinOutput{{
+				Value:   cs.BlockReward(),
+				Address: types.Address(frand.Entropy256()),
+			}},
+		}
+		if v2txns != nil {
+			b.V2 = &types.V2BlockData{
+				Height:       cs.Index.Height + 1,
+				Transactions: v2txns,
+				Commitment:   cs.Commitment(b.MinerPayouts[0].Address, b.Transactions, v2txns),
+			}
+		}
+		findBlockNonce(cs, &b)
+		ancestorTimestamp, _ := store.AncestorTimestamp(b.ParentID)
+		cs, _ = consensus.ApplyBlock(cs, b, store.SupplementTipBlock(b), ancestorTimestamp)
+		return b, cs
+	}
+
+	// build a fork of two empty blocks off the genesis tip
+	fork1, forkState := mine(cm.TipState(), nil)
+	fork2, _ := mine(forkState, nil)
+
+	// mine the transaction directly into a block; consensus accepts it
+	b, _ := mine(cm.TipState(), []types.V2Transaction{txn})
+	if err := cm.AddBlocks([]types.Block{b}); err != nil {
+		t.Fatal(err)
+	} else if len(cm.V2PoolTransactions()) != 0 {
+		t.Fatal("unexpected pool size", len(cm.V2PoolTransactions()))
+	}
+
+	// trigger a reorg that reverts the block containing the transaction
+	if err := cm.AddBlocks([]types.Block{fork1, fork2}); err != nil {
+		t.Fatal(err)
+	} else if cm.Tip().ID != fork2.ID() {
+		t.Fatal("reorg failed")
+	}
+
+	// the reverted transaction must not re-enter the pool
+	if _, ok := cm.V2PoolTransaction(txn.ID()); ok {
+		t.Fatal("no-element transaction re-entered the pool after reorg")
+	}
+}
+
 func TestManager(t *testing.T) {
 	n, genesisBlock := TestnetZen()
 
