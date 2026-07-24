@@ -134,7 +134,7 @@ func TestV2Attestations(t *testing.T) {
 		{Address: "foo.bar:1234", Protocol: "tcp"},
 	}
 
-	// A transaction that spends no consensus elements stays valid forever and
+	// a transaction that spends no consensus elements stays valid forever and
 	// would be mined in every block, so the txpool must reject it regardless of
 	// any attestations or arbitrary data it carries.
 	t.Run("rejects transactions that spend no elements", func(t *testing.T) {
@@ -166,7 +166,7 @@ func TestV2Attestations(t *testing.T) {
 		}
 	})
 
-	// A funded transaction carrying an attestation and arbitrary data (the host
+	// a funded transaction carrying an attestation and arbitrary data (the host
 	// announcement flow) must still be accepted, mined, and, because it spends
 	// an input, leave the pool once it is confirmed. Both the change-output and
 	// whole-input-as-fee shapes are exercised.
