@@ -44,35 +44,62 @@ type RevertUpdate struct {
 	State consensus.State // post-reversion, i.e. pre-application
 }
 
-// A Store durably commits Manager-related data to storage. I/O errors must be
-// handled internally, e.g. by panicking or calling os.Exit.
+// A Store durably commits blockchain data to storage.
 type Store interface {
+	// Snapshot returns a read-only snapshot of the Store's data as of the most
+	// recent Flush. Snapshots are unaffected by concurrent scratchpad writes
+	// and Flushes. The release function must be called when the snapshot is no
+	// longer needed; failure to do so may pin resources indefinitely and
+	// prevent the Store from shutting down.
+	Snapshot() (ss StoreSnapshot, release func())
+	// Scratchpad returns a handle to the current scratchpad, which observes
+	// the Store's uncommitted data.
+	Scratchpad() StoreScratchpad
+}
+
+// A StoreSnapshot is a consistent view of blockchain state as of a particular
+// tip.
+type StoreSnapshot interface {
+	TipState() consensus.State
 	BestIndex(height uint64) (types.ChainIndex, bool)
+	Block(id types.BlockID) (types.Block, *consensus.V1BlockSupplement, bool)
+	Header(id types.BlockID) (types.BlockHeader, bool)
+	State(id types.BlockID) (consensus.State, bool)
+
 	SupplementTipTransaction(txn types.Transaction) consensus.V1TransactionSupplement
 	SupplementTipBlock(b types.Block) consensus.V1BlockSupplement
 
-	Block(id types.BlockID) (types.Block, *consensus.V1BlockSupplement, bool)
-	Header(id types.BlockID) (types.BlockHeader, bool)
+	ExpiringFileContractIDs(height uint64) []types.FileContractID
+	AncestorTimestamp(id types.BlockID) (time.Time, bool)
+}
+
+// A StoreScratchpad accumulates writes to a Store. Its methods observe the
+// accumulated writes; in particular, ApplyBlock and RevertBlock update the
+// tip state reported by TipState. It is not safe for concurrent use.
+//
+// Implementations are allowed to call Flush internally, so long as they do so
+// in a way that preserves the consistency of the resulting snapshot. In
+// general, flushing after a method is safe, while flushing mid-method is not.
+type StoreScratchpad interface {
+	StoreSnapshot
+
+	AddState(cs consensus.State)
 	AddBlock(b types.Block, bs *consensus.V1BlockSupplement)
 	PruneBlock(id types.BlockID)
-	State(id types.BlockID) (consensus.State, bool)
-	AddState(cs consensus.State)
-	AncestorTimestamp(id types.BlockID) (time.Time, bool)
 
-	ExpiringFileContractIDs(height uint64) []types.FileContractID
 	OverwriteExpiringFileContractIDs(height uint64, ids []types.FileContractID)
 
-	// ApplyBlock and RevertBlock are free to commit whenever they see fit.
 	ApplyBlock(s consensus.State, cau consensus.ApplyUpdate)
 	RevertBlock(s consensus.State, cru consensus.RevertUpdate)
+
 	Flush() error
 }
 
 // blockAndParent returns the block with the specified ID, along with its parent
 // state.
-func blockAndParent(s Store, id types.BlockID) (types.Block, *consensus.V1BlockSupplement, consensus.State, bool) {
-	b, bs, ok := s.Block(id)
-	cs, ok2 := s.State(b.ParentID)
+func blockAndParent(ss StoreSnapshot, id types.BlockID) (types.Block, *consensus.V1BlockSupplement, consensus.State, bool) {
+	b, bs, ok := ss.Block(id)
+	cs, ok2 := ss.State(b.ParentID)
 	return b, bs, cs, ok && ok2
 }
 
@@ -80,7 +107,6 @@ func blockAndParent(s Store, id types.BlockID) (types.Block, *consensus.V1BlockS
 // chain.
 type Manager struct {
 	store                     Store
-	tipState                  consensus.State
 	onReorg                   map[[16]byte]func(types.ChainIndex)
 	onPool                    map[[16]byte]func()
 	expiringFileContractOrder map[types.BlockID][]types.FileContractID
@@ -99,14 +125,30 @@ type Manager struct {
 		lastRevertedV2 []types.V2Transaction
 	}
 
+	// guards scratchpad and txpool
 	mu sync.Mutex
+}
+
+// scratchpad is called (and its 'unlock' function deferred) at the top of all
+// Manager methods that mutate state.
+func (m *Manager) scratchpad() (sp StoreScratchpad, unlock func()) {
+	m.mu.Lock()
+	// NOTE: sync.Once makes it possible to unlock before the end of a function
+	// without causing the 'defer unlock()' to panic
+	var once sync.Once
+	return m.store.Scratchpad(), func() { once.Do(m.mu.Unlock) }
+}
+
+// snapshot is called at the top of all Manager methods that read state.
+func (m *Manager) snapshot() (ss StoreSnapshot, release func()) {
+	return m.store.Snapshot()
 }
 
 // TipState returns the consensus state for the current tip.
 func (m *Manager) TipState() consensus.State {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.tipState
+	ss, release := m.snapshot()
+	defer release()
+	return ss.TipState()
 }
 
 // Tip returns the tip of the best known valid chain.
@@ -116,36 +158,36 @@ func (m *Manager) Tip() types.ChainIndex {
 
 // Block returns the block with the specified ID.
 func (m *Manager) Block(id types.BlockID) (types.Block, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	b, _, ok := m.store.Block(id)
+	ss, release := m.snapshot()
+	defer release()
+	b, _, ok := ss.Block(id)
 	return b, ok
 }
 
 // State returns the state with the specified ID.
 func (m *Manager) State(id types.BlockID) (consensus.State, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.store.State(id)
+	ss, release := m.snapshot()
+	defer release()
+	return ss.State(id)
 }
 
 // BestIndex returns the index of the block at the specified height within the
 // best chain.
 func (m *Manager) BestIndex(height uint64) (types.ChainIndex, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.store.BestIndex(height)
+	ss, release := m.snapshot()
+	defer release()
+	return ss.BestIndex(height)
 }
 
 // MinReorgIndex returns the index on the best chain below which the manager
 // cannot perform a reorg.
 func (m *Manager) MinReorgIndex() types.ChainIndex {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	index := m.tipState.Index
+	ss, release := m.snapshot()
+	defer release()
+	index := ss.TipState().Index
 	for index.Height > 0 {
-		prevIndex, ok := m.store.BestIndex(index.Height - 1)
-		_, _, ok2 := m.store.Block(prevIndex.ID)
+		prevIndex, ok := ss.BestIndex(index.Height - 1)
+		_, _, ok2 := ss.Block(prevIndex.ID)
 		if !ok || !ok2 {
 			break
 		}
@@ -158,10 +200,10 @@ func (m *Manager) MinReorgIndex() types.ChainIndex {
 // the 10 most-recent blocks, and subsequently spaced exponentionally farther
 // apart until reaching the genesis block.
 func (m *Manager) History() ([32]types.BlockID, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ss, release := m.snapshot()
+	defer release()
 
-	tipHeight := m.tipState.Index.Height
+	tipHeight := ss.TipState().Index.Height
 	histHeight := func(i int) uint64 {
 		offset := uint64(i)
 		if offset >= 10 {
@@ -174,7 +216,7 @@ func (m *Manager) History() ([32]types.BlockID, error) {
 	}
 	var history [32]types.BlockID
 	for i := range history {
-		index, ok := m.store.BestIndex(histHeight(i))
+		index, ok := ss.BestIndex(histHeight(i))
 		if !ok {
 			break
 		}
@@ -187,22 +229,23 @@ func (m *Manager) History() ([32]types.BlockID, error) {
 // which must be on the best chain. It also returns the number of headers
 // between the end of the returned slice and the current tip.
 func (m *Manager) Headers(index types.ChainIndex, maxHeaders uint64) ([]types.BlockHeader, uint64, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if bestIndex, ok := m.store.BestIndex(index.Height); !ok || bestIndex != index {
+	ss, release := m.snapshot()
+	defer release()
+	tip := ss.TipState()
+	if bestIndex, ok := ss.BestIndex(index.Height); !ok || bestIndex != index {
 		return nil, 0, fmt.Errorf("index %v is not on our best chain", index)
 	}
-	maxHeaders = min(maxHeaders, m.tipState.Index.Height-index.Height)
+	maxHeaders = min(maxHeaders, tip.Index.Height-index.Height)
 	headers := make([]types.BlockHeader, maxHeaders)
 	for i := range headers {
-		index, _ := m.store.BestIndex(index.Height + uint64(i) + 1)
-		bh, ok := m.store.Header(index.ID)
+		index, _ := ss.BestIndex(index.Height + uint64(i) + 1)
+		bh, ok := ss.Header(index.ID)
 		if !ok {
 			return nil, 0, fmt.Errorf("missing block header %v", index)
 		}
 		headers[i] = bh
 	}
-	return headers, m.tipState.Index.Height - (index.Height + maxHeaders), nil
+	return headers, tip.Index.Height - (index.Height + maxHeaders), nil
 }
 
 // BlocksForHistory returns up to maxBlocks consecutive blocks from the best
@@ -211,56 +254,57 @@ func (m *Manager) Headers(index types.ChainIndex, maxHeaders uint64) ([]types.Bl
 // returns the number of blocks between the end of the returned slice and the
 // current tip.
 func (m *Manager) BlocksForHistory(history []types.BlockID, maxBlocks uint64) ([]types.Block, uint64, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ss, release := m.snapshot()
+	defer release()
+	tip := ss.TipState()
 	var attachHeight uint64
 	for _, id := range history {
-		if cs, ok := m.store.State(id); !ok {
+		if cs, ok := ss.State(id); !ok {
 			continue
-		} else if index, ok := m.store.BestIndex(cs.Index.Height); ok && index == cs.Index {
+		} else if index, ok := ss.BestIndex(cs.Index.Height); ok && index == cs.Index {
 			attachHeight = cs.Index.Height
 			break
 		}
 	}
-	if maxBlocks > m.tipState.Index.Height-attachHeight {
-		maxBlocks = m.tipState.Index.Height - attachHeight
+	if maxBlocks > tip.Index.Height-attachHeight {
+		maxBlocks = tip.Index.Height - attachHeight
 	}
 	blocks := make([]types.Block, maxBlocks)
 	for i := range blocks {
-		index, ok := m.store.BestIndex(attachHeight + uint64(i) + 1)
+		index, ok := ss.BestIndex(attachHeight + uint64(i) + 1)
 		if !ok {
 			return nil, 0, fmt.Errorf("unknown block at height %v", attachHeight+uint64(i)+1)
 		}
-		b, _, ok := m.store.Block(index.ID)
+		b, _, ok := ss.Block(index.ID)
 		if !ok {
 			return nil, 0, fmt.Errorf("missing block %v", index)
 		}
 		blocks[i] = b
 	}
-	return blocks, m.tipState.Index.Height - (attachHeight + maxBlocks), nil
+	return blocks, tip.Index.Height - (attachHeight + maxBlocks), nil
 }
 
 // AddBlocks ingests a chain of blocks. If the blocks are valid, the chain they
 // belong to may become the new best chain, triggering a reorg.
 func (m *Manager) AddBlocks(blocks []types.Block) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	sp, unlock := m.scratchpad()
+	defer unlock()
 	if len(blocks) == 0 {
 		return nil
 	}
 
 	log := m.log.Named("AddBlocks")
 
-	cs := m.tipState
+	cs := sp.TipState()
 	for _, b := range blocks {
 		bid := b.ID()
 		var ok bool
-		if _, bs, _ := m.store.Block(bid); bs != nil {
+		if _, bs, _ := sp.Block(bid); bs != nil {
 			// already have this block
-			cs, _ = m.store.State(bid)
+			cs, _ = sp.State(bid)
 			continue
 		} else if b.ParentID != cs.Index.ID {
-			if cs, ok = m.store.State(b.ParentID); !ok {
+			if cs, ok = sp.State(b.ParentID); !ok {
 				return fmt.Errorf("missing parent state for block %v", bid)
 			}
 		}
@@ -269,28 +313,28 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 		} else if err := consensus.ValidateOrphan(cs, b); err != nil {
 			return fmt.Errorf("block %v is invalid: %w", types.ChainIndex{Height: cs.Index.Height + 1, ID: bid}, err)
 		}
-		ancestorTimestamp, ok := m.store.AncestorTimestamp(b.ParentID)
+		ancestorTimestamp, ok := sp.AncestorTimestamp(b.ParentID)
 		if !ok {
 			return fmt.Errorf("missing ancestor timestamp for block %v", b.ParentID)
 		}
 		cs = consensus.ApplyHeader(cs, b.Header(), ancestorTimestamp)
-		m.store.AddState(cs)
-		m.store.AddBlock(b, nil)
+		sp.AddState(cs)
+		sp.AddBlock(b, nil)
 		log.Debug("added block", zap.Uint64("height", cs.Index.Height), zap.Stringer("id", bid))
 	}
 
 	// if this chain is now the best chain, trigger a reorg
-	if cs.SufficientlyHeavierThan(m.tipState) {
-		oldTip := m.tipState.Index
+	if cs.SufficientlyHeavierThan(sp.TipState()) {
+		oldTip := sp.TipState().Index
 		log.Debug("reorging to", zap.Stringer("current", oldTip), zap.Stringer("target", cs.Index))
-		if err := m.reorgTo(cs.Index); err != nil {
-			if err := m.reorgTo(oldTip); err != nil {
+		if err := m.reorgTo(sp, cs.Index); err != nil {
+			if err := m.reorgTo(sp, oldTip); err != nil {
 				return fmt.Errorf("failed to revert failed reorg: %w", err)
 			}
 			return fmt.Errorf("reorg failed: %w", err)
 		}
-		// release lock while notifying listeners
-		tip := m.tipState.Index
+		// notify listeners, without holding the write lock
+		tip := sp.TipState().Index
 		fns := make([]func(), 0, len(m.onReorg)+len(m.onPool))
 		for _, fn := range m.onReorg {
 			fns = append(fns, func() { fn(tip) })
@@ -298,11 +342,10 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 		for _, fn := range m.onPool {
 			fns = append(fns, fn)
 		}
-		m.mu.Unlock()
+		unlock()
 		for _, fn := range fns {
 			fn()
 		}
-		m.mu.Lock()
 	}
 	return nil
 }
@@ -311,37 +354,37 @@ func (m *Manager) AddBlocks(blocks []types.Block) error {
 // validated, and the first block's parent must be known. If the chain has
 // sufficient work, it may become the new best chain, triggering a reorg.
 func (m *Manager) AddValidatedV2Blocks(blocks []types.Block, states []consensus.State) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	sp, unlock := m.scratchpad()
+	defer unlock()
 	if len(blocks) == 0 {
 		return nil
 	} else if len(states) != len(blocks) {
 		return errors.New("chain: expected same number of blocks and states")
 	}
-	if _, ok := m.store.State(blocks[0].ParentID); !ok {
+	if _, ok := sp.State(blocks[0].ParentID); !ok {
 		return fmt.Errorf("missing parent for block %v", blocks[0].ParentID)
 	}
 	for i := range blocks {
 		if blocks[i].V2 == nil {
 			return errors.New("only v2 blocks can be pre-validated")
 		}
-		m.store.AddBlock(blocks[i], &consensus.V1BlockSupplement{})
-		m.store.AddState(states[i])
+		sp.AddBlock(blocks[i], &consensus.V1BlockSupplement{})
+		sp.AddState(states[i])
 	}
 
 	// if this chain is now the best chain, trigger a reorg
 	cs := states[len(states)-1]
-	if cs.SufficientlyHeavierThan(m.tipState) {
-		oldTip := m.tipState.Index
+	if cs.SufficientlyHeavierThan(sp.TipState()) {
+		oldTip := sp.TipState().Index
 		m.log.Debug("reorging", zap.Stringer("current", oldTip), zap.Stringer("target", cs.Index))
-		if err := m.reorgTo(cs.Index); err != nil {
-			if err := m.reorgTo(oldTip); err != nil {
+		if err := m.reorgTo(sp, cs.Index); err != nil {
+			if err := m.reorgTo(sp, oldTip); err != nil {
 				return fmt.Errorf("failed to revert failed reorg: %w", err)
 			}
 			return fmt.Errorf("reorg failed: %w", err)
 		}
 		// release lock while notifying listeners
-		tip := m.tipState.Index
+		tip := sp.TipState().Index
 		fns := make([]func(), 0, len(m.onReorg)+len(m.onPool))
 		for _, fn := range m.onReorg {
 			fns = append(fns, func() { fn(tip) })
@@ -349,11 +392,10 @@ func (m *Manager) AddValidatedV2Blocks(blocks []types.Block, states []consensus.
 		for _, fn := range m.onPool {
 			fns = append(fns, fn)
 		}
-		m.mu.Unlock()
+		unlock()
 		for _, fn := range fns {
 			fn()
 		}
-		m.mu.Lock()
 	}
 	return nil
 }
@@ -382,65 +424,65 @@ func (m *Manager) overwriteExpirations(b types.Block, bs *consensus.V1BlockSuppl
 }
 
 // revertTip reverts the current tip.
-func (m *Manager) revertTip() error {
-	b, bs, cs, ok := blockAndParent(m.store, m.tipState.Index.ID)
+func (m *Manager) revertTip(sp StoreScratchpad) error {
+	tip := sp.TipState()
+	b, bs, cs, ok := blockAndParent(sp, tip.Index.ID)
 	if !ok {
-		return fmt.Errorf("%w %v", ErrMissingBlock, m.tipState.Index)
+		return fmt.Errorf("%w %v", ErrMissingBlock, tip.Index)
 	}
 	cru := consensus.RevertBlock(cs, b, *bs)
-	m.store.RevertBlock(cs, cru)
+	sp.RevertBlock(cs, cru)
 	m.revertPoolUpdate(cru, cs)
-	m.tipState = cs
 	return nil
 }
 
 // applyTip adds a block to the current tip.
-func (m *Manager) applyTip(index types.ChainIndex) error {
+func (m *Manager) applyTip(sp StoreScratchpad, index types.ChainIndex) error {
+	tip := sp.TipState()
 	var cs consensus.State
 	var cau consensus.ApplyUpdate
-	b, bs, ok := m.store.Block(index.ID)
+	b, bs, ok := sp.Block(index.ID)
 	if !ok {
 		return fmt.Errorf("%w %v", ErrMissingBlock, index)
-	} else if b.ParentID != m.tipState.Index.ID {
+	} else if b.ParentID != tip.Index.ID {
 		panic("applyTip called with non-attaching block")
 	} else if bs == nil {
 		bs = new(consensus.V1BlockSupplement)
-		*bs = m.store.SupplementTipBlock(b)
+		*bs = sp.SupplementTipBlock(b)
 		if err := m.overwriteExpirations(b, bs); err != nil {
 			return fmt.Errorf("failed to overwrite expiring file contract order in block %v: %w", index, err)
-		} else if err := consensus.ValidateBlock(m.tipState, b, *bs); err != nil {
+		} else if err := consensus.ValidateBlock(tip, b, *bs); err != nil {
 			return fmt.Errorf("block %v is invalid: %w", index, err)
 		}
-		ancestorTimestamp, ok := m.store.AncestorTimestamp(b.ParentID)
+		ancestorTimestamp, ok := sp.AncestorTimestamp(b.ParentID)
 		if !ok {
 			return fmt.Errorf("missing ancestor timestamp for block %v", b.ParentID)
 		}
-		cs, cau = consensus.ApplyBlock(m.tipState, b, *bs, ancestorTimestamp)
-		m.store.AddState(cs)
-		m.store.AddBlock(b, bs)
+		cs, cau = consensus.ApplyBlock(tip, b, *bs, ancestorTimestamp)
+		sp.AddState(cs)
+		sp.AddBlock(b, bs)
 	} else {
-		ancestorTimestamp, ok := m.store.AncestorTimestamp(b.ParentID)
+		ancestorTimestamp, ok := sp.AncestorTimestamp(b.ParentID)
 		if !ok {
 			return fmt.Errorf("missing ancestor timestamp for block %v", b.ParentID)
 		} else if err := m.overwriteExpirations(b, bs); err != nil {
 			return fmt.Errorf("failed to overwrite expiring file contract order in block %v: %w", index, err)
 		}
-		cs, cau = consensus.ApplyBlock(m.tipState, b, *bs, ancestorTimestamp)
+		cs, cau = consensus.ApplyBlock(tip, b, *bs, ancestorTimestamp)
 	}
-	m.store.ApplyBlock(cs, cau)
+	sp.ApplyBlock(cs, cau)
 	m.applyPoolUpdate(cau, cs)
-	m.tipState = cs
 	return nil
 }
 
-func (m *Manager) reorgPath(a, b types.ChainIndex, maxLen int) (revert, apply []types.ChainIndex, err error) {
+func (m *Manager) reorgPath(ss StoreSnapshot, a, b types.ChainIndex, maxLen int) (revert, apply []types.ChainIndex, err error) {
 	// helper function for "rewinding" to the parent index
 	rewind := func(index *types.ChainIndex) bool {
 		if len(revert)+len(apply) > maxLen {
 			err = fmt.Errorf("reorg path is too long (-%d +%d, max %d)", len(revert), len(apply), maxLen)
 			return false
 		}
-		bh, ok := m.store.Header(index.ID)
+		bh, ok := ss.Header(index.ID)
 		if !ok {
 			err = fmt.Errorf("%w %v", ErrMissingBlock, *index)
 		} else {
@@ -465,7 +507,7 @@ func (m *Manager) reorgPath(a, b types.ChainIndex, maxLen int) (revert, apply []
 
 	// special case: if a is uninitialized, we're starting from genesis
 	if a == (types.ChainIndex{}) {
-		a, _ = m.store.BestIndex(0)
+		a, _ = ss.BestIndex(0)
 		apply = append(apply, a)
 	}
 
@@ -482,22 +524,22 @@ func (m *Manager) reorgPath(a, b types.ChainIndex, maxLen int) (revert, apply []
 	return
 }
 
-func (m *Manager) reorgTo(index types.ChainIndex) error {
-	revert, apply, err := m.reorgPath(m.tipState.Index, index, math.MaxInt)
+func (m *Manager) reorgTo(sp StoreScratchpad, index types.ChainIndex) error {
+	revert, apply, err := m.reorgPath(sp, sp.TipState().Index, index, math.MaxInt)
 	if err != nil {
 		return err
 	}
 	for range revert {
-		if err := m.revertTip(); err != nil {
-			return fmt.Errorf("couldn't revert block %v: %w", m.tipState.Index, err)
+		if err := m.revertTip(sp); err != nil {
+			return fmt.Errorf("couldn't revert block %v: %w", sp.TipState().Index, err)
 		}
 	}
 	for _, index := range apply {
-		if err := m.applyTip(index); err != nil {
+		if err := m.applyTip(sp, index); err != nil {
 			return fmt.Errorf("couldn't apply block %v: %w", index, err)
 		}
 	}
-	if err := m.store.Flush(); err != nil {
+	if err := sp.Flush(); err != nil {
 		return err
 	}
 
@@ -505,7 +547,7 @@ func (m *Manager) reorgTo(index types.ChainIndex) error {
 	m.txpool.ms = nil
 	m.txpool.medianFee = nil
 	if len(revert) > 0 {
-		b, _, _ := m.store.Block(revert[0].ID)
+		b, _, _ := sp.Block(revert[0].ID)
 		m.txpool.lastReverted = m.txpool.lastReverted[:0]
 		// prevent coinbase transactions from spamming the pool
 		for _, txn := range b.Transactions {
@@ -525,45 +567,47 @@ func (m *Manager) reorgTo(index types.ChainIndex) error {
 	return nil
 }
 
-// PruneBlocks prunes any blocks below the specified height
-// from the store. This should only be called after all
-// subscribers have processed blocks up to the specified height.
+// PruneBlocks prunes any blocks below the specified height from the store. This
+// should only be called after all subscribers have processed blocks up to the
+// specified height.
 //
-// Once the blocks are removed, they cannot be re-added without
-// resyncing from genesis.
+// Once the blocks are removed, they cannot be re-added without resyncing from
+// genesis.
 //
-// This can take a while depending on the number of blocks
-// it is recommended to call this frequently to avoid
-// a large backlog.
+// This can take a while depending on the number of blocks it is recommended to
+// call this frequently to avoid a large backlog.
+//
+// Pruned blocks are not guaranteed to be removed immediately, only eventually.
 func (m *Manager) PruneBlocks(height uint64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	sp, unlock := m.scratchpad()
+	defer unlock()
 
 	for h := height; h > 0; h-- {
-		index, ok := m.store.BestIndex(h - 1)
+		index, ok := sp.BestIndex(h - 1)
 		if !ok {
 			break // block does not exist
-		} else if _, _, ok := m.store.Block(index.ID); !ok {
+		} else if _, _, ok := sp.Block(index.ID); !ok {
 			break // block does not exist
 		}
-		m.store.PruneBlock(index.ID)
+		sp.PruneBlock(index.ID)
 	}
 }
 
 // UpdatesSince returns at most max updates on the path between index and the
 // Manager's current tip.
 func (m *Manager) UpdatesSince(index types.ChainIndex, maxBlocks int) (rus []RevertUpdate, aus []ApplyUpdate, err error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ss, release := m.snapshot()
+	defer release()
+	tip := ss.TipState()
 	onBestChain := func(index types.ChainIndex) bool {
-		bi, _ := m.store.BestIndex(index.Height)
+		bi, _ := ss.BestIndex(index.Height)
 		return bi.ID == index.ID || index == types.ChainIndex{}
 	}
 
-	for index != m.tipState.Index && len(rus)+len(aus) < maxBlocks {
+	for index != tip.Index && len(rus)+len(aus) < maxBlocks {
 		// revert until we are on the best chain, then apply
 		if !onBestChain(index) {
-			b, bs, cs, ok := blockAndParent(m.store, index.ID)
+			b, bs, cs, ok := blockAndParent(ss, index.ID)
 			if !ok {
 				return nil, nil, fmt.Errorf("%w %v", ErrMissingBlock, index)
 			} else if bs == nil {
@@ -575,17 +619,17 @@ func (m *Manager) UpdatesSince(index types.ChainIndex, maxBlocks int) (rus []Rev
 		} else {
 			// special case: if index is uninitialized, we're starting from genesis
 			if index == (types.ChainIndex{}) {
-				index, _ = m.store.BestIndex(0)
+				index, _ = ss.BestIndex(0)
 			} else {
-				index, _ = m.store.BestIndex(index.Height + 1)
+				index, _ = ss.BestIndex(index.Height + 1)
 			}
-			b, bs, cs, ok := blockAndParent(m.store, index.ID)
+			b, bs, cs, ok := blockAndParent(ss, index.ID)
 			if !ok {
 				return nil, nil, fmt.Errorf("%w %v", ErrMissingBlock, index)
 			} else if bs == nil {
 				return nil, nil, fmt.Errorf("missing supplement for block %v", index)
 			}
-			ancestorTimestamp, ok := m.store.AncestorTimestamp(b.ParentID)
+			ancestorTimestamp, ok := ss.AncestorTimestamp(b.ParentID)
 			if !ok && index.Height != 0 {
 				return nil, nil, fmt.Errorf("missing ancestor timestamp for block %v", b.ParentID)
 			}
@@ -600,13 +644,13 @@ func (m *Manager) UpdatesSince(index types.ChainIndex, maxBlocks int) (rus []Rev
 // chain changes. The fn is called with the new tip. It returns a function that
 // removes fn from the set.
 func (m *Manager) OnReorg(fn func(types.ChainIndex)) (cancel func()) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	_, unlock := m.scratchpad()
+	defer unlock()
 	key := frand.Entropy128()
 	m.onReorg[key] = fn
 	return func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
+		_, unlock := m.scratchpad()
+		defer unlock()
 		delete(m.onReorg, key)
 	}
 }
@@ -615,20 +659,21 @@ func (m *Manager) OnReorg(fn func(types.ChainIndex)) (cancel func()) {
 // transaction pool may have changed. It returns a function that removes fn from
 // the set.
 func (m *Manager) OnPoolChange(fn func()) (cancel func()) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	_, unlock := m.scratchpad()
+	defer unlock()
 	key := frand.Entropy128()
 	m.onPool[key] = fn
 	return func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
+		_, unlock := m.scratchpad()
+		defer unlock()
 		delete(m.onPool, key)
 	}
 }
 
-func (m *Manager) revalidatePool() {
+func (m *Manager) revalidatePool(ss StoreSnapshot) {
 	log := m.log.Named("revalidatePool")
-	txpoolMaxWeight := m.tipState.MaxBlockWeight() * 10
+	tip := ss.TipState()
+	txpoolMaxWeight := tip.MaxBlockWeight() * 10
 	if m.txpool.ms != nil && m.txpool.weight < txpoolMaxWeight {
 		return
 	}
@@ -650,14 +695,14 @@ func (m *Manager) revalidatePool() {
 			txnFees = append(txnFees, feeTxn{
 				index:  i,
 				fees:   txn.TotalFees(),
-				weight: m.tipState.TransactionWeight(txn),
+				weight: tip.TransactionWeight(txn),
 			})
 		}
 		for i, txn := range m.txpool.v2txns {
 			txnFees = append(txnFees, feeTxn{
 				index:  i,
 				fees:   txn.MinerFee,
-				weight: m.tipState.V2TransactionWeight(txn),
+				weight: tip.V2TransactionWeight(txn),
 				v2:     true,
 			})
 		}
@@ -688,7 +733,7 @@ func (m *Manager) revalidatePool() {
 	for txid := range m.txpool.indices {
 		delete(m.txpool.indices, txid)
 	}
-	m.txpool.ms = consensus.NewMidState(m.tipState)
+	m.txpool.ms = consensus.NewMidState(tip)
 	m.txpool.txns = append(m.txpool.txns, m.txpool.lastReverted...)
 	m.txpool.weight = 0
 	filtered := m.txpool.txns[:0]
@@ -698,14 +743,14 @@ func (m *Manager) revalidatePool() {
 			// already in the pool
 			continue
 		}
-		ts := m.store.SupplementTipTransaction(txn)
+		ts := ss.SupplementTipTransaction(txn)
 		if err := consensus.ValidateTransaction(m.txpool.ms, txn, ts); err != nil {
 			log.Debug("dropping invalid pool transaction", zap.Stringer("id", txn.ID()), zap.Error(err))
 			continue
 		}
 		m.txpool.ms.ApplyTransaction(txn, ts)
 		m.txpool.indices[id] = len(filtered)
-		m.txpool.weight += m.tipState.TransactionWeight(txn)
+		m.txpool.weight += tip.TransactionWeight(txn)
 		filtered = append(filtered, txn)
 	}
 	m.txpool.txns = filtered
@@ -723,13 +768,13 @@ func (m *Manager) revalidatePool() {
 		}
 		m.txpool.ms.ApplyV2Transaction(txn)
 		m.txpool.indices[id] = len(v2filtered)
-		m.txpool.weight += m.tipState.V2TransactionWeight(txn)
+		m.txpool.weight += tip.V2TransactionWeight(txn)
 		v2filtered = append(v2filtered, txn)
 	}
 	m.txpool.v2txns = v2filtered
 }
 
-func (m *Manager) computeMedianFee() types.Currency {
+func (m *Manager) computeMedianFee(ss StoreSnapshot) types.Currency {
 	if m.txpool.medianFee != nil {
 		return *m.txpool.medianFee
 	}
@@ -765,8 +810,8 @@ func (m *Manager) computeMedianFee() types.Currency {
 	}
 	prevFees := make([]types.Currency, 0, 10)
 	for i := uint64(0); i < 10; i++ {
-		index, ok1 := m.store.BestIndex(m.tipState.Index.Height - i)
-		b, _, cs, ok2 := blockAndParent(m.store, index.ID)
+		index, ok1 := ss.BestIndex(ss.TipState().Index.Height - i)
+		b, _, cs, ok2 := blockAndParent(ss, index.ID)
 		if ok1 && ok2 {
 			prevFees = append(prevFees, calculateBlockMedianFee(cs, b))
 		}
@@ -1002,9 +1047,9 @@ func (m *Manager) applyPoolUpdate(cau consensus.ApplyUpdate, cs consensus.State)
 // PoolTransaction returns the transaction with the specified ID, if it is
 // currently in the pool.
 func (m *Manager) PoolTransaction(id types.TransactionID) (types.Transaction, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.revalidatePool()
+	sp, unlock := m.scratchpad()
+	defer unlock()
+	m.revalidatePool(sp)
 	i, ok := m.txpool.indices[id]
 	if !ok {
 		return types.Transaction{}, false
@@ -1015,18 +1060,18 @@ func (m *Manager) PoolTransaction(id types.TransactionID) (types.Transaction, bo
 // PoolTransactions returns the transactions currently in the txpool. Any prefix
 // of the returned slice constitutes a valid transaction set.
 func (m *Manager) PoolTransactions() []types.Transaction {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.revalidatePool()
+	sp, unlock := m.scratchpad()
+	defer unlock()
+	m.revalidatePool(sp)
 	return slices.Clone(m.txpool.txns)
 }
 
 // V2PoolTransaction returns the v2 transaction with the specified ID, if it is
 // currently in the pool.
 func (m *Manager) V2PoolTransaction(id types.TransactionID) (types.V2Transaction, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.revalidatePool()
+	sp, unlock := m.scratchpad()
+	defer unlock()
+	m.revalidatePool(sp)
 	i, ok := m.txpool.indices[id]
 	if !ok {
 		return types.V2Transaction{}, false
@@ -1037,9 +1082,9 @@ func (m *Manager) V2PoolTransaction(id types.TransactionID) (types.V2Transaction
 // V2PoolTransactions returns the v2 transactions currently in the txpool. Any
 // prefix of the returned slice constitutes a valid transaction set.
 func (m *Manager) V2PoolTransactions() []types.V2Transaction {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.revalidatePool()
+	sp, unlock := m.scratchpad()
+	defer unlock()
+	m.revalidatePool(sp)
 	v2txns := make([]types.V2Transaction, len(m.txpool.v2txns))
 	for i, txn := range m.txpool.v2txns {
 		v2txns[i] = txn.DeepCopy()
@@ -1050,9 +1095,9 @@ func (m *Manager) V2PoolTransactions() []types.V2Transaction {
 // TransactionsForPartialBlock returns the transactions in the txpool with the
 // specified hashes.
 func (m *Manager) TransactionsForPartialBlock(missing []types.Hash256) (txns []types.Transaction, v2txns []types.V2Transaction) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.revalidatePool()
+	sp, unlock := m.scratchpad()
+	defer unlock()
+	m.revalidatePool(sp)
 	want := make(map[types.Hash256]bool)
 	for _, h := range missing {
 		want[h] = true
@@ -1079,11 +1124,11 @@ func (m *Manager) TransactionsForPartialBlock(missing []types.Hash256) (txns []t
 // RecommendedFee returns the recommended fee (per weight unit) to ensure a high
 // probability of inclusion in the next block.
 func (m *Manager) RecommendedFee() types.Currency {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.revalidatePool()
+	sp, unlock := m.scratchpad()
+	defer unlock()
+	m.revalidatePool(sp)
 
-	medianFee := m.computeMedianFee()
+	medianFee := m.computeMedianFee(sp)
 
 	// calculate a fee relative to the total txpool weight
 	//
@@ -1116,9 +1161,9 @@ func (m *Manager) RecommendedFee() types.Currency {
 // UnconfirmedParents returns the transactions in the txpool that are referenced
 // by txn.
 func (m *Manager) UnconfirmedParents(txn types.Transaction) []types.Transaction {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.revalidatePool()
+	sp, unlock := m.scratchpad()
+	defer unlock()
+	m.revalidatePool(sp)
 
 	parentMap := m.computeParentMap()
 	var parents []types.Transaction
@@ -1168,9 +1213,9 @@ func (m *Manager) UnconfirmedParents(txn types.Transaction) []types.Transaction 
 // tip, the transaction will be updated. The transaction set includes the parents
 // and the transaction itself in an order valid for broadcasting.
 func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transaction) (types.ChainIndex, []types.V2Transaction, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.revalidatePool()
+	sp, unlock := m.scratchpad()
+	defer unlock()
+	m.revalidatePool(sp)
 
 	// get the transaction's parents
 	parentMap := m.computeParentMap()
@@ -1215,26 +1260,27 @@ func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transacti
 	}
 
 	// update the transaction's basis to match tip
-	txns, err := m.updateV2TransactionProofs(append(parents, txn), basis, m.tipState.Index)
+	tip := sp.TipState().Index
+	txns, err := m.updateV2TransactionProofs(sp, append(parents, txn), basis, tip)
 	if err != nil {
 		return types.ChainIndex{}, nil, fmt.Errorf("failed to update transaction set basis: %w", err)
 	}
-	return m.tipState.Index, txns, nil
+	return tip, txns, nil
 }
 
-func (m *Manager) checkTxnSet(txns []types.Transaction, v2txns []types.V2Transaction) (bool, error) {
+func (m *Manager) checkTxnSet(sp StoreScratchpad, txns []types.Transaction, v2txns []types.V2Transaction) (bool, error) {
 	if err := checkEphemeralOutputs(v2txns); err != nil {
 		return false, err
 	} else if err := checkFileContractRevisions(v2txns); err != nil {
 		return false, err
 	}
 	allInPool := true
-	ms := consensus.NewMidState(m.tipState)
+	ms := consensus.NewMidState(sp.TipState())
 	for _, txn := range txns {
 		if _, ok := m.txpool.indices[txn.ID()]; !ok {
 			allInPool = false
 		}
-		ts := m.store.SupplementTipTransaction(txn)
+		ts := sp.SupplementTipTransaction(txn)
 		if err := consensus.ValidateTransaction(ms, txn, ts); err != nil {
 			return false, fmt.Errorf("transaction %v is invalid: %w", txn.ID(), err)
 		}
@@ -1252,10 +1298,10 @@ func (m *Manager) checkTxnSet(txns []types.Transaction, v2txns []types.V2Transac
 	return allInPool, nil
 }
 
-func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to types.ChainIndex) (updated []types.V2Transaction, err error) {
+func (m *Manager) updateV2TransactionProofs(ss StoreSnapshot, txns []types.V2Transaction, from, to types.ChainIndex) (updated []types.V2Transaction, err error) {
 	// first validate the transaction set against its claimed basis; attempting
 	// to update an invalid proof can cause a panic
-	basisState, ok := m.store.State(from.ID)
+	basisState, ok := ss.State(from.ID)
 	if !ok {
 		return nil, fmt.Errorf("couldn't find state for basis %v", from)
 	}
@@ -1265,7 +1311,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		}
 	}
 
-	revert, apply, err := m.reorgPath(from, to, 144)
+	revert, apply, err := m.reorgPath(ss, from, to, 144)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't determine reorg path from %v to %v: %w", from, to, err)
 	}
@@ -1276,7 +1322,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		updated = append(updated, txn.DeepCopy())
 	}
 	for _, index := range revert {
-		b, bs, cs, ok := blockAndParent(m.store, index.ID)
+		b, bs, cs, ok := blockAndParent(ss, index.ID)
 		if !ok {
 			return nil, fmt.Errorf("missing reverted block at index %v", index)
 		} else if bs == nil {
@@ -1293,7 +1339,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 	}
 
 	for _, index := range apply {
-		b, bs, cs, ok := blockAndParent(m.store, index.ID)
+		b, bs, cs, ok := blockAndParent(ss, index.ID)
 		if !ok {
 			return nil, fmt.Errorf("missing applied block at index %v", index)
 		} else if bs == nil {
@@ -1301,7 +1347,7 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 		} else if err := m.overwriteExpirations(b, bs); err != nil {
 			return nil, fmt.Errorf("failed to overwrite expirations for block %v: %w", index, err)
 		}
-		ancestorTimestamp, _ := m.store.AncestorTimestamp(b.ParentID)
+		ancestorTimestamp, _ := ss.AncestorTimestamp(b.ParentID)
 		cs, cau := consensus.ApplyBlock(cs, b, *bs, ancestorTimestamp)
 
 		// get the transactions that were confirmed in this block
@@ -1371,20 +1417,21 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 // of the transactions are added to the pool. If all of the transactions are
 // already known to the pool, AddPoolTransactions returns true.
 func (m *Manager) AddPoolTransactions(txns []types.Transaction) (known bool, err error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.revalidatePool()
+	sp, unlock := m.scratchpad()
+	defer unlock()
+	m.revalidatePool(sp)
 
-	if known, err := m.checkTxnSet(txns, nil); known || err != nil {
+	if known, err := m.checkTxnSet(sp, txns, nil); known || err != nil {
 		return known, err
 	}
 
+	tip := sp.TipState()
 	for _, txn := range txns {
 		txid := txn.ID()
 		if _, ok := m.txpool.indices[txid]; ok {
 			continue // skip transactions already in the pool
 		}
-		ts := m.store.SupplementTipTransaction(txn)
+		ts := sp.SupplementTipTransaction(txn)
 		if err := consensus.ValidateTransaction(m.txpool.ms, txn, ts); err != nil {
 			m.txpool.ms = nil // force revalidation next time the pool is queried
 			return false, fmt.Errorf("transaction %v conflicts with pool: %w", txid, err)
@@ -1392,7 +1439,7 @@ func (m *Manager) AddPoolTransactions(txns []types.Transaction) (known bool, err
 		m.txpool.ms.ApplyTransaction(txn, ts)
 		m.txpool.indices[txid] = len(m.txpool.txns)
 		m.txpool.txns = append(m.txpool.txns, txn)
-		m.txpool.weight += m.tipState.TransactionWeight(txn)
+		m.txpool.weight += tip.TransactionWeight(txn)
 	}
 	// invalidate caches
 	m.txpool.medianFee = nil
@@ -1402,12 +1449,10 @@ func (m *Manager) AddPoolTransactions(txns []types.Transaction) (known bool, err
 	for _, fn := range m.onPool {
 		fns = append(fns, fn)
 	}
-	m.mu.Unlock()
+	unlock()
 	for _, fn := range fns {
 		fn()
 	}
-	m.mu.Lock()
-
 	return false, nil
 }
 
@@ -1422,9 +1467,9 @@ func (m *Manager) UpdateV2TransactionSet(txns []types.V2Transaction, from, to ty
 	if from == to {
 		return txns, nil
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.updateV2TransactionProofs(txns, from, to)
+	ss, unlock := m.snapshot()
+	defer unlock()
+	return m.updateV2TransactionProofs(ss, txns, from, to)
 }
 
 // AddV2PoolTransactions validates a transaction set and adds it to the txpool.
@@ -1442,23 +1487,24 @@ func (m *Manager) UpdateV2TransactionSet(txns []types.V2Transaction, from, to ty
 // proofs will be updated accordingly. The original transactions are not
 // modified and none of their memory is retained.
 func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2Transaction) (known bool, _ error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.revalidatePool()
+	sp, unlock := m.scratchpad()
+	defer unlock()
+	m.revalidatePool(sp)
 
 	// take ownership of Merkle proofs, and update them to the current tip
 	txns = slices.Clone(txns)
 	for i := range txns {
 		txns[i] = txns[i].DeepCopy()
 	}
-	txns, err := m.updateV2TransactionProofs(txns, basis, m.tipState.Index)
+	txns, err := m.updateV2TransactionProofs(sp, txns, basis, sp.TipState().Index)
 	if err != nil {
 		return false, fmt.Errorf("failed to update set basis: %w", err)
 	}
-	if known, err := m.checkTxnSet(nil, txns); known || err != nil {
+	if known, err := m.checkTxnSet(sp, nil, txns); known || err != nil {
 		return known, err
 	}
 
+	tip := sp.TipState()
 	for _, txn := range txns {
 		txid := txn.ID()
 		if _, ok := m.txpool.indices[txid]; ok {
@@ -1471,33 +1517,31 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 		m.txpool.ms.ApplyV2Transaction(txn)
 		m.txpool.indices[txid] = len(m.txpool.v2txns)
 		m.txpool.v2txns = append(m.txpool.v2txns, txn)
-		m.txpool.weight += m.tipState.V2TransactionWeight(txn)
+		m.txpool.weight += tip.V2TransactionWeight(txn)
 	}
 	// invalidate caches
 	m.txpool.medianFee = nil
 
-	// release lock while notifying listeners
+	// notify listeners, without holding the write lock
 	fns := make([]func(), 0, len(m.onPool))
 	for _, fn := range m.onPool {
 		fns = append(fns, fn)
 	}
-	m.mu.Unlock()
+	unlock()
 	for _, fn := range fns {
 		fn()
 	}
-	m.mu.Lock()
-
 	return false, nil
 }
 
-// NewManager returns a Manager initialized with the provided Store and State.
-func NewManager(store Store, cs consensus.State, opts ...ManagerOption) *Manager {
+// NewManager returns a Manager initialized with the provided Store. The Store
+// must not have any unflushed writes.
+func NewManager(store Store, opts ...ManagerOption) *Manager {
 	m := &Manager{
-		log:      zap.NewNop(),
-		store:    store,
-		tipState: cs,
-		onReorg:  make(map[[16]byte]func(types.ChainIndex)),
-		onPool:   make(map[[16]byte]func()),
+		log:     zap.NewNop(),
+		store:   store,
+		onReorg: make(map[[16]byte]func(types.ChainIndex)),
+		onPool:  make(map[[16]byte]func()),
 
 		expiringFileContractOrder: defaultExpiringFileContractOrder,
 	}

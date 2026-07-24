@@ -49,60 +49,63 @@ func NewZapMigrationLogger(log *zap.Logger) MigrationLogger {
 }
 
 func migrateDB(dbs *DBStore, l MigrationLogger) error {
-	version := dbs.bucket(bVersion).getRaw(bVersion)
+	scratch := dbs.scratchpad
+	sp := scratch.sp
+	version := readBucket(sp, bVersion).getRaw(bVersion)
 	switch version[0] {
 	case 1, 2, 3:
 		l.Printf("Removing sidechain blocks")
 		toDelete := make(map[types.BlockID]bool)
-		for id := range dbs.db.Bucket(bBlocks).Iter() {
+		for id := range sp.Bucket(bBlocks).Iter() {
 			toDelete[(types.BlockID)(id)] = true
 		}
-		for _, id := range dbs.db.Bucket(bMainChain).Iter() {
+		for _, id := range sp.Bucket(bMainChain).Iter() {
 			if len(id) == 32 {
 				delete(toDelete, (types.BlockID)(id))
 			}
 		}
 		for id := range toDelete {
-			dbs.bucket(bBlocks).delete(id[:])
-			dbs.bucket(bStates).delete(id[:])
+			scratch.bucket(bBlocks).delete(id[:])
+			scratch.bucket(bStates).delete(id[:])
 		}
 		l.Printf("Removing block supplement data")
-		for id := range dbs.db.Bucket(bFileContractElements).Iter() {
-			dbs.bucket(bFileContractElements).delete(id)
+		for id := range sp.Bucket(bFileContractElements).Iter() {
+			scratch.bucket(bFileContractElements).delete(id)
 		}
-		for id := range dbs.db.Bucket(bSiacoinElements).Iter() {
-			dbs.bucket(bSiacoinElements).delete(id)
+		for id := range sp.Bucket(bSiacoinElements).Iter() {
+			scratch.bucket(bSiacoinElements).delete(id)
 		}
-		for id := range dbs.db.Bucket(bSiafundElements).Iter() {
-			dbs.bucket(bSiafundElements).delete(id)
+		for id := range sp.Bucket(bSiafundElements).Iter() {
+			scratch.bucket(bSiafundElements).delete(id)
 		}
-		if dbs.shouldFlush() {
-			if err := dbs.Flush(); err != nil {
+		if scratch.shouldFlush() {
+			if err := scratch.Flush(); err != nil {
 				return err
 			}
 		}
 
 		l.Printf("Recomputing main chain")
-		v1Blocks := min(dbs.getHeight(), dbs.n.HardforkV2.RequireHeight) + 1
-		cs := dbs.n.GenesisState()
+		n := dbs.n
+		v1Blocks := min(getHeight(sp), n.HardforkV2.RequireHeight) + 1
+		cs := n.GenesisState()
 		for height := range v1Blocks {
-			index, _ := dbs.BestIndex(height)
-			_, b, _, _ := dbs.getBlock(index.ID)
+			index, _ := bestIndex(sp, height)
+			_, b, _, _ := getBlock(sp, index.ID)
 			if b == nil {
 				return errors.New("missing block needed for migration")
 			}
-			bs := dbs.SupplementTipBlock(*b)
-			dbs.putBlock(b.Header(), b, &bs)
+			bs := supplementTipBlock(sp, n, *b)
+			scratch.AddBlock(*b, &bs)
 			// v2 blocks may be invalid
-			if height >= dbs.n.HardforkV2.AllowHeight {
+			if height >= n.HardforkV2.AllowHeight {
 				if err := consensus.ValidateBlock(cs, *b, bs); err != nil && index.Height > 0 {
 					l.Printf("Block %v is invalid (%v), removing it and all subsequent blocks", index, err)
 					for ; height < v1Blocks; height++ {
-						if index, ok := dbs.BestIndex(height); ok {
-							dbs.bucket(bBlocks).delete(index.ID[:])
-							dbs.bucket(bStates).delete(index.ID[:])
-							if dbs.shouldFlush() {
-								if err := dbs.Flush(); err != nil {
+						if index, ok := bestIndex(sp, height); ok {
+							scratch.bucket(bBlocks).delete(index.ID[:])
+							scratch.bucket(bStates).delete(index.ID[:])
+							if scratch.shouldFlush() {
+								if err := scratch.Flush(); err != nil {
 									return err
 								}
 							}
@@ -112,22 +115,17 @@ func migrateDB(dbs *DBStore, l MigrationLogger) error {
 				}
 			}
 			var cau consensus.ApplyUpdate
-			ancestorTimestamp, _ := dbs.AncestorTimestamp(b.ParentID)
+			ancestorTimestamp, _ := ancestorTimestamp(sp, n, b.ParentID)
 			cs, cau = consensus.ApplyBlock(cs, *b, bs, ancestorTimestamp)
-			dbs.putState(cs)
-			dbs.ApplyBlock(cs, cau)
-			if dbs.shouldFlush() {
-				if err := dbs.Flush(); err != nil {
-					return err
-				}
-			}
+			scratch.AddState(cs)
+			scratch.ApplyBlock(cs, cau) // flushes as necessary
 			l.SetProgress(99.9 * float64(height) / float64(v1Blocks))
 		}
-		if err := dbs.Flush(); err != nil {
+		if err := scratch.Flush(); err != nil {
 			return err
 		}
-		dbs.bucket(bVersion).putRaw(bVersion, []byte{4})
-		if err := dbs.Flush(); err != nil {
+		scratch.bucket(bVersion).putRaw(bVersion, []byte{4})
+		if err := scratch.Flush(); err != nil {
 			return err
 		}
 		l.SetProgress(100)

@@ -5,52 +5,21 @@ import (
 	"encoding/json"
 	"errors"
 	"math/bits"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils"
 	"go.sia.tech/coreutils/chain"
 	"go.sia.tech/coreutils/testutil"
 	"lukechampine.com/frand"
 )
 
-// NOTE: due to a bug in the transaction validation code, calculating payouts
-// is way harder than it needs to be. Tax is calculated on the post-tax
-// contract payout (instead of the sum of the renter and host payouts). So the
-// equation for the payout is:
-//
-//	   payout = renterPayout + hostPayout + payout*tax
-//	∴  payout = (renterPayout + hostPayout) / (1 - tax)
-//
-// This would work if 'tax' were a simple fraction, but because the tax must
-// be evenly distributed among siafund holders, 'tax' is actually a function
-// that multiplies by a fraction and then rounds down to the nearest multiple
-// of the siafund count. Thus, when inverting the function, we have to make an
-// initial guess and then fix the rounding error.
 func taxAdjustedPayout(target types.Currency) types.Currency {
-	// compute initial guess as target * (1 / 1-tax); since this does not take
-	// the siafund rounding into account, the guess will be up to
-	// types.SiafundCount greater than the actual payout value.
 	guess := target.Mul64(1000).Div64(961)
-
-	// now, adjust the guess to remove the rounding error. We know that:
-	//
-	//   (target % types.SiafundCount) == (payout % types.SiafundCount)
-	//
-	// therefore, we can simply adjust the guess to have this remainder as
-	// well. The only wrinkle is that, since we know guess >= payout, if the
-	// guess remainder is smaller than the target remainder, we must subtract
-	// an extra types.SiafundCount.
-	//
-	// for example, if target = 87654321 and types.SiafundCount = 10000, then:
-	//
-	//   initial_guess  = 87654321 * (1 / (1 - tax))
-	//                  = 91211572
-	//   target % 10000 =     4321
-	//   adjusted_guess = 91204321
-
 	mod64 := func(c types.Currency, v uint64) types.Currency {
 		var r uint64
 		if c.Hi < v {
@@ -72,20 +41,22 @@ func taxAdjustedPayout(target types.Currency) types.Currency {
 
 func TestGetEmptyBlockID(t *testing.T) {
 	n, genesisBlock := testutil.V2Network()
-	store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
+	store, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm := chain.NewManager(store, tipState)
+	cm := chain.NewManager(store)
 	_, _ = cm.Block(types.BlockID{})
 }
 
 func TestExpiringFileContracts(t *testing.T) {
 	n, genesisBlock := chain.TestnetZen()
-	store, cs, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
+	store, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	sp := store.Scratchpad()
+	cs := sp.TipState()
 
 	// create two file contracts with the same expiration height
 	b := types.Block{
@@ -98,35 +69,35 @@ func TestExpiringFileContracts(t *testing.T) {
 			},
 		}},
 	}
-	bs := store.SupplementTipBlock(b)
+	bs := sp.SupplementTipBlock(b)
 	var cau consensus.ApplyUpdate
 	cs, cau = consensus.ApplyBlock(cs, b, bs, time.Time{})
-	store.AddState(cs)
-	store.AddBlock(b, &bs)
-	store.ApplyBlock(cs, cau)
+	sp.AddState(cs)
+	sp.AddBlock(b, &bs)
+	sp.ApplyBlock(cs, cau)
 
 	// apply another block, causing the expired contracts to be removed
 	b = types.Block{
 		ParentID:     cs.Index.ID,
 		MinerPayouts: []types.SiacoinOutput{{Value: cs.BlockReward()}},
 	}
-	bs = store.SupplementTipBlock(b)
+	bs = sp.SupplementTipBlock(b)
 	if len(bs.ExpiringFileContracts) != 2 {
 		t.Fatalf("expected 2 file contracts, got %d", len(bs.ExpiringFileContracts))
 	}
 	cs, cau = consensus.ApplyBlock(cs, b, bs, time.Time{})
-	store.AddState(cs)
-	store.AddBlock(b, &bs)
-	store.ApplyBlock(cs, cau)
+	sp.AddState(cs)
+	sp.AddBlock(b, &bs)
+	sp.ApplyBlock(cs, cau)
 
 	// revert the block, causing the expired contracts to be re-created
-	prev, _ := store.State(b.ParentID)
+	prev, _ := sp.State(b.ParentID)
 	cru := consensus.RevertBlock(prev, b, bs)
-	store.RevertBlock(prev, cru)
+	sp.RevertBlock(prev, cru)
 
 	// the supplement for the next block should contain the same expiring
 	// contracts as before, in the same order
-	bs2 := store.SupplementTipBlock(types.Block{ParentID: cs.Index.ID})
+	bs2 := sp.SupplementTipBlock(types.Block{ParentID: cs.Index.ID})
 	if !reflect.DeepEqual(bs, bs2) {
 		t.Fatalf("expected supplements to be the same")
 	}
@@ -147,11 +118,11 @@ func TestReorgExpiringFileContractOrder(t *testing.T) {
 	giftAmount := types.Siacoins(1000)
 	giftUTXOID := genesis.Transactions[0].SiacoinOutputID(0)
 
-	db1, ts1, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	db1, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm1 := chain.NewManager(db1, ts1)
+	cm1 := chain.NewManager(db1)
 
 	newFileContract := func() types.FileContract {
 		return types.FileContract{
@@ -273,11 +244,11 @@ func TestReorgExpiringFileContractOrder(t *testing.T) {
 		blocks = append(blocks, cau.Block)
 	}
 
-	db2, ts2, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	db2, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm2 := chain.NewManager(db2, ts2)
+	cm2 := chain.NewManager(db2)
 
 	// applying the blocks should fail because the expiring file contract
 	// order is not the same because of the missing revert.
@@ -286,7 +257,7 @@ func TestReorgExpiringFileContractOrder(t *testing.T) {
 	}
 
 	// reinit the chain manager with the correct expiring contract order
-	cm2 = chain.NewManager(db2, ts2, chain.WithExpiringContractOrder(map[types.BlockID][]types.FileContractID{
+	cm2 = chain.NewManager(db2, chain.WithExpiringContractOrder(map[types.BlockID][]types.FileContractID{
 		expirationIndex.ID: {
 			contractD,
 			contractA,
@@ -298,11 +269,11 @@ func TestReorgExpiringFileContractOrder(t *testing.T) {
 	}
 
 	// init a fresh chain manager with the correct expiring contract order
-	db3, ts3, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	db3, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm3 := chain.NewManager(db3, ts3, chain.WithExpiringContractOrder(map[types.BlockID][]types.FileContractID{
+	cm3 := chain.NewManager(db3, chain.WithExpiringContractOrder(map[types.BlockID][]types.FileContractID{
 		expirationIndex.ID: {
 			contractD,
 			contractA,
@@ -342,17 +313,20 @@ func TestReorgExpiringFileContractOrder(t *testing.T) {
 func TestPruneBlocks(t *testing.T) {
 	n, genesisBlock := testutil.V2Network()
 
-	store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
+	store, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm := chain.NewManager(store, tipState)
+	cm := chain.NewManager(store)
 
 	// mine a bunch of blocks
 	testutil.MineBlocks(t, cm, types.VoidAddress, 100)
 
 	// prune up to height 50
 	cm.PruneBlocks(50)
+	// mine another block; pruned blocks are only guaranteed to disappear from
+	// read-only methods at the next commit
+	testutil.MineBlocks(t, cm, types.VoidAddress, 1)
 
 	// ensure blocks < 50 are pruned
 	for height := range uint64(50) {
@@ -374,4 +348,93 @@ func TestPruneBlocks(t *testing.T) {
 			t.Fatalf("block ID mismatch at height %d: expected %s, got %s", height, index.ID, block.ID())
 		}
 	}
+}
+
+func testDBSnapshot(t *testing.T, db chain.DB) {
+	t.Helper()
+
+	sp := db.Scratchpad()
+	b, err := sp.CreateBucket([]byte("test"))
+	if err != nil {
+		t.Fatal(err)
+	} else if err := b.Put([]byte("foo"), []byte("bar")); err != nil {
+		t.Fatal(err)
+	} else if err := sp.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	// unflushed writes should be visible via the scratchpad, but not via
+	// Snapshot
+	b = sp.Bucket([]byte("test"))
+	if err := b.Put([]byte("baz"), []byte("quux")); err != nil {
+		t.Fatal(err)
+	} else if err := b.Delete([]byte("foo")); err != nil {
+		t.Fatal(err)
+	} else if !bytes.Equal(b.Get([]byte("baz")), []byte("quux")) {
+		t.Fatal("expected unflushed write to be visible via the scratchpad")
+	}
+	var iterated int
+	for k, v := range b.Iter() {
+		if !bytes.Equal(k, []byte("baz")) || !bytes.Equal(v, []byte("quux")) {
+			t.Fatal("unexpected key-value pair:", string(k), string(v))
+		}
+		iterated++
+	}
+	if iterated != 1 {
+		t.Fatal("expected unflushed write to be visible via scratchpad iteration")
+	}
+	snapshot, release := db.Snapshot()
+	if vb := snapshot.Bucket([]byte("nonexistent")); vb != nil {
+		t.Fatal("expected nil bucket for nonexistent bucket")
+	}
+	vb := snapshot.Bucket([]byte("test"))
+	if vb == nil {
+		t.Fatal("expected snapshot bucket to exist")
+	} else if vb.Get([]byte("baz")) != nil {
+		t.Fatal("expected unflushed write to not be visible via Snapshot")
+	} else if !bytes.Equal(vb.Get([]byte("foo")), []byte("bar")) {
+		t.Fatal("expected flushed write to be visible via Snapshot")
+	}
+
+	// open snapshots are unaffected by Flush
+	if err := sp.Flush(); err != nil {
+		t.Fatal(err)
+	} else if vb.Get([]byte("baz")) != nil {
+		t.Fatal("expected open snapshot to be unaffected by Flush")
+	} else if !bytes.Equal(vb.Get([]byte("foo")), []byte("bar")) {
+		t.Fatal("expected open snapshot to be unaffected by Flush")
+	}
+	release()
+
+	// a new snapshot should see the flushed writes
+	snapshot, release = db.Snapshot()
+	defer release()
+	vb = snapshot.Bucket([]byte("test"))
+	if !bytes.Equal(vb.Get([]byte("baz")), []byte("quux")) {
+		t.Fatal("expected flushed write to be visible via Snapshot")
+	} else if vb.Get([]byte("foo")) != nil {
+		t.Fatal("expected flushed delete to be visible via Snapshot")
+	}
+	for k, v := range vb.Iter() {
+		if !bytes.Equal(k, []byte("baz")) || !bytes.Equal(v, []byte("quux")) {
+			t.Fatal("unexpected key-value pair:", string(k), string(v))
+		}
+	}
+}
+
+func TestMemDBSnapshot(t *testing.T) {
+	testDBSnapshot(t, chain.NewMemDB())
+}
+
+func TestCacheDBSnapshot(t *testing.T) {
+	testDBSnapshot(t, chain.NewCacheDB(chain.NewMemDB()))
+}
+
+func TestBoltDBSnapshot(t *testing.T) {
+	bdb, err := coreutils.OpenBoltChainDB(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bdb.Close()
+	testDBSnapshot(t, bdb)
 }

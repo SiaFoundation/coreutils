@@ -24,69 +24,111 @@ func (b boltBucket) Iter() iter.Seq2[[]byte, []byte] {
 
 // BoltChainDB implements chain.DB with a BoltDB database.
 type BoltChainDB struct {
-	tx *bbolt.Tx
-	db *bbolt.DB
+	db         *bbolt.DB
+	scratchpad *boltDBScratchpad
 }
 
-func (db *BoltChainDB) newTx() (err error) {
-	if db.tx == nil {
-		db.tx, err = db.db.Begin(true)
+// boltDBScratchpad implements chain.DBScratchpad. It lazily opens a bbolt
+// write transaction, which accumulates writes until Flush commits it.
+type boltDBScratchpad struct {
+	db *bbolt.DB
+	tx *bbolt.Tx
+}
+
+func (s *boltDBScratchpad) newTx() (err error) {
+	if s.tx == nil {
+		s.tx, err = s.db.Begin(true)
 	}
 	return
 }
 
-// Bucket implements chain.DB.
-func (db *BoltChainDB) Bucket(name []byte) chain.DBBucket {
-	if err := db.newTx(); err != nil {
+// Bucket implements chain.DBScratchpad.
+func (s *boltDBScratchpad) Bucket(name []byte) chain.DBBucket {
+	if err := s.newTx(); err != nil {
 		panic(err)
 	}
-	b := db.tx.Bucket(name)
+	b := s.tx.Bucket(name)
 	if b == nil {
 		return nil
 	}
 	return boltBucket{b}
 }
 
-// CreateBucket implements chain.DB.
-func (db *BoltChainDB) CreateBucket(name []byte) (chain.DBBucket, error) {
-	if err := db.newTx(); err != nil {
+// CreateBucket implements chain.DBScratchpad.
+func (s *boltDBScratchpad) CreateBucket(name []byte) (chain.DBBucket, error) {
+	if err := s.newTx(); err != nil {
 		return nil, err
 	}
-	b, err := db.tx.CreateBucket(name)
+	b, err := s.tx.CreateBucket(name)
 	if err != nil {
 		return nil, err
 	}
 	return boltBucket{b}, nil
 }
 
-// Flush implements chain.DB.
-func (db *BoltChainDB) Flush() error {
-	if db.tx == nil {
+// Flush implements chain.DBScratchpad.
+func (s *boltDBScratchpad) Flush() error {
+	if s.tx == nil {
 		return nil
 	}
-	err := db.tx.Commit()
-	db.tx = nil
+	err := s.tx.Commit()
+	s.tx = nil
 	return err
 }
 
-// Cancel implements chain.DB.
-func (db *BoltChainDB) Cancel() {
-	if db.tx == nil {
+// Cancel implements chain.DBScratchpad.
+func (s *boltDBScratchpad) Cancel() {
+	if s.tx == nil {
 		return
 	}
-	db.tx.Rollback()
-	db.tx = nil
+	s.tx.Rollback()
+	s.tx = nil
 }
 
-// Close closes the BoltDB database.
+// Scratchpad implements chain.DB.
+func (db *BoltChainDB) Scratchpad() chain.DBScratchpad { return db.scratchpad }
+
+type boltDBSnapshot struct {
+	tx *bbolt.Tx
+}
+
+// Bucket implements chain.DBSnapshot.
+func (v boltDBSnapshot) Bucket(name []byte) chain.DBBucket {
+	b := v.tx.Bucket(name)
+	if b == nil {
+		return nil
+	}
+	return boltBucket{b}
+}
+
+func (v boltDBSnapshot) release() {
+	v.tx.Rollback()
+}
+
+// Snapshot implements chain.DB.
+func (db *BoltChainDB) Snapshot() (chain.DBSnapshot, func()) {
+	tx, err := db.db.Begin(false)
+	if err != nil {
+		panic(err)
+	}
+	s := boltDBSnapshot{tx}
+	return s, s.release
+}
+
+// Close flushes any pending writes and closes the BoltDB database.
 func (db *BoltChainDB) Close() error {
-	db.Flush()
+	if err := db.scratchpad.Flush(); err != nil {
+		return err
+	}
 	return db.db.Close()
 }
 
 // NewBoltChainDB creates a new BoltChainDB.
 func NewBoltChainDB(db *bbolt.DB) *BoltChainDB {
-	return &BoltChainDB{db: db}
+	return &BoltChainDB{
+		db:         db,
+		scratchpad: &boltDBScratchpad{db: db},
+	}
 }
 
 // OpenBoltChainDB opens a BoltDB database.

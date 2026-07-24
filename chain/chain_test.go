@@ -129,11 +129,11 @@ func TestV2Attestations(t *testing.T) {
 	}
 
 	t.Run("arbitrary data", func(t *testing.T) {
-		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
+		store, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		cm := chain.NewManager(store, tipState)
+		cm := chain.NewManager(store)
 		ms := newMemState()
 
 		// mine until a utxo is spendable
@@ -164,11 +164,11 @@ func TestV2Attestations(t *testing.T) {
 	})
 
 	t.Run("arbitrary data + attestation + no change output", func(t *testing.T) {
-		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
+		store, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		cm := chain.NewManager(store, tipState)
+		cm := chain.NewManager(store)
 		ms := newMemState()
 
 		// mine until a utxo is spendable
@@ -213,11 +213,11 @@ func TestV2Attestations(t *testing.T) {
 	})
 
 	t.Run("arbitrary data + attestation", func(t *testing.T) {
-		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
+		store, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		cm := chain.NewManager(store, tipState)
+		cm := chain.NewManager(store)
 		ms := newMemState()
 
 		// mine until a utxo is spendable
@@ -257,11 +257,11 @@ func TestV2Attestations(t *testing.T) {
 	})
 
 	t.Run("arbitrary data + attestation + change output", func(t *testing.T) {
-		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
+		store, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		cm := chain.NewManager(store, tipState)
+		cm := chain.NewManager(store)
 		ms := newMemState()
 
 		// mine until a utxo is spendable
