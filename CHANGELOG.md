@@ -1,3 +1,9 @@
+## 0.23.6 (2026-07-24)
+
+### Fixes
+
+- Use max of chain height and price table height when storing sectors.
+
 ## 0.23.5 (2026-07-08)
 
 ### Fixes
