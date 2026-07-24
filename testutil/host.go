@@ -18,10 +18,15 @@ import (
 	"go.uber.org/zap"
 )
 
+type ephemeralSector struct {
+	data       *[proto4.SectorSize]byte
+	expiration uint64
+}
+
 // An EphemeralSectorStore is an in-memory minimal rhp4.SectorStore for testing.
 type EphemeralSectorStore struct {
 	mu      sync.Mutex
-	sectors map[types.Hash256]*[proto4.SectorSize]byte
+	sectors map[types.Hash256]ephemeralSector
 }
 
 var _ rhp4.Sectors = (*EphemeralSectorStore)(nil)
@@ -60,10 +65,11 @@ func (es *EphemeralSectorStore) ReadSector(root types.Hash256, offset, length ui
 
 	es.mu.Lock()
 	defer es.mu.Unlock()
-	sector, ok := es.sectors[root]
+	s, ok := es.sectors[root]
 	if !ok {
 		return nil, nil, proto4.ErrSectorNotFound
 	}
+	sector := s.data
 	start, end := offset/proto4.LeafSize, (offset+length+proto4.LeafSize-1)/proto4.LeafSize
 	segmentStart, segmentEnd := proto4.SectorSubtreeRange(start, end)
 	subtreeCache := proto4.CachedSectorSubtrees(sector)
@@ -72,11 +78,22 @@ func (es *EphemeralSectorStore) ReadSector(root types.Hash256, offset, length ui
 }
 
 // StoreSector stores a sector in the EphemeralSectorStore.
-func (es *EphemeralSectorStore) StoreSector(root types.Hash256, sector *[proto4.SectorSize]byte, _ []types.Hash256, _ uint64) error {
+func (es *EphemeralSectorStore) StoreSector(root types.Hash256, sector *[proto4.SectorSize]byte, _ []types.Hash256, expiration uint64) error {
 	es.mu.Lock()
 	defer es.mu.Unlock()
-	es.sectors[root] = sector
+	es.sectors[root] = ephemeralSector{data: sector, expiration: expiration}
 	return nil
+}
+
+// SectorExpiration returns the expiration height of a stored sector.
+func (es *EphemeralSectorStore) SectorExpiration(root types.Hash256) (uint64, error) {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	s, ok := es.sectors[root]
+	if !ok {
+		return 0, proto4.ErrSectorNotFound
+	}
+	return s.expiration, nil
 }
 
 // An EphemeralContractor is an in-memory minimal rhp4.Contractor for testing.
@@ -564,7 +581,7 @@ func NewEphemeralSettingsReporter() *EphemeralSettingsReporter {
 // NewEphemeralSectorStore creates an EphemeralSectorStore for testing.
 func NewEphemeralSectorStore() *EphemeralSectorStore {
 	return &EphemeralSectorStore{
-		sectors: make(map[types.Hash256]*[proto4.SectorSize]byte),
+		sectors: make(map[types.Hash256]ephemeralSector),
 	}
 }
 

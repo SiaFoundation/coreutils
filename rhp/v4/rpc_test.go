@@ -2493,6 +2493,98 @@ func TestReadWriteSector(t *testing.T) {
 	}
 }
 
+func TestWriteSectorExpiry(t *testing.T) {
+	n, genesis := testutil.V2Network()
+	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
+
+	cm, w := startTestNode(t, n, genesis)
+
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
+
+	sr := testutil.NewEphemeralSettingsReporter()
+	sr.Update(proto4.HostSettings{
+		Release:             "test",
+		AcceptingContracts:  true,
+		WalletAddress:       w.Address(),
+		MaxCollateral:       types.Siacoins(10000),
+		MaxContractDuration: 1000,
+		RemainingStorage:    100 * proto4.SectorSize,
+		TotalStorage:        100 * proto4.SectorSize,
+		Prices: proto4.HostPrices{
+			ContractPrice: types.Siacoins(1).Div64(5), // 0.2 SC
+			StoragePrice:  types.NewCurrency64(100),   // 100 H / byte / block
+			IngressPrice:  types.NewCurrency64(100),   // 100 H / byte
+			EgressPrice:   types.NewCurrency64(100),   // 100 H / byte
+			Collateral:    types.NewCurrency64(200),
+		},
+	})
+	ss := testutil.NewEphemeralSectorStore()
+	c := testutil.NewEphemeralContractor(cm)
+
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, w, c, sr, ss, zap.NewNop())
+
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
+	if err != nil {
+		t.Fatal(err)
+	} else if settings.Prices.TipHeight != cm.Tip().Height {
+		t.Fatalf("expected prices tip height %v, got %v", cm.Tip().Height, settings.Prices.TipHeight)
+	}
+
+	fundAndSign := &fundAndSign{w, renterKey}
+	renterAllowance, hostCollateral := types.Siacoins(100), types.Siacoins(200)
+	formResult, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+		RenterPublicKey: renterKey.PublicKey(),
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 500,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := formResult.Contract
+
+	account := proto4.Account(renterKey.PublicKey())
+	fundResult, err := rhp4.RPCFundAccounts(context.Background(), transport, cm.TipState(), renterKey, revision, []proto4.AccountDeposit{
+		{Account: account, Amount: types.Siacoins(25)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision.Revision = fundResult.Revision
+	token := proto4.NewAccountToken(renterKey, hostKey.PublicKey())
+
+	// write a sector with fresh prices. The chain tip and the prices' tip
+	// height match, so the expiry is based on either.
+	writeResult, err := rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(frand.Bytes(1024)), 1024)
+	if err != nil {
+		t.Fatal(err)
+	} else if expiry, err := ss.SectorExpiration(writeResult.Root); err != nil {
+		t.Fatal(err)
+	} else if expiry != cm.Tip().Height+proto4.TempSectorDuration {
+		t.Fatalf("expected expiry %v, got %v", cm.Tip().Height+proto4.TempSectorDuration, expiry)
+	}
+
+	// mine a few blocks so the chain tip advances past the prices' tip height.
+	// The prices are still valid since their validity is time-based.
+	mineAndSync(t, cm, w.Address(), 10, w, c)
+	if cm.Tip().Height <= settings.Prices.TipHeight {
+		t.Fatalf("expected chain tip %v to be greater than prices tip height %v", cm.Tip().Height, settings.Prices.TipHeight)
+	}
+
+	// write a sector with the stale prices. The expiry should be based on the
+	// chain tip rather than the prices' tip height.
+	writeResult, err = rhp4.RPCWriteSector(context.Background(), transport, settings.Prices, token, bytes.NewReader(frand.Bytes(1024)), 1024)
+	if err != nil {
+		t.Fatal(err)
+	} else if expiry, err := ss.SectorExpiration(writeResult.Root); err != nil {
+		t.Fatal(err)
+	} else if expiry != cm.Tip().Height+proto4.TempSectorDuration {
+		t.Fatalf("expected expiry %v, got %v", cm.Tip().Height+proto4.TempSectorDuration, expiry)
+	}
+}
+
 func TestAppendSectors(t *testing.T) {
 	n, genesis := testutil.V2Network()
 	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
