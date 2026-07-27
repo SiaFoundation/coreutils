@@ -858,6 +858,13 @@ func checkFileContractRevisions(txns []types.V2Transaction) error {
 	return nil
 }
 
+func spendsElement(txn types.V2Transaction) bool {
+	return len(txn.SiacoinInputs) > 0 ||
+		len(txn.SiafundInputs) > 0 ||
+		len(txn.FileContractRevisions) > 0 ||
+		len(txn.FileContractResolutions) > 0
+}
+
 func checkEphemeralOutputs(txns []types.V2Transaction) error {
 	sces := make(map[types.SiacoinOutputID]types.SiacoinOutput)
 	for _, txn := range txns {
@@ -1241,6 +1248,11 @@ func (m *Manager) checkTxnSet(txns []types.Transaction, v2txns []types.V2Transac
 		ms.ApplyTransaction(txn, ts)
 	}
 	for _, txn := range v2txns {
+		// reject any v2 transactions that don't spend any elements as they won't be removed from
+		// the pool when they are confirmed
+		if !spendsElement(txn) {
+			return false, fmt.Errorf("v2 transaction %v does not spend any elements", txn.ID())
+		}
 		if _, ok := m.txpool.indices[txn.ID()]; !ok {
 			allInPool = false
 		}

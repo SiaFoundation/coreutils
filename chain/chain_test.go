@@ -1,6 +1,7 @@
 package chain_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -128,184 +129,112 @@ func TestV2Attestations(t *testing.T) {
 		}
 	}
 
-	t.Run("arbitrary data", func(t *testing.T) {
+	sk := types.GeneratePrivateKey()
+	ann := chain.V2HostAnnouncement{
+		{Address: "foo.bar:1234", Protocol: "tcp"},
+	}
+
+	// a transaction that spends no consensus elements stays valid forever and
+	// would be mined in every block, so the txpool must reject it regardless of
+	// any attestations or arbitrary data it carries.
+	t.Run("rejects transactions that spend no elements", func(t *testing.T) {
 		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		cm := chain.NewManager(store, tipState)
-		ms := newMemState()
 
-		// mine until a utxo is spendable
-		mineBlocks(t, cm, int(n.MaturityDelay)+1)
-		ms.Sync(t, cm)
-
-		txn := types.V2Transaction{
-			ArbitraryData: frand.Bytes(16),
+		cases := map[string]types.V2Transaction{
+			"arbitrary data only": {
+				ArbitraryData: frand.Bytes(16),
+			},
+			"attestation only": {
+				Attestations: []types.Attestation{ann.ToAttestation(cm.TipState(), sk)},
+			},
+			"arbitrary data + attestation": {
+				ArbitraryData: frand.Bytes(16),
+				Attestations:  []types.Attestation{ann.ToAttestation(cm.TipState(), sk)},
+			},
 		}
-
-		if _, err := cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txn}); err != nil {
-			t.Fatal(err)
+		for name, txn := range cases {
+			t.Run(name, func(t *testing.T) {
+				_, err := cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txn})
+				if err == nil || !strings.Contains(err.Error(), "does not spend any elements") {
+					t.Fatalf("expected rejection for transaction that spends no elements, got %v", err)
+				}
+			})
 		}
-
-		mineBlocks(t, cm, 1)
-		ms.Sync(t, cm)
-
-		txn2 := types.V2Transaction{
-			ArbitraryData: frand.Bytes(16),
-		}
-
-		if _, err := cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txn2}); err != nil {
-			t.Fatal(err)
-		}
-
-		mineBlocks(t, cm, 1)
-		ms.Sync(t, cm)
 	})
 
-	t.Run("arbitrary data + attestation + no change output", func(t *testing.T) {
-		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cm := chain.NewManager(store, tipState)
-		ms := newMemState()
+	// a funded transaction carrying an attestation and arbitrary data (the host
+	// announcement flow) must still be accepted, mined, and, because it spends
+	// an input, leave the pool once it is confirmed. Both the change-output and
+	// whole-input-as-fee shapes are exercised.
+	spend := map[string]func(se types.SiacoinElement) ([]types.SiacoinOutput, types.Currency){
+		"change output": func(se types.SiacoinElement) ([]types.SiacoinOutput, types.Currency) {
+			minerFee := types.Siacoins(1)
+			return []types.SiacoinOutput{{Address: addr, Value: se.SiacoinOutput.Value.Sub(minerFee)}}, minerFee
+		},
+		"no change output": func(se types.SiacoinElement) ([]types.SiacoinOutput, types.Currency) {
+			return nil, se.SiacoinOutput.Value
+		},
+	}
+	for name, fundTxn := range spend {
+		t.Run("accepts funded announcement transaction ("+name+")", func(t *testing.T) {
+			store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cm := chain.NewManager(store, tipState)
+			ms := newMemState()
 
-		// mine until a utxo is spendable
-		mineBlocks(t, cm, int(n.MaturityDelay)+1)
-		ms.Sync(t, cm)
+			// mine until a utxo is spendable
+			mineBlocks(t, cm, int(n.MaturityDelay)+1)
+			ms.Sync(t, cm)
 
-		sk := types.GeneratePrivateKey()
-		ann := chain.V2HostAnnouncement{
-			{Address: "foo.bar:1234", Protocol: "tcp"},
-		}
-		se := ms.SpendableElement(t)
-		txn := types.V2Transaction{
-			SiacoinInputs: []types.V2SiacoinInput{
-				{Parent: se.Copy(), SatisfiedPolicy: types.SatisfiedPolicy{Policy: policy}},
-			},
-			MinerFee:      se.SiacoinOutput.Value,
-			ArbitraryData: frand.Bytes(16),
-			Attestations: []types.Attestation{
-				ann.ToAttestation(cm.TipState(), sk),
-			},
-		}
+			se := ms.SpendableElement(t)
+			outputs, minerFee := fundTxn(se)
+			txn := types.V2Transaction{
+				SiacoinInputs: []types.V2SiacoinInput{
+					{Parent: se.Copy(), SatisfiedPolicy: types.SatisfiedPolicy{Policy: policy}},
+				},
+				SiacoinOutputs: outputs,
+				MinerFee:       minerFee,
+				ArbitraryData:  frand.Bytes(16),
+				Attestations: []types.Attestation{
+					ann.ToAttestation(cm.TipState(), sk),
+				},
+			}
 
-		if _, err := cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txn}); err != nil {
-			t.Fatal(err)
-		}
+			if _, err := cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txn}); err != nil {
+				t.Fatal(err)
+			} else if len(cm.V2PoolTransactions()) != 1 {
+				t.Fatalf("expected 1 transaction in pool, got %v", len(cm.V2PoolTransactions()))
+			}
 
-		mineBlocks(t, cm, 1)
-		ms.Sync(t, cm)
+			// the transaction must actually be included in the next block
+			b, ok := coreutils.MineBlock(cm, addr, 5*time.Second)
+			if !ok {
+				t.Fatal("failed to mine block")
+			}
+			mined := false
+			for _, mtxn := range b.V2Transactions() {
+				if mtxn.ID() == txn.ID() {
+					mined = true
+					break
+				}
+			}
+			if !mined {
+				t.Fatal("expected transaction to be included in the mined block")
+			} else if err := cm.AddBlocks([]types.Block{b}); err != nil {
+				t.Fatal(err)
+			}
+			ms.Sync(t, cm)
 
-		txn2 := types.V2Transaction{
-			Attestations: []types.Attestation{
-				ann.ToAttestation(cm.TipState(), sk),
-			},
-		}
-
-		if _, err := cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txn2}); err != nil {
-			t.Fatal(err)
-		}
-
-		mineBlocks(t, cm, 1)
-		ms.Sync(t, cm)
-	})
-
-	t.Run("arbitrary data + attestation", func(t *testing.T) {
-		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cm := chain.NewManager(store, tipState)
-		ms := newMemState()
-
-		// mine until a utxo is spendable
-		mineBlocks(t, cm, int(n.MaturityDelay)+1)
-		ms.Sync(t, cm)
-
-		sk := types.GeneratePrivateKey()
-		ann := chain.V2HostAnnouncement{
-			{Address: "foo.bar:1234", Protocol: "tcp"},
-		}
-		txn := types.V2Transaction{
-			ArbitraryData: frand.Bytes(16),
-			Attestations: []types.Attestation{
-				ann.ToAttestation(cm.TipState(), sk),
-			},
-		}
-
-		if _, err := cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txn}); err != nil {
-			t.Fatal(err)
-		}
-
-		mineBlocks(t, cm, 1)
-		ms.Sync(t, cm)
-
-		txn2 := types.V2Transaction{
-			Attestations: []types.Attestation{
-				ann.ToAttestation(cm.TipState(), sk),
-			},
-		}
-
-		if _, err := cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txn2}); err != nil {
-			t.Fatal(err)
-		}
-
-		mineBlocks(t, cm, 1)
-		ms.Sync(t, cm)
-	})
-
-	t.Run("arbitrary data + attestation + change output", func(t *testing.T) {
-		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cm := chain.NewManager(store, tipState)
-		ms := newMemState()
-
-		// mine until a utxo is spendable
-		mineBlocks(t, cm, int(n.MaturityDelay)+1)
-		ms.Sync(t, cm)
-
-		sk := types.GeneratePrivateKey()
-		ann := chain.V2HostAnnouncement{
-			{Address: "foo.bar:1234", Protocol: "tcp"},
-		}
-		se := ms.SpendableElement(t)
-		minerFee := types.Siacoins(1)
-		txn := types.V2Transaction{
-			SiacoinInputs: []types.V2SiacoinInput{
-				{Parent: se.Copy(), SatisfiedPolicy: types.SatisfiedPolicy{Policy: policy}},
-			},
-			SiacoinOutputs: []types.SiacoinOutput{
-				{Address: addr, Value: se.SiacoinOutput.Value.Sub(minerFee)},
-			},
-			MinerFee:      minerFee,
-			ArbitraryData: frand.Bytes(16),
-			Attestations: []types.Attestation{
-				ann.ToAttestation(cm.TipState(), sk),
-			},
-		}
-
-		if _, err := cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txn}); err != nil {
-			t.Fatal(err)
-		}
-
-		mineBlocks(t, cm, 1)
-		ms.Sync(t, cm)
-
-		txn2 := types.V2Transaction{
-			Attestations: []types.Attestation{
-				ann.ToAttestation(cm.TipState(), sk),
-			},
-		}
-
-		if _, err := cm.AddV2PoolTransactions(cm.Tip(), []types.V2Transaction{txn2}); err != nil {
-			t.Fatal(err)
-		}
-
-		mineBlocks(t, cm, 1)
-		ms.Sync(t, cm)
-	})
+			// and it must leave the pool now that its input has been spent
+			if len(cm.V2PoolTransactions()) != 0 {
+				t.Fatalf("expected pool to be empty after transaction was mined, got %v", len(cm.V2PoolTransactions()))
+			}
+		})
+	}
 }
