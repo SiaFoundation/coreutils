@@ -90,8 +90,9 @@ func main() {
 	if err != nil {
 		log.Panic("failed to create tip store", zap.Error(err))
 	}
-	tipSP := tipStore.Scratchpad()
-	tipState := tipSP.TipState()
+	tipSS, release := tipStore.Snapshot()
+	defer release()
+	tipState := tipSS.TipState()
 
 	log.Info("starting expiring file contract order calculation",
 		zap.String("network", network), zap.Stringer("index", tipState.Index))
@@ -112,19 +113,19 @@ func main() {
 		default:
 		}
 
-		index, ok := tipSP.BestIndex(height)
+		index, ok := tipSS.BestIndex(height)
 		if !ok {
 			log.Panic("failed to get best index", zap.Uint64("height", height))
 		}
 		log := log.With(zap.Stringer("index", index))
-		b, bs, ok := tipSP.Block(index.ID)
+		b, bs, ok := tipSS.Block(index.ID)
 		if !ok {
 			log.Panic("failed to get block")
 		} else if bs == nil {
 			log.Panic("block state is nil")
 		}
 
-		cs, ok := tipSP.State(index.ID)
+		cs, ok := tipSS.State(index.ID)
 		if !ok {
 			log.Panic("failed to get state for block")
 		}
