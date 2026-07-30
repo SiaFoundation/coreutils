@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/quic-go/quic-go v0.61.0
-	github.com/quic-go/webtransport-go v0.11.1
+	github.com/quic-go/webtransport-go v0.12.0
 	go.etcd.io/bbolt v1.5.0
 	go.sia.tech/core v0.21.7
 	go.sia.tech/mux v1.5.3
