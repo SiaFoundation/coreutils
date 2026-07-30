@@ -148,7 +148,7 @@ func testRenterHostPairWebTransport(tb testing.TB, hostKey types.PrivateKey, cm 
 	rs := rhp4.NewServer(hostKey, cm, c, w, sr, ss, rhp4.WithPriceTableValidity(2*time.Minute))
 	hostAddr := testutil.ServeQUIC(tb, rs, quic.WithServeLogger(log.Named("webtransport")))
 
-	dialer := webtransport.Dialer{
+	dialer := webtransport.Transport{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
 		},
