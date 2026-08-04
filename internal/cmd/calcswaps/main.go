@@ -86,42 +86,46 @@ func main() {
 	}
 	defer tipDB.Close()
 
-	tipStore, tipState, err := chain.NewDBStore(tipDB, n, genesis, nil)
+	tipStore, err := chain.NewDBStore(tipDB, n, genesis, nil)
 	if err != nil {
 		log.Panic("failed to create tip store", zap.Error(err))
 	}
+	tipSS, release := tipStore.Snapshot()
+	defer release()
+	tipState := tipSS.TipState()
 
 	log.Info("starting expiring file contract order calculation",
 		zap.String("network", network), zap.Stringer("index", tipState.Index))
 
-	cleanStore, cs, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	cleanStore, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
 	if err != nil {
 		log.Panic("failed to create clean db", zap.Error(err))
 	}
-	cm := chain.NewManager(cleanStore, cs, chain.WithLog(log.Named("chain")))
+	cleanSP := cleanStore.Scratchpad()
+	cm := chain.NewManager(cleanStore, chain.WithLog(log.Named("chain")))
 
 	tip := min(tipState.Index.Height, maxCheckHeight)
 	overwriteIDs := make(map[types.BlockID][]types.FileContractID)
-	for height := range tip - 144 {
+	for height := range max(tip, 144) - 144 {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
 
-		index, ok := tipStore.BestIndex(height)
+		index, ok := tipSS.BestIndex(height)
 		if !ok {
 			log.Panic("failed to get best index", zap.Uint64("height", height))
 		}
 		log := log.With(zap.Stringer("index", index))
-		b, bs, ok := tipStore.Block(index.ID)
+		b, bs, ok := tipSS.Block(index.ID)
 		if !ok {
 			log.Panic("failed to get block")
 		} else if bs == nil {
 			log.Panic("block state is nil")
 		}
 
-		cs, ok := tipStore.State(index.ID)
+		cs, ok := tipSS.State(index.ID)
 		if !ok {
 			log.Panic("failed to get state for block")
 		}
@@ -131,7 +135,7 @@ func main() {
 			order = append(order, fc.ID)
 		}
 
-		cleanOrder := cleanStore.ExpiringFileContractIDs(height)
+		cleanOrder := cleanSP.ExpiringFileContractIDs(height)
 		seen := make(map[types.FileContractID]bool)
 		if !slices.Equal(order, cleanOrder) {
 			// ensure that all expiring file contracts in the clean db are also
@@ -152,8 +156,8 @@ func main() {
 				zap.Stringers("expected", order),
 				zap.Stringers("actual", cleanOrder))
 
-			cleanStore.OverwriteExpiringFileContractIDs(height, order)
-			if err := cleanStore.Flush(); err != nil {
+			cleanSP.OverwriteExpiringFileContractIDs(height, order)
+			if err := cleanSP.Flush(); err != nil {
 				log.Panic("failed to flush clean db", zap.Error(err))
 			}
 			overwriteIDs[index.ID] = order

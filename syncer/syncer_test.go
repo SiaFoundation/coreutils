@@ -74,11 +74,11 @@ func mineBlocks(t *testing.T, s *syncer.Syncer, cm *chain.Manager, n int) {
 
 func newTestSyncer(t testing.TB, opts ...syncer.Option) (*syncer.Syncer, *chain.Manager) {
 	n, genesis := testutil.Network()
-	store, tipState1, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	store, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm := chain.NewManager(store, tipState1)
+	cm := chain.NewManager(store)
 
 	l, err := net.Listen("tcp", ":0")
 	if err != nil {
@@ -265,11 +265,11 @@ func TestInstantSync(t *testing.T) {
 		t.Fatalf("expected checkpoint state %v, got %v", b.ParentID, cs.Index.ID)
 	}
 	// initialize new manager at synced checkpoint
-	store, newTipState, err := chain.NewDBStoreAtCheckpoint(chain.NewMemDB(), cs, b, nil)
+	store, err := chain.NewDBStoreAtCheckpoint(chain.NewMemDB(), cs, b, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm2 := chain.NewManager(store, newTipState)
+	cm2 := chain.NewManager(store)
 
 	if cm2.Tip() != index {
 		t.Fatalf("expected tip %v, got %v", index, cm2.Tip())
@@ -442,11 +442,11 @@ func TestForkPeerSynced(t *testing.T) {
 	// s2 has a shorter fork chain (10 blocks) with a very long sync
 	// interval so it never adopts s1's chain during the test
 	n, genesis := testutil.Network()
-	store2, tipState2, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	store2, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm2 := chain.NewManager(store2, tipState2)
+	cm2 := chain.NewManager(store2)
 	testutil.MineBlocks(t, cm2, types.VoidAddress, 10)
 
 	l2, err := net.Listen("tcp", ":0")
@@ -516,11 +516,11 @@ func TestParallelSyncStall(t *testing.T) {
 	// s2 has blocks but BlocksForHistory always fails, so blocks
 	// can never be served despite valid headers
 	n, genesis := testutil.Network()
-	store2, tipState2, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	store2, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm2 := chain.NewManager(store2, tipState2)
+	cm2 := chain.NewManager(store2)
 	testutil.MineBlocks(t, cm2, types.VoidAddress, 10)
 
 	l2, err := net.Listen("tcp", ":0")
@@ -590,11 +590,11 @@ func TestShareNodesMalformed(t *testing.T) {
 		ps1.AddPeer(addr)
 	}
 	ps1.AddPeer("127.0.0.1:65535")
-	store1, tipState1, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	store1, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm1 := chain.NewManager(store1, tipState1)
+	cm1 := chain.NewManager(store1)
 
 	l1, err := net.Listen("tcp", ":0")
 	if err != nil {
@@ -612,11 +612,11 @@ func TestShareNodesMalformed(t *testing.T) {
 
 	// s2 connects to s1 and runs peer discovery
 	ps2 := testutil.NewEphemeralPeerStore()
-	store2, tipState2, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	store2, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm2 := chain.NewManager(store2, tipState2)
+	cm2 := chain.NewManager(store2)
 
 	l2, err := net.Listen("tcp", ":0")
 	if err != nil {
@@ -686,12 +686,12 @@ func (b *blockingManager) unblock() { b.once.Do(func() { close(b.release) }) }
 func newBlockingSyncer(t *testing.T, log *zap.Logger, opts ...syncer.Option) (*syncer.Syncer, *blockingManager) {
 	t.Helper()
 	n, genesis := testutil.Network()
-	store, ts, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	store, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	bm := &blockingManager{
-		Manager: chain.NewManager(store, ts),
+		Manager: chain.NewManager(store),
 		entered: make(chan struct{}, 64),
 		release: make(chan struct{}),
 	}

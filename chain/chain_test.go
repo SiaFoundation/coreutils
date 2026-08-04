@@ -138,11 +138,11 @@ func TestV2Attestations(t *testing.T) {
 	// would be mined in every block, so the txpool must reject it regardless of
 	// any attestations or arbitrary data it carries.
 	t.Run("rejects transactions that spend no elements", func(t *testing.T) {
-		store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
+		store, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		cm := chain.NewManager(store, tipState)
+		cm := chain.NewManager(store)
 
 		cases := map[string]types.V2Transaction{
 			"arbitrary data only": {
@@ -181,11 +181,11 @@ func TestV2Attestations(t *testing.T) {
 	}
 	for name, fundTxn := range spend {
 		t.Run("accepts funded announcement transaction ("+name+")", func(t *testing.T) {
-			store, tipState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
+			store, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			cm := chain.NewManager(store, tipState)
+			cm := chain.NewManager(store)
 			ms := newMemState()
 
 			// mine until a utxo is spendable

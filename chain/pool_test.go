@@ -17,11 +17,11 @@ func TestAddV2PoolTransactionsRecover(t *testing.T) {
 	sp := types.PolicyPublicKey(sk.PublicKey())
 	addr := sp.Address()
 
-	store, genesisState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
+	store, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm := chain.NewManager(store, genesisState)
+	cm := chain.NewManager(store)
 	es := testutil.NewElementStateStore(t, cm)
 
 	testutil.MineBlocks(t, cm, addr, 20+int(n.MaturityDelay))
@@ -118,11 +118,11 @@ func TestAddV2PoolTransactionsEphemeralValue(t *testing.T) {
 	sp := types.PolicyPublicKey(sk.PublicKey())
 	addr := sp.Address()
 
-	store, genesisState, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
+	store, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm := chain.NewManager(store, genesisState)
+	cm := chain.NewManager(store)
 	es := testutil.NewElementStateStore(t, cm)
 
 	testutil.MineBlocks(t, cm, addr, 5+int(n.MaturityDelay))
