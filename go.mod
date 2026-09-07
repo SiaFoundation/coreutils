@@ -9,7 +9,7 @@ require (
 	go.sia.tech/core v0.21.7
 	go.sia.tech/mux v1.5.3
 	go.uber.org/zap v1.28.0
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 	lukechampine.com/frand v1.5.1
 )
 
