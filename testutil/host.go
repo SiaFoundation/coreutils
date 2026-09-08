@@ -157,17 +157,17 @@ func (ec *EphemeralContractor) LockV2Contract(contractID types.FileContractID) (
 
 	var once sync.Once
 	return rhp4.RevisionState{
-			Revision:  rev,
-			Revisable: !renewed && ec.tip.Height < rev.ProofHeight,
-			Renewed:   renewed,
-			Roots:     ec.roots[contractID],
-		}, func() {
-			once.Do(func() {
-				ec.mu.Lock()
-				defer ec.mu.Unlock()
-				ec.locks[contractID] = false
-			})
-		}, nil
+		Revision:  rev,
+		Revisable: !renewed && ec.tip.Height < rev.ProofHeight,
+		Renewed:   renewed,
+		Roots:     ec.roots[contractID],
+	}, func() {
+		once.Do(func() {
+			ec.mu.Lock()
+			defer ec.mu.Unlock()
+			ec.locks[contractID] = false
+		})
+	}, nil
 }
 
 // AddV2Contract adds a new contract to the host.
