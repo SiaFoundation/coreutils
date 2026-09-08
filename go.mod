@@ -3,7 +3,7 @@ module go.sia.tech/coreutils // v0.24.0
 go 1.26.0
 
 require (
-	github.com/quic-go/quic-go v0.61.0
+	github.com/quic-go/quic-go v0.62.0
 	github.com/quic-go/webtransport-go v0.12.0
 	go.etcd.io/bbolt v1.5.0
 	go.sia.tech/core v0.21.7
