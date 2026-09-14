@@ -1,3 +1,9 @@
+## 0.24.1 (2026-09-14)
+
+### Fixes
+
+- Update webtransport-go to v0.13.0 and quic-go to v0.62.0
+
 ## 0.24.0 (2026-08-04)
 
 ### Breaking Changes
