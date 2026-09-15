@@ -438,3 +438,199 @@ func TestBoltDBSnapshot(t *testing.T) {
 	defer bdb.Close()
 	testDBSnapshot(t, bdb)
 }
+
+func TestCopyPrunedDB(t *testing.T) {
+	// checkPruned verifies that dst matches the checkpoint layout: nothing
+	// below pruneHeight except the checkpoint's parent state, and the full
+	// main chain, headers, states, and blocks from pruneHeight through the tip
+	checkPruned := func(t *testing.T, srcStore, dstStore *chain.DBStore, dstDB chain.DB, pruneHeight uint64) {
+		t.Helper()
+		src, releaseSrc := srcStore.Snapshot()
+		defer releaseSrc()
+		dst, releaseDst := dstStore.Snapshot()
+		defer releaseDst()
+
+		if !reflect.DeepEqual(src.TipState(), dst.TipState()) {
+			t.Fatal("tip state mismatch")
+		}
+		for height := range src.TipState().Index.Height + 1 {
+			index, ok := src.BestIndex(height)
+			if !ok {
+				t.Fatalf("missing source index at height %d", height)
+			}
+			if height < pruneHeight {
+				if _, ok := dst.BestIndex(height); ok {
+					t.Fatalf("expected index at height %d to be pruned", height)
+				} else if _, ok := dst.Header(index.ID); ok {
+					t.Fatalf("expected header at height %d to be pruned", height)
+				} else if _, _, ok := dst.Block(index.ID); ok {
+					t.Fatalf("expected block at height %d to be pruned", height)
+				} else if _, ok := dst.State(index.ID); ok != (height == pruneHeight-1) {
+					t.Fatalf("unexpected state presence (%t) at height %d", ok, height)
+				}
+				continue
+			}
+			if dstIndex, ok := dst.BestIndex(height); !ok || dstIndex != index {
+				t.Fatalf("index mismatch at height %d: expected %v, got %v", height, index, dstIndex)
+			} else if srcState, ok := src.State(index.ID); !ok {
+				t.Fatalf("missing source state at height %d", height)
+			} else if dstState, ok := dst.State(index.ID); !ok {
+				t.Fatalf("missing state at height %d", height)
+			} else if !reflect.DeepEqual(srcState, dstState) {
+				t.Fatalf("state mismatch at height %d", height)
+			} else if srcBlock, _, ok := src.Block(index.ID); !ok {
+				t.Fatalf("missing source block at height %d", height)
+			} else if dstBlock, _, ok := dst.Block(index.ID); !ok {
+				t.Fatalf("missing block at height %d", height)
+			} else if dstBlock.ID() != srcBlock.ID() {
+				t.Fatalf("block mismatch at height %d", height)
+			}
+		}
+
+		// the v1 element buckets must exist, but be empty
+		ss, release := dstDB.Snapshot()
+		defer release()
+		for _, name := range []string{"Tree", "SiacoinElements", "SiafundElements", "FileContracts"} {
+			b := ss.Bucket([]byte(name))
+			if b == nil {
+				t.Fatalf("expected bucket %q to exist", name)
+			}
+			for k := range b.Iter() {
+				t.Fatalf("expected bucket %q to be empty, found key %x", name, k)
+			}
+		}
+	}
+
+	n, genesisBlock := testutil.V2Network()
+	srcDB := chain.NewMemDB()
+	srcStore, err := chain.NewDBStore(srcDB, n, genesisBlock, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srcCM := chain.NewManager(srcStore)
+	testutil.MineBlocks(t, srcCM, types.VoidAddress, 100)
+
+	t.Run("errors", func(t *testing.T) {
+		if err := chain.CopyPrunedDB(srcDB, chain.NewMemDB(), n, 101, nil); err == nil {
+			t.Fatal("expected error for prune height above tip")
+		} else if err := chain.CopyPrunedDB(srcDB, chain.NewMemDB(), n, n.HardforkV2.RequireHeight+1, nil); err == nil {
+			t.Fatal("expected error for prune height within reach of v1 element state")
+		} else if err := chain.CopyPrunedDB(chain.NewMemDB(), chain.NewMemDB(), n, 50, nil); err == nil {
+			t.Fatal("expected error for uninitialized source")
+		} else if err := chain.CopyPrunedDB(srcDB, srcDB, n, 50, nil); err == nil {
+			t.Fatal("expected error for non-empty destination")
+		}
+		mainnet, _ := chain.Mainnet()
+		if err := chain.CopyPrunedDB(srcDB, chain.NewMemDB(), mainnet, 50, nil); err == nil {
+			t.Fatal("expected error for network mismatch")
+		}
+
+		// a source that has already pruned a block at or above the prune
+		// height has nothing left to prune there
+		prunedDB := chain.NewMemDB()
+		prunedStore, err := chain.NewDBStore(prunedDB, n, genesisBlock, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prunedCM := chain.NewManager(prunedStore)
+		testutil.MineBlocks(t, prunedCM, types.VoidAddress, 10)
+		prunedCM.PruneBlocks(6)
+		testutil.MineBlocks(t, prunedCM, types.VoidAddress, 1) // flushes the prune
+		if err := chain.CopyPrunedDB(prunedDB, chain.NewMemDB(), n, 5, nil); err == nil {
+			t.Fatal("expected error for prune height below the source's retained blocks")
+		} else if err := chain.CopyPrunedDB(prunedDB, chain.NewMemDB(), n, 6, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	dstDB := chain.NewMemDB()
+	if err := chain.CopyPrunedDB(srcDB, dstDB, n, 50, nil); err != nil {
+		t.Fatal(err)
+	}
+	dstStore, err := chain.NewDBStore(dstDB, n, genesisBlock, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkPruned(t, srcStore, dstStore, dstDB, 50)
+
+	// a pruned source must be prunable again
+	dst2DB := chain.NewMemDB()
+	if err := chain.CopyPrunedDB(dstDB, dst2DB, n, 60, nil); err != nil {
+		t.Fatal(err)
+	} else if dst2Store, err := chain.NewDBStore(dst2DB, n, genesisBlock, nil); err != nil {
+		t.Fatal(err)
+	} else {
+		checkPruned(t, srcStore, dst2Store, dst2DB, 60)
+	}
+
+	dstCM := chain.NewManager(dstStore)
+	if dstCM.MinReorgIndex().Height != 50 {
+		t.Fatalf("expected min reorg height 50, got %d", dstCM.MinReorgIndex().Height)
+	}
+
+	// the syncer looks up the state of every non-empty history entry
+	hist, err := dstCM.History()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seenEmpty bool
+	for _, id := range hist {
+		if id == (types.BlockID{}) {
+			seenEmpty = true
+			continue
+		} else if seenEmpty {
+			t.Fatal("expected history to end after first empty entry")
+		} else if cs, ok := dstCM.State(id); !ok {
+			t.Fatalf("missing state for history entry %v", id)
+		} else if cs.Index.Height < 50 {
+			t.Fatalf("history entry %v is below prune height", cs.Index)
+		}
+	}
+	if !seenEmpty {
+		t.Fatal("expected history to be truncated")
+	}
+
+	testutil.MineBlocks(t, dstCM, types.VoidAddress, 10)
+	if retained, _ := dstCM.BestIndex(50); retained.Height != 50 {
+		t.Fatal("missing index at height 50")
+	} else if _, aus, err := dstCM.UpdatesSince(retained, 100); err != nil {
+		t.Fatal(err)
+	} else if len(aus) != 60 {
+		t.Fatalf("expected 60 updates, got %d", len(aus))
+	}
+	if pruned, _ := srcCM.BestIndex(49); pruned.Height != 49 {
+		t.Fatal("missing index at height 49")
+	} else if _, _, err := dstCM.UpdatesSince(pruned, 100); !errors.Is(err, chain.ErrMissingBlock) {
+		t.Fatalf("expected %v, got %v", chain.ErrMissingBlock, err)
+	}
+
+	// a reorg that replaces the checkpoint block itself must succeed, since
+	// its parent state is retained
+	forkStore, err := chain.NewDBStore(chain.NewMemDB(), n, genesisBlock, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forkCM := chain.NewManager(forkStore)
+	for height := uint64(1); height < 50; height++ {
+		index, _ := srcCM.BestIndex(height)
+		b, ok := srcCM.Block(index.ID)
+		if !ok {
+			t.Fatalf("missing source block at height %d", height)
+		} else if err := forkCM.AddBlocks([]types.Block{b}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	testutil.MineBlocks(t, forkCM, types.Address{1}, 65)
+	var forkBlocks []types.Block
+	for height := uint64(50); height <= forkCM.Tip().Height; height++ {
+		index, _ := forkCM.BestIndex(height)
+		b, _ := forkCM.Block(index.ID)
+		forkBlocks = append(forkBlocks, b)
+	}
+	if err := dstCM.AddBlocks(forkBlocks); err != nil {
+		t.Fatal(err)
+	} else if dstCM.Tip() != forkCM.Tip() {
+		t.Fatalf("expected tip %v, got %v", forkCM.Tip(), dstCM.Tip())
+	}
+	testutil.MineBlocks(t, dstCM, types.VoidAddress, 1)
+}
