@@ -271,6 +271,15 @@ func Serve(l *quic.Listener, s *rhp4.Server, opts ...ServeOption) {
 
 			EnableDatagrams: true,
 		},
+		// a server advertising SETTINGS_WT_MAX_SESSIONS > 1, as
+		// ConfigureHTTP3Server does, must also advertise the initial flow
+		// control limits. Safari enforces this and refuses the session
+		// otherwise.
+		Config: &webtransport.Config{
+			MaxIncomingStreams:    1 << 60,
+			MaxIncomingUniStreams: 1 << 60,
+			MaxIncomingData:       1 << 60,
+		},
 		CheckOrigin: func(*http.Request) bool {
 			return true // allow all origins
 		},
