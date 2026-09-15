@@ -149,6 +149,9 @@ func OpenBoltChainDB(path string) (*BoltChainDB, error) {
 // the original is left untouched and the temporary file is removed. The
 // database must not be open elsewhere. The provided logger may be nil.
 func PruneBoltChainDB(path string, n *consensus.Network, height uint64, logger chain.MigrationLogger) error {
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("failed to stat database: %w", err)
+	}
 	src, err := bbolt.Open(path, 0600, &bbolt.Options{Timeout: time.Second})
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
