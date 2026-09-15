@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -251,6 +252,8 @@ func TestnetZen() (*consensus.Network, types.Block) {
 
 func sanityCheckNetwork(n *consensus.Network) error {
 	switch {
+	case n == nil:
+		return errors.New("network cannot be nil")
 	case n.Name == "":
 		return fmt.Errorf("network name cannot be empty")
 	case n.InitialTarget == types.BlockID{}:
