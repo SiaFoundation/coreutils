@@ -271,6 +271,15 @@ func Serve(l *quic.Listener, s *rhp4.Server, opts ...ServeOption) {
 
 			EnableDatagrams: true,
 		},
+		// a server advertising SETTINGS_WT_MAX_SESSIONS > 1, as
+		// ConfigureHTTP3Server does, must also advertise the initial flow
+		// control limits. Safari enforces this and refuses the session
+		// otherwise.
+		Config: &webtransport.Config{
+			MaxIncomingStreams:    1 << 60,
+			MaxIncomingUniStreams: 1 << 60,
+			MaxIncomingData:       1 << 60,
+		},
 		CheckOrigin: func(*http.Request) bool {
 			return true // allow all origins
 		},
@@ -280,21 +289,6 @@ func Serve(l *quic.Listener, s *rhp4.Server, opts ...ServeOption) {
 
 	// configure the HTTP/3 server for WebTransport (enables extended CONNECT, etc.)
 	webtransport.ConfigureHTTP3Server(wts.H3)
-
-	// Safari 26.4 needs additional WebTransport SETTINGS (draft-ietf-webtrans-http3-14)
-	// not yet advertised by webtransport-go v0.10.0. Track:
-	//
-	//	https://github.com/quic-go/webtransport-go/pull/261
-	//
-	// Drop this block once that PR (or a successor) is released.
-	if wts.H3.AdditionalSettings == nil {
-		wts.H3.AdditionalSettings = map[uint64]uint64{}
-	}
-	wts.H3.AdditionalSettings[0x2c7cf000] = 1         // SETTINGS_WT_ENABLED (draft-15)
-	wts.H3.AdditionalSettings[0x14e9cd29] = 1<<62 - 1 // SETTINGS_WT_MAX_SESSIONS
-	wts.H3.AdditionalSettings[0x2b64] = 1 << 60       // SETTINGS_WT_INITIAL_MAX_STREAMS_UNI
-	wts.H3.AdditionalSettings[0x2b65] = 1 << 60       // SETTINGS_WT_INITIAL_MAX_STREAMS_BIDI
-	wts.H3.AdditionalSettings[0x2b61] = 1 << 60       // SETTINGS_WT_INITIAL_MAX_DATA
 
 	mux.HandleFunc("/sia/rhp/v4", func(w http.ResponseWriter, r *http.Request) {
 		sess, err := wts.Upgrade(w, r)
