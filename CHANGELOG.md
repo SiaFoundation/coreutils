@@ -1,3 +1,11 @@
+## 0.24.2 (2026-09-16)
+
+### Fixes
+
+#### Remove redundant WebTransport SETTINGS workaround
+
+webtransport-go v0.13.0 sends SETTINGS_WT_ENABLED and SETTINGS_WT_MAX_SESSIONS from ConfigureHTTP3Server, and clears the manually set WT flow control settings during server initialization, so the workaround no longer had any effect.
+
 ## 0.24.1 (2026-09-14)
 
 ### Fixes
