@@ -1021,3 +1021,54 @@ func TestSyncAcrossBatches(t *testing.T) {
 	}
 	t.Fatalf("s1 did not catch up: expected %v, got %v", want, cm1.Tip())
 }
+
+// TestHeavierForkAcrossBatches verifies that we adopt a peer's chain when the
+// chain as a whole is heavier than ours, but its first batch of headers is not.
+// A batch that leaves our tip unchanged does not mean the peer has nothing for
+// us: it still reports headers remaining, and its continuation outweighs our
+// chain.
+func TestHeavierForkAcrossBatches(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	// s1 has a short chain of its own
+	s1, cm1 := newTestSyncer(t, syncer.WithLogger(log.Named("syncer1")))
+	defer s1.Close()
+	testutil.MineBlocks(t, cm1, types.VoidAddress, 10)
+
+	// s2 is on a heavier fork, but only serves 5 headers at a time, so its
+	// first batch is shorter than s1's chain and does not trigger a reorg
+	n, genesis := testutil.Network()
+	store2, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm := &forkManager{headerLimit: 5, Manager: chain.NewManager(store2)}
+	testutil.MineBlocks(t, fm.Manager, types.Address{1}, 30)
+
+	l2, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l2.Close() })
+
+	s2 := syncer.New(l2, fm, testutil.NewEphemeralPeerStore(), gateway.Header{
+		GenesisID:  genesis.ID(),
+		UniqueID:   gateway.GenerateUniqueID(),
+		NetAddress: l2.Addr().String(),
+	}, syncer.WithSyncInterval(time.Hour)) // effectively disabled
+	go s2.Run()
+	defer s2.Close()
+
+	if _, err := s1.Connect(context.Background(), s2.Addr()); err != nil {
+		t.Fatal(err)
+	}
+
+	want := fm.Manager.Tip()
+	for range 100 {
+		if cm1.Tip() == want {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("s1 did not adopt the heavier chain: expected %v, got %v", want, cm1.Tip())
+}
