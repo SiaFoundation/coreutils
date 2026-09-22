@@ -781,6 +781,85 @@ func (s *Syncer) peerLoop(ctx context.Context) error {
 	return nil
 }
 
+// a peerChain is the result of walking a peer's header chain.
+type peerChain struct {
+	fork      consensus.State   // state at the fork point
+	tip       types.BlockHeader // last header needed to outweigh our chain
+	batches   int               // SendHeaders calls needed to reach tip
+	remaining uint64            // headers the peer has beyond tip
+	heavier   bool
+}
+
+// errPeerReorg is returned when a peer's chain changes mid-walk, leaving the
+// index we were walking from off their best chain. The walk is abandoned and
+// retried on the next tick rather than faulting the peer.
+var errPeerReorg = errors.New("peer reorged during header walk")
+
+// walkPeerChain requests headers from p until its chain outweighs ts or it runs
+// out of them, reporting whether the chain is worth downloading blocks for.
+// Only the running state is kept, so a peer on a chain we will never adopt
+// costs a header walk and nothing else.
+func (s *Syncer) walkPeerChain(p *Peer, hist [32]types.BlockID, ts consensus.State) (peerChain, error) {
+	for _, id := range hist {
+		if id == (types.BlockID{}) {
+			// skip empty history entries which can occur when we don't have a
+			// full history of blocks.
+			continue
+		}
+		fork, ok := s.cm.State(id)
+		if !ok {
+			return peerChain{}, errors.New("missing state for history")
+		}
+		headers, tip, remaining, err := p.SendHeaders(fork, s.config.MaxSendHeaders, s.config.SendHeadersTimeout)
+		if err != nil && strings.Contains(err.Error(), "EOF") {
+			continue // probably "index is not on our best chain"
+		} else if err != nil {
+			return peerChain{}, err
+		}
+		pc := peerChain{fork: fork}
+		for {
+			if len(headers) > 0 {
+				pc.tip, pc.batches = headers[len(headers)-1], pc.batches+1
+			}
+			pc.remaining = remaining
+			if tip.SufficientlyHeavierThan(ts) {
+				pc.heavier = true
+				return pc, nil
+			} else if remaining == 0 || len(headers) == 0 {
+				return pc, nil
+			}
+			if headers, tip, remaining, err = p.SendHeaders(tip, s.config.MaxSendHeaders, s.config.SendHeadersTimeout); err != nil {
+				if strings.Contains(err.Error(), "EOF") {
+					return peerChain{}, errPeerReorg
+				}
+				return peerChain{}, err
+			}
+		}
+	}
+	return peerChain{}, errors.New("no common history")
+}
+
+// syncPeerChain re-requests pc's headers from p and downloads each batch's
+// blocks as it arrives, so only one batch is held in memory at a time. It
+// returns what the peer actually served, which may fall short of pc if the peer
+// reorged since the walk.
+func (s *Syncer) syncPeerChain(ctx context.Context, p *Peer, pc peerChain) (peerChain, error) {
+	cs, synced := pc.fork, peerChain{fork: pc.fork}
+	for range pc.batches {
+		headers, tip, remaining, err := p.SendHeaders(cs, s.config.MaxSendHeaders, s.config.SendHeadersTimeout)
+		if err != nil {
+			return synced, err
+		} else if len(headers) == 0 {
+			break // peer changed chains between the walk and now
+		} else if err := s.parallelSync(ctx, cs, headers); err != nil {
+			return synced, err
+		}
+		cs = tip
+		synced.tip, synced.batches, synced.remaining = headers[len(headers)-1], synced.batches+1, remaining
+	}
+	return synced, nil
+}
+
 func (s *Syncer) syncLoop(ctx context.Context) error {
 	ticker := time.NewTicker(s.config.SyncInterval)
 	defer ticker.Stop()
@@ -801,73 +880,45 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 		}
 		s.mu.Unlock()
 		type resp struct {
-			peer      *Peer
-			cs        consensus.State
-			headers   []types.BlockHeader
-			remaining uint64
-			err       error
+			peer  *Peer
+			chain peerChain
+			err   error
 		}
 		respChan := make(chan resp, len(peers))
 		hist, err := s.cm.History()
 		if err != nil {
 			return err // generally fatal
 		}
+		tipState := s.cm.TipState()
 		for _, p := range peers {
 			go func(p *Peer) {
-				cs, headers, remaining, err := func() (consensus.State, []types.BlockHeader, uint64, error) {
-					for _, id := range hist {
-						if id == (types.BlockID{}) {
-							// skip empty history entries which can occur when
-							// we don't have a full history of blocks.
-							continue
-						}
-						cs, ok := s.cm.State(id)
-						if !ok {
-							return consensus.State{}, nil, 0, errors.New("missing state for history")
-						}
-						headers, remaining, err := p.SendHeaders(cs, s.config.MaxSendHeaders, s.config.SendHeadersTimeout)
-						if err != nil && strings.Contains(err.Error(), "EOF") {
-							continue // probably "index is not on our best chain"
-						} else if err != nil {
-							return consensus.State{}, nil, 0, err
-						}
-						return cs, headers, remaining, nil
-					}
-					return consensus.State{}, nil, 0, errors.New("no common history")
-				}()
-				respChan <- resp{peer: p, cs: cs, headers: headers, remaining: remaining, err: err}
+				pc, err := s.walkPeerChain(p, hist, tipState)
+				respChan <- resp{peer: p, chain: pc, err: err}
 			}(p)
 		}
 		// sync each set of headers as they arrive
 		seen := make(map[types.BlockID]bool)
 		for range peers {
-			if r := <-respChan; r.err != nil {
+			if r := <-respChan; errors.Is(r.err, errPeerReorg) {
+				s.log.Debug("peer reorged during header walk", zap.Stringer("peer", r.peer))
+			} else if r.err != nil {
 				r.peer.setErr(r.err)
-			} else if len(r.headers) == 0 {
+			} else if !r.chain.heavier {
+				// their whole chain is lighter than ours; if they later learn
+				// of a block we don't have, relaying it triggers a resync
+				s.log.Debug("peer chain does not outweigh ours", zap.Stringer("peer", r.peer), zap.Int("batches", r.chain.batches))
 				r.peer.setSynced(true)
-			} else if id := r.headers[len(r.headers)-1].ID(); seen[id] {
+			} else if id := r.chain.tip.ID(); seen[id] {
 				continue // already syncing these blocks from another peer
 			} else {
 				seen[id] = true
-				s.log.Debug("syncing blocks", zap.Stringer("peer", r.peer), zap.Stringer("start", r.cs.Index), zap.Int("n", len(r.headers)))
-				tip := s.cm.Tip()
-				if err := s.parallelSync(ctx, r.cs, r.headers); err != nil {
+				s.log.Debug("syncing blocks", zap.Stringer("peer", r.peer), zap.Stringer("start", r.chain.fork.Index), zap.Int("batches", r.chain.batches))
+				if synced, err := s.syncPeerChain(ctx, r.peer, r.chain); err != nil {
 					s.log.Debug("sync failed", zap.Stringer("peer", r.peer), zap.Error(err))
-				} else if s.cm.Tip() == tip {
-					// their blocks did not extend our best chain, so the peer
-					// has nothing for us. Mark them synced; if they later learn
-					// of a block we don't have, relaying it triggers a resync.
-					//
-					// NOTE: a peer stuck on a chain we will never adopt never
-					// reports remaining == 0, so without this we would ask them
-					// for the same headers every sync interval, indefinitely.
-					s.log.Debug("peer has no blocks that extend our chain", zap.Stringer("peer", r.peer), zap.Stringer("tip", tip))
+				} else if synced.batches > 0 && synced.remaining == 0 {
+					// peer sent all their headers; relay their tip
 					r.peer.setSynced(true)
-				} else if r.remaining == 0 {
-					// peer sent all their headers; mark them as synced and
-					// relay their tip
-					r.peer.setSynced(true)
-					go s.relayV2Header(r.headers[len(r.headers)-1], r.peer)
+					go s.relayV2Header(synced.tip, r.peer)
 				}
 			}
 		}
