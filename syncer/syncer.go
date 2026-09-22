@@ -850,8 +850,19 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 			} else {
 				seen[id] = true
 				s.log.Debug("syncing blocks", zap.Stringer("peer", r.peer), zap.Stringer("start", r.cs.Index), zap.Int("n", len(r.headers)))
+				tip := s.cm.Tip()
 				if err := s.parallelSync(ctx, r.cs, r.headers); err != nil {
 					s.log.Debug("sync failed", zap.Stringer("peer", r.peer), zap.Error(err))
+				} else if s.cm.Tip() == tip {
+					// their blocks did not extend our best chain, so the peer
+					// has nothing for us. Mark them synced; if they later learn
+					// of a block we don't have, relaying it triggers a resync.
+					//
+					// NOTE: a peer stuck on a chain we will never adopt never
+					// reports remaining == 0, so without this we would ask them
+					// for the same headers every sync interval, indefinitely.
+					s.log.Debug("peer has no blocks that extend our chain", zap.Stringer("peer", r.peer), zap.Stringer("tip", tip))
+					r.peer.setSynced(true)
 				} else if r.remaining == 0 {
 					// peer sent all their headers; mark them as synced and
 					// relay their tip
