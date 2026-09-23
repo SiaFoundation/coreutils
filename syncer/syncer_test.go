@@ -107,8 +107,9 @@ func TestSyncer(t *testing.T) {
 	s2, cm2 := newTestSyncer(t, syncer.WithLogger(log.Named("syncer2")))
 	defer s2.Close()
 
-	// mine enough blocks to test both v1 and v2 regimes
-	testutil.MineBlocks(t, cm1, types.VoidAddress, int(cm1.TipState().Network.HardforkV2.RequireHeight+100))
+	// mine enough blocks to cover both v1 and v2 regimes, and to split the
+	// download into enough requests that the bad peer is not starved of work
+	testutil.MineBlocks(t, cm1, types.VoidAddress, int(cm1.TipState().Network.HardforkV2.RequireHeight+1000))
 
 	if _, err := s1.Connect(context.Background(), s2.Addr()); err != nil {
 		t.Fatal(err)
@@ -151,8 +152,9 @@ func TestSyncWithBadPeer(t *testing.T) {
 	s2, cm2 := newTestSyncer(t, syncer.WithLogger(log.Named("syncer2")))
 	defer s2.Close()
 
-	// mine enough blocks to test both v1 and v2 regimes
-	testutil.MineBlocks(t, cm1, types.VoidAddress, int(cm1.TipState().Network.HardforkV2.RequireHeight+100))
+	// mine enough blocks to cover both v1 and v2 regimes, and to split the
+	// download into enough requests that the bad peer is not starved of work
+	testutil.MineBlocks(t, cm1, types.VoidAddress, int(cm1.TipState().Network.HardforkV2.RequireHeight+1000))
 
 	// simulate another peer, one that returns invalid blocks
 	_, genesis := testutil.Network()
@@ -186,7 +188,13 @@ func TestSyncWithBadPeer(t *testing.T) {
 	if cm1.Tip() != cm2.Tip() {
 		t.Fatalf("tips are not equal: %v != %v", cm1.Tip(), cm2.Tip())
 	}
-	// bad peer should be banned
+	// the ban propagates asynchronously, so wait for the peer to be dropped
+	for range 100 {
+		if len(s2.Peers()) == 1 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	if peers := s2.Peers(); len(peers) != 1 {
 		t.Fatalf("expected 1 peer, got %v", peers)
 	} else if peers[0].UniqueID() == badID {
