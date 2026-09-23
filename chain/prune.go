@@ -30,7 +30,7 @@ func CopyPrunedDB(src, dst DB, n *consensus.Network, height uint64, logger Migra
 		return errors.New("source database is not initialized")
 	} else if version[0] != 4 {
 		return fmt.Errorf("source database version (%d) must be migrated before pruning", version[0])
-	} else if network := readBucket(ss, bNetwork).getRaw(bNetwork); string(network) != n.Name {
+	} else if network := readBucket(ss, bNetwork).getRaw(bNetwork); len(network) != 0 && string(network) != n.Name {
 		return fmt.Errorf("source database initialized with different network (%s)", string(network))
 	}
 	tipHeight := getHeight(ss)
