@@ -807,8 +807,13 @@ const (
 	// retainedBatches bounds how many batches a walk keeps
 	retainedBatches = 2
 
-	// maxHeaderWalk bounds one peer's walk; a sync round waits for every peer
+	// maxHeaderWalk bounds one peer's walk; a sync round waits for every peer,
+	// and a peer that cannot finish within it is dropped
 	maxHeaderWalk = 2 * time.Minute
+
+	// maxChainSync backstops a wedged download; a sync round waits for every
+	// peer, and parallelSync only bounds individual requests
+	maxChainSync = 15 * time.Minute
 )
 
 var (
@@ -816,11 +821,11 @@ var (
 	// peer stays eligible and is retried next tick
 	errWalkAbandoned = errors.New("header walk abandoned")
 	errPeerReorg     = fmt.Errorf("%w: peer reorged", errWalkAbandoned)
-	errWalkTimeout   = fmt.Errorf("%w: exceeded %v", errWalkAbandoned, maxHeaderWalk)
 
 	// errPeerHeaders marks a failure attributable to the peer, unlike a block
 	// download, which may have involved any peer
 	errPeerHeaders = errors.New("peer failed to serve headers")
+	errWalkTimeout = fmt.Errorf("%w: walk exceeded %v", errPeerHeaders, maxHeaderWalk)
 )
 
 // walkPeerChain requests headers from p until its chain outweighs ts or it runs
@@ -835,7 +840,6 @@ func (s *Syncer) walkPeerChain(p *Peer, hist [32]types.BlockID, ts consensus.Sta
 		}
 		headers, tip, remaining, err := p.SendHeaders(cs, s.config.MaxSendHeaders, timeout)
 		if err != nil && !time.Now().Before(deadline) {
-			// don't fault the peer for our own deadline
 			return nil, consensus.State{}, 0, errWalkTimeout
 		}
 		return headers, tip, remaining, err
@@ -890,6 +894,9 @@ func (s *Syncer) walkPeerChain(p *Peer, hist [32]types.BlockID, ts consensus.Sta
 // was actually synced. p only serves headers the walk did not retain; blocks
 // come from every eligible peer via parallelSync.
 func (s *Syncer) syncChain(ctx context.Context, p *Peer, pc peerChain) (peerChain, error) {
+	ctx, cancel := context.WithTimeout(ctx, maxChainSync)
+	defer cancel()
+
 	synced := peerChain{fork: pc.fork}
 	if pc.headersRetained() {
 		for _, b := range pc.retained {
