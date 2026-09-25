@@ -107,8 +107,9 @@ func TestSyncer(t *testing.T) {
 	s2, cm2 := newTestSyncer(t, syncer.WithLogger(log.Named("syncer2")))
 	defer s2.Close()
 
-	// mine enough blocks to test both v1 and v2 regimes
-	testutil.MineBlocks(t, cm1, types.VoidAddress, int(cm1.TipState().Network.HardforkV2.RequireHeight+100))
+	// mine enough blocks to cover both v1 and v2 regimes, and to split the
+	// download into enough requests that the bad peer is not starved of work
+	testutil.MineBlocks(t, cm1, types.VoidAddress, int(cm1.TipState().Network.HardforkV2.RequireHeight+1000))
 
 	if _, err := s1.Connect(context.Background(), s2.Addr()); err != nil {
 		t.Fatal(err)
@@ -151,8 +152,9 @@ func TestSyncWithBadPeer(t *testing.T) {
 	s2, cm2 := newTestSyncer(t, syncer.WithLogger(log.Named("syncer2")))
 	defer s2.Close()
 
-	// mine enough blocks to test both v1 and v2 regimes
-	testutil.MineBlocks(t, cm1, types.VoidAddress, int(cm1.TipState().Network.HardforkV2.RequireHeight+100))
+	// mine enough blocks to cover both v1 and v2 regimes, and to split the
+	// download into enough requests that the bad peer is not starved of work
+	testutil.MineBlocks(t, cm1, types.VoidAddress, int(cm1.TipState().Network.HardforkV2.RequireHeight+1000))
 
 	// simulate another peer, one that returns invalid blocks
 	_, genesis := testutil.Network()
@@ -186,7 +188,13 @@ func TestSyncWithBadPeer(t *testing.T) {
 	if cm1.Tip() != cm2.Tip() {
 		t.Fatalf("tips are not equal: %v != %v", cm1.Tip(), cm2.Tip())
 	}
-	// bad peer should be banned
+	// the ban propagates asynchronously, so wait for the peer to be dropped
+	for range 100 {
+		if len(s2.Peers()) == 1 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	if peers := s2.Peers(); len(peers) != 1 {
 		t.Fatalf("expected 1 peer, got %v", peers)
 	} else if peers[0].UniqueID() == badID {
@@ -326,7 +334,7 @@ func TestSendHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	headers, rem, err := p.SendHeaders(cs, 90, time.Second)
+	headers, _, rem, err := p.SendHeaders(cs, 90, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	} else if len(headers) != 90 {
@@ -861,4 +869,169 @@ func TestMaxInflightRPCsBackpressureNotDropped(t *testing.T) {
 	if err := <-errCh; err != nil {
 		t.Fatalf("backpressured RPC failed after the slot was freed: %v", err)
 	}
+}
+
+// forkManager serves a limited number of headers per request and counts
+// requests, simulating a peer whose chain spans several sync batches.
+type forkManager struct {
+	headerLimit uint64
+	headerReqs  atomic.Uint64
+	blockReqs   atomic.Uint64
+	*chain.Manager
+}
+
+func (fm *forkManager) Headers(index types.ChainIndex, maxHeaders uint64) ([]types.BlockHeader, uint64, error) {
+	fm.headerReqs.Add(1)
+	return fm.Manager.Headers(index, min(maxHeaders, fm.headerLimit))
+}
+
+func (fm *forkManager) BlocksForHistory(history []types.BlockID, maxBlocks uint64) ([]types.Block, uint64, error) {
+	fm.blockReqs.Add(1)
+	return fm.Manager.BlocksForHistory(history, maxBlocks)
+}
+
+// newForkPeer starts a syncer serving at most headerLimit headers per request
+// from a chain of the given length, mined to addr. Its own sync loop is
+// disabled so it never adopts our chain.
+func newForkPeer(t testing.TB, headerLimit uint64, addr types.Address, blocks int) (*syncer.Syncer, *forkManager) {
+	t.Helper()
+
+	n, genesis := testutil.Network()
+	store, err := chain.NewDBStore(chain.NewMemDB(), n, genesis, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm := &forkManager{headerLimit: headerLimit, Manager: chain.NewManager(store)}
+	testutil.MineBlocks(t, fm.Manager, addr, blocks)
+
+	l, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+
+	s := syncer.New(l, fm, testutil.NewEphemeralPeerStore(), gateway.Header{
+		GenesisID:  genesis.ID(),
+		UniqueID:   gateway.GenerateUniqueID(),
+		NetAddress: l.Addr().String(),
+	}, syncer.WithSyncInterval(time.Hour)) // effectively disabled
+	go s.Run()
+	t.Cleanup(func() { s.Close() })
+	return s, fm
+}
+
+// waitForTip blocks until cm reaches want.
+func waitForTip(t testing.TB, cm *chain.Manager, want types.ChainIndex, msg string) {
+	t.Helper()
+	for range 100 {
+		if cm.Tip() == want {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("%s: expected tip %v, got %v", msg, want, cm.Tip())
+}
+
+// TestForkPeerNotResynced verifies that we stop syncing from a peer on a fork
+// that never becomes our best chain: we walk their headers once, download no
+// blocks, and don't walk them again every sync interval.
+func TestForkPeerNotResynced(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	// s1 has the longer chain
+	s1, cm1 := newTestSyncer(t, syncer.WithLogger(log.Named("syncer1")))
+	defer s1.Close()
+	testutil.MineBlocks(t, cm1, types.VoidAddress, 20)
+
+	// s2 is on a shorter fork, serving 5 headers at a time so it always reports
+	// headers remaining
+	s2, fm := newForkPeer(t, 5, types.Address{1}, 10)
+
+	s1Tip := cm1.Tip()
+
+	if _, err := s1.Connect(context.Background(), s2.Addr()); err != nil {
+		t.Fatal(err)
+	}
+
+	// wait for s1 to walk the fork peer's headers
+	for range 100 {
+		if fm.headerReqs.Load() > 0 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if fm.headerReqs.Load() == 0 {
+		t.Fatal("s1 never requested headers from the fork peer")
+	}
+
+	// allow any in-flight rounds to settle
+	time.Sleep(time.Second)
+	settledHeaders := fm.headerReqs.Load()
+	time.Sleep(2 * time.Second) // ~20 sync intervals
+	if reqs := fm.headerReqs.Load(); reqs != settledHeaders {
+		t.Fatalf("s1 kept starting sync rounds with the fork peer: %v more header requests", reqs-settledHeaders)
+	}
+
+	if reqs := fm.blockReqs.Load(); reqs != 0 {
+		t.Fatalf("s1 downloaded %v block batches from a chain that never outweighed ours", reqs)
+	}
+
+	peers := s1.Peers()
+	if len(peers) != 1 {
+		t.Fatalf("expected 1 peer, got %v", len(peers))
+	} else if !peers[0].Synced() {
+		t.Fatal("fork peer that did not extend our chain should be marked synced")
+	}
+
+	if cm1.Tip() != s1Tip {
+		t.Fatalf("s1 tip should not have changed: expected %v, got %v", s1Tip, cm1.Tip())
+	}
+
+	// our tip moving is not a reason to ask again; only a relay from them is
+	testutil.MineBlocks(t, cm1, types.VoidAddress, 1)
+	time.Sleep(time.Second) // ~10 sync intervals
+	if reqs := fm.headerReqs.Load(); reqs != settledHeaders {
+		t.Fatalf("s1 re-synced the fork peer after its own tip moved: %v more header requests", reqs-settledHeaders)
+	} else if reqs := fm.blockReqs.Load(); reqs != 0 {
+		t.Fatalf("s1 downloaded %v block batches after its own tip moved", reqs)
+	}
+}
+
+// TestSyncAcrossBatches verifies that we keep syncing from a peer with more
+// headers than a single batch can carry.
+func TestSyncAcrossBatches(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	// s1 starts at genesis
+	s1, cm1 := newTestSyncer(t, syncer.WithLogger(log.Named("syncer1")))
+	defer s1.Close()
+
+	// s2 has 20 blocks but serves 5 headers at a time, so catching up takes
+	// several batches
+	s2, fm := newForkPeer(t, 5, types.VoidAddress, 20)
+
+	if _, err := s1.Connect(context.Background(), s2.Addr()); err != nil {
+		t.Fatal(err)
+	}
+	waitForTip(t, cm1, fm.Manager.Tip(), "s1 did not catch up")
+}
+
+// TestHeavierForkAcrossBatches verifies that we adopt a peer's chain that is
+// heavier than ours overall, even though its first batch of headers is not.
+func TestHeavierForkAcrossBatches(t *testing.T) {
+	log := zaptest.NewLogger(t)
+
+	// s1 has a short chain of its own
+	s1, cm1 := newTestSyncer(t, syncer.WithLogger(log.Named("syncer1")))
+	defer s1.Close()
+	testutil.MineBlocks(t, cm1, types.VoidAddress, 10)
+
+	// s2's fork is heavier, but its first 5-header batch is shorter than s1's
+	// chain and does not trigger a reorg
+	s2, fm := newForkPeer(t, 5, types.Address{1}, 30)
+
+	if _, err := s1.Connect(context.Background(), s2.Addr()); err != nil {
+		t.Fatal(err)
+	}
+	waitForTip(t, cm1, fm.Manager.Tip(), "s1 did not adopt the heavier chain")
 }
