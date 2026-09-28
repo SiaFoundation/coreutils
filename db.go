@@ -163,7 +163,7 @@ func PruneBoltChainDB(path string, n *consensus.Network, height uint64, logger c
 	if err := os.Remove(tmpPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("failed to remove stale temporary database: %w", err)
 	}
-	dst, err := bbolt.Open(tmpPath, 0600, &bbolt.Options{NoSync: true, Timeout: time.Second})
+	dst, err := bbolt.Open(tmpPath, stat.Mode(), &bbolt.Options{NoSync: true, Timeout: time.Second})
 	if err != nil {
 		return fmt.Errorf("failed to create temporary database: %w", err)
 	}
