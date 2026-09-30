@@ -1,3 +1,21 @@
+## 0.25.0 (2026-09-30)
+
+### Breaking Changes
+
+#### Compared header chain work before downloading blocks from a peer
+
+The syncer now walks a peer's headers until their chain either outweighs ours or runs out, and only downloads blocks once it knows the chain is worth adopting. Previously a peer stuck on a fork that would never outweigh our chain had its entire fork re-downloaded every sync interval.
+
+### Features
+
+- Added `coreutils.PruneBoltChainDB` to shrink the size of an existing consensus database.
+
+### Fixes
+
+#### Remove redundant WebTransport SETTINGS workaround
+
+webtransport-go v0.13.0 sends SETTINGS_WT_ENABLED and SETTINGS_WT_MAX_SESSIONS from ConfigureHTTP3Server, and clears the manually set WT flow control settings during server initialization, so the workaround no longer had any effect.
+
 ## 0.24.1 (2026-09-14)
 
 ### Fixes
