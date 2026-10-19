@@ -1,4 +1,4 @@
-# [![Sia Core](https://sia.tech/assets/banners/sia-banner-core.png)](http://sia.tech)
+# [![Sia Core](.github/assets/banner.png)](http://sia.tech)
 
 [![GoDoc](https://godoc.org/go.sia.tech/coreutils?status.svg)](https://godoc.org/go.sia.tech/coreutils)
 
