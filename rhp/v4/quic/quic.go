@@ -185,6 +185,12 @@ type webStream struct {
 	localAddr, remoteAddr net.Addr
 }
 
+// Close implements net.Conn
+func (ws *webStream) Close() error {
+	ws.CancelRead(0)
+	return ws.Stream.Close()
+}
+
 func (ws *webStream) LocalAddr() net.Addr {
 	return ws.localAddr
 }

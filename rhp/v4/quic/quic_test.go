@@ -181,11 +181,18 @@ func TestWebTransportStreamLimit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
+	// limit the number of concurrent streams. Otherwise quic-go closes the
+	// connection with INTERNAL_ERROR once more than 16k STOP_SENDING frames
+	// are queued at once.
+	sema := make(chan struct{}, 1000)
+
 	var wg sync.WaitGroup
 	for range maxIncomingStreams + 1 {
 		wg.Add(1)
+		sema <- struct{}{}
 		go func() {
 			defer wg.Done()
+			defer func() { <-sema }()
 
 			stream, err := sess.OpenStreamSync(ctx)
 			if err != nil {
