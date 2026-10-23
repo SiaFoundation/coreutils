@@ -1,3 +1,10 @@
+## 0.25.1 (2026-10-23)
+
+### Fixes
+
+- Always cancel read side of WebTransport stream when calling Close.
+- Update quic-go from 0.63.0 to 0.64.1.
+
 ## 0.25.0 (2026-09-30)
 
 ### Breaking Changes
