@@ -1,3 +1,11 @@
+## 0.25.2 (2026-10-26)
+
+### Fixes
+
+- Validate the host transaction and resolution parent in RPCRenewContract.
+- Validate that RPCReplenishPools deposits match the requested pools.
+- Validate the host prices signature in RPCSettings.
+
 ## 0.25.1 (2026-10-23)
 
 ### Fixes
