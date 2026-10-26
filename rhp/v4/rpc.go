@@ -434,6 +434,12 @@ func rpcRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 	if !ok {
 		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRefreshContractResult{}, clientErrf("expected renewal resolution")
+	} else if hostRenewalTxn.FileContractResolutions[0].Parent.ID != params.ContractID {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
+		return RPCRefreshContractResult{}, clientErrf("resolution parent mismatch")
+	} else if renewalTxn.ID() != hostRenewalTxn.ID() {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
+		return RPCRefreshContractResult{}, clientErrf("transaction ID mismatch")
 	}
 
 	// validate the host signature
@@ -461,8 +467,12 @@ func rpcRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 // RPCSettings returns the current settings of the host.
 func RPCSettings(ctx context.Context, t TransportClient) (rhp4.HostSettings, error) {
 	var resp rhp4.RPCSettingsResponse
-	err := callSingleRoundtripRPC(ctx, t, rhp4.RPCSettingsID, nil, &resp)
-	return resp.Settings, err
+	if err := callSingleRoundtripRPC(ctx, t, rhp4.RPCSettingsID, nil, &resp); err != nil {
+		return rhp4.HostSettings{}, err
+	} else if err := resp.Settings.Prices.Validate(t.PeerKey()); err != nil {
+		return rhp4.HostSettings{}, clientErr("invalid prices", err)
+	}
+	return resp.Settings, nil
 }
 
 // RPCReadSector reads a sector from the host.
@@ -491,6 +501,8 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 	var resp rhp4.RPCReadSectorResponse
 	if err := rhp4.ReadResponse(s, &resp); err != nil {
 		return RPCReadSectorResult{}, fmt.Errorf("failed to read response: %w", err)
+	} else if resp.DataLength != length {
+		return RPCReadSectorResult{}, clientErrf("expected %d bytes, got %d", length, resp.DataLength)
 	}
 
 	start := req.Offset / rhp4.LeafSize
@@ -799,10 +811,14 @@ func RPCReplenishAccounts(ctx context.Context, t TransportClient, p RPCReplenish
 	var resp rhp4.RPCReplenishAccountsResponse
 	if err := rhp4.ReadResponse(s, &resp); err != nil {
 		return RPCReplenishAccountsResult{}, fmt.Errorf("failed to read response: %w", err)
+	} else if len(resp.Deposits) != len(p.Accounts) {
+		return RPCReplenishAccountsResult{}, clientErrf("expected %v deposits, got %v", len(p.Accounts), len(resp.Deposits))
 	}
 
-	for _, deposit := range resp.Deposits {
-		if deposit.Amount.Cmp(p.Target) > 0 {
+	for i, deposit := range resp.Deposits {
+		if deposit.Account != p.Accounts[i] {
+			return RPCReplenishAccountsResult{}, clientErrf("expected deposit %d for account %v, got %v", i, p.Accounts[i], deposit.Account)
+		} else if deposit.Amount.Cmp(p.Target) > 0 {
 			return RPCReplenishAccountsResult{}, clientErrf("expected deposit <= %v, got %v", p.Target, deposit.Amount)
 		}
 	}
@@ -882,8 +898,10 @@ func RPCReplenishPools(ctx context.Context, t TransportClient, p RPCReplenishPoo
 		return RPCReplenishPoolsResult{}, fmt.Errorf("expected %v deposits, got %v", len(p.Pools), len(resp.Deposits))
 	}
 
-	for _, deposit := range resp.Deposits {
-		if deposit.Amount.Cmp(p.Target) > 0 {
+	for i, deposit := range resp.Deposits {
+		if deposit.Account != p.Pools[i] {
+			return RPCReplenishPoolsResult{}, fmt.Errorf("expected deposit %d for pool %v, got %v", i, p.Pools[i], deposit.Account)
+		} else if deposit.Amount.Cmp(p.Target) > 0 {
 			return RPCReplenishPoolsResult{}, fmt.Errorf("expected deposit <= %v, got %v", p.Target, deposit.Amount)
 		}
 	}
@@ -990,11 +1008,28 @@ func RPCDetachPools(ctx context.Context, t TransportClient, inputs []PoolDetachI
 	return callSingleRoundtripRPC(ctx, t, rhp4.RPCDetachPoolsID, &req, &resp)
 }
 
-// RPCLatestRevision returns the latest revision of a contract.
-func RPCLatestRevision(ctx context.Context, t TransportClient, contractID types.FileContractID) (resp rhp4.RPCLatestRevisionResponse, err error) {
+// RPCLatestRevision returns the latest revision of a contract. The returned
+// revision is verified against the caller's renter key and the host's peer
+// key, never the keys embedded in the response.
+func RPCLatestRevision(ctx context.Context, t TransportClient, cs consensus.State, renterKey types.PublicKey, contractID types.FileContractID) (rhp4.RPCLatestRevisionResponse, error) {
 	req := rhp4.RPCLatestRevisionRequest{ContractID: contractID}
-	err = callSingleRoundtripRPC(ctx, t, rhp4.RPCLatestRevisionID, &req, &resp)
-	return
+	var resp rhp4.RPCLatestRevisionResponse
+	if err := callSingleRoundtripRPC(ctx, t, rhp4.RPCLatestRevisionID, &req, &resp); err != nil {
+		return rhp4.RPCLatestRevisionResponse{}, err
+	}
+	hostKey := t.PeerKey()
+	if resp.Contract.RenterPublicKey != renterKey {
+		return rhp4.RPCLatestRevisionResponse{}, clientErrf("renter key mismatch")
+	} else if resp.Contract.HostPublicKey != hostKey {
+		return rhp4.RPCLatestRevisionResponse{}, clientErr("host key mismatch", rhp4.ErrHostKeyMismatch)
+	}
+	sigHash := cs.ContractSigHash(resp.Contract)
+	if !renterKey.VerifyHash(sigHash, resp.Contract.RenterSignature) {
+		return rhp4.RPCLatestRevisionResponse{}, clientErr("failed to validate renter signature", rhp4.ErrInvalidSignature)
+	} else if !hostKey.VerifyHash(sigHash, resp.Contract.HostSignature) {
+		return rhp4.RPCLatestRevisionResponse{}, clientErr("failed to validate host signature", rhp4.ErrInvalidSignature)
+	}
+	return resp, nil
 }
 
 // RPCSectorRoots returns the sector roots for a contract.
@@ -1022,6 +1057,8 @@ func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, 
 	var resp rhp4.RPCSectorRootsResponse
 	if err := callSingleRoundtripRPC(ctx, t, rhp4.RPCSectorRootsID, &req, &resp); err != nil {
 		return RPCSectorRootsResult{}, err
+	} else if uint64(len(resp.Roots)) != length {
+		return RPCSectorRootsResult{}, clientErrf("expected %d roots, got %d", length, len(resp.Roots))
 	} else if !rhp4.VerifySectorRootsProof(resp.Proof, resp.Roots, numSectors, offset, offset+length, contract.Revision.FileMerkleRoot) {
 		return RPCSectorRootsResult{}, clientErr("failed to verify sector roots proof", ErrInvalidProof)
 	}
@@ -1296,6 +1333,12 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 	if !ok {
 		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
 		return RPCRenewContractResult{}, clientErrf("expected renewal resolution")
+	} else if hostRenewalTxn.FileContractResolutions[0].Parent.ID != params.ContractID {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
+		return RPCRenewContractResult{}, clientErrf("resolution parent mismatch")
+	} else if renewalTxn.ID() != hostRenewalTxn.ID() {
+		signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
+		return RPCRenewContractResult{}, clientErrf("transaction ID mismatch")
 	}
 
 	// validate the host signature
