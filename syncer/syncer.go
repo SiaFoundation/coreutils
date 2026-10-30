@@ -1147,8 +1147,8 @@ func New(l net.Listener, cm ChainManager, pm PeerStore, header gateway.Header, o
 	return s
 }
 
-// RetrieveCheckpoint attempts to retrieve a checkpoint block and state from one of the
-// specified peers. The first successful response is returned.
+// RetrieveCheckpoint attempts to retrieve a checkpoint block and state from the
+// specified peers. The first checkpoint that passes validation is returned.
 func RetrieveCheckpoint(ctx context.Context, peers []string, index types.ChainIndex, n *consensus.Network, genesisID types.BlockID) (consensus.State, types.Block, error) {
 	if len(peers) == 0 {
 		return consensus.State{}, types.Block{}, errors.New("no peers provided")
@@ -1178,7 +1178,7 @@ func RetrieveCheckpoint(ctx context.Context, peers []string, index types.ChainIn
 				sendResult := func(r resp) {
 					select {
 					case <-ctx.Done():
-						// another goroutine succeeded
+						// another goroutine succeeded or the caller cancelled
 					case resultCh <- r:
 					}
 				}
@@ -1222,9 +1222,12 @@ func RetrieveCheckpoint(ctx context.Context, peers []string, index types.ChainIn
 	for range peers {
 		select {
 		case r := <-resultCh:
-			if r.err == nil {
-				return r.state, r.block, nil
+			if r.err != nil {
+				continue
+			} else if err := consensus.ValidateBlock(r.state, r.block, consensus.V1BlockSupplement{}); err != nil {
+				continue
 			}
+			return r.state, r.block, nil
 		case <-ctx.Done():
 			return consensus.State{}, types.Block{}, ctx.Err()
 		}
