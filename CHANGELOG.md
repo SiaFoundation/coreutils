@@ -1,3 +1,10 @@
+## 0.25.3 (2026-10-30)
+
+### Fixes
+
+- Fixed issue with retrieve checkpoint.
+- Properly release host inputs on failed formations and renewals.
+
 ## 0.25.2 (2026-10-26)
 
 ### Fixes
