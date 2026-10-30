@@ -801,11 +801,11 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	if basis != req.Basis {
 		formationTxn.SiacoinInputs = formationTxn.SiacoinInputs[:len(req.RenterInputs)]
 		txnset, err := s.chain.UpdateV2TransactionSet([]types.V2Transaction{formationTxn}, req.Basis, basis)
+		formationTxn = txnset[0]
+		formationTxn.SiacoinInputs = append(formationTxn.SiacoinInputs, hostInputs...)
 		if err != nil {
 			return errorBadRequest("failed to update renter inputs from %q to %q: %v", req.Basis, basis, err)
 		}
-		formationTxn = txnset[0]
-		formationTxn.SiacoinInputs = append(formationTxn.SiacoinInputs, hostInputs...)
 	}
 
 	// read the renter's signatures
