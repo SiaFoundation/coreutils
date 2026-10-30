@@ -779,12 +779,13 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 	} else if err != nil {
 		return fmt.Errorf("failed to fund transaction: %w", err)
 	}
+	hostInputs := formationTxn.SiacoinInputs[len(req.RenterInputs):]
 	defer func() {
 		if broadcast {
 			return
 		}
-		// release the inputs if the transaction is not going to be broadcast
-		s.wallet.ReleaseInputs(nil, []types.V2Transaction{formationTxn})
+		// release the host inputs if the transaction is not going to be broadcast
+		s.wallet.ReleaseInputs(nil, []types.V2Transaction{{SiacoinInputs: hostInputs}})
 	}()
 	// sign the transaction inputs
 	s.wallet.SignV2Inputs(&formationTxn, toSign)
@@ -798,7 +799,6 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 
 	// update renter input basis to reflect our funding basis
 	if basis != req.Basis {
-		hostInputs := formationTxn.SiacoinInputs[len(req.RenterInputs):]
 		formationTxn.SiacoinInputs = formationTxn.SiacoinInputs[:len(req.RenterInputs)]
 		txnset, err := s.chain.UpdateV2TransactionSet([]types.V2Transaction{formationTxn}, req.Basis, basis)
 		if err != nil {
@@ -945,17 +945,17 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn, partial bool) error {
 	} else if err != nil {
 		return fmt.Errorf("failed to fund transaction: %w", err)
 	}
+	hostInputs := renewalTxn.SiacoinInputs[len(req.RenterInputs):]
 	defer func() {
 		if broadcast {
 			return
 		}
-		// release the locked UTXOs if the transaction is not going to be broadcast
-		s.wallet.ReleaseInputs(nil, []types.V2Transaction{renewalTxn})
+		// release the locked host UTXOs if the transaction is not going to be broadcast
+		s.wallet.ReleaseInputs(nil, []types.V2Transaction{{SiacoinInputs: hostInputs}})
 	}()
 
 	// update renter inputs to reflect our chain state
 	if basis != req.Basis {
-		hostInputs := renewalTxn.SiacoinInputs[len(req.RenterInputs):]
 		renewalTxn.SiacoinInputs = renewalTxn.SiacoinInputs[:len(req.RenterInputs)]
 		updated, err := s.chain.UpdateV2TransactionSet([]types.V2Transaction{renewalTxn}, req.Basis, basis)
 		if err != nil {
@@ -1126,17 +1126,17 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 	} else if err != nil {
 		return fmt.Errorf("failed to fund transaction: %w", err)
 	}
+	hostInputs := renewalTxn.SiacoinInputs[len(req.RenterInputs):]
 	defer func() {
 		if broadcast {
 			return
 		}
-		// release the locked UTXOs if the transaction is not going to be broadcast
-		s.wallet.ReleaseInputs(nil, []types.V2Transaction{renewalTxn})
+		// release the locked host UTXOs if the transaction is not going to be broadcast
+		s.wallet.ReleaseInputs(nil, []types.V2Transaction{{SiacoinInputs: hostInputs}})
 	}()
 
 	// update renter inputs to reflect our chain state
 	if basis != req.Basis {
-		hostInputs := renewalTxn.SiacoinInputs[len(req.RenterInputs):]
 		renewalTxn.SiacoinInputs = renewalTxn.SiacoinInputs[:len(req.RenterInputs)]
 		updated, err := s.chain.UpdateV2TransactionSet([]types.V2Transaction{renewalTxn}, req.Basis, basis)
 		if err != nil {

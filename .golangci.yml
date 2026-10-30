@@ -12,10 +12,11 @@ linters:
     - revive
     - tagliatelle
     - whitespace
-    - exhaustruct
+    - exhaustruct_v5
   settings:
-    exhaustruct:
-      include:
+    exhaustruct_v5:
+      explicit-mode: true
+      enforce-patterns:
         - 'go.sia.tech/core/consensus\.Network'
     gocritic:
       disabled-checks:
