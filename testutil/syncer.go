@@ -1,6 +1,9 @@
 package testutil
 
 import (
+	"fmt"
+	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -11,6 +14,7 @@ import (
 type EphemeralPeerStore struct {
 	mu    sync.Mutex
 	peers map[string]syncer.PeerInfo
+	bans  map[netip.Prefix]time.Time
 }
 
 // AddPeer adds a peer to the store. If the peer already exists, nil should
@@ -61,12 +65,54 @@ func (ps *EphemeralPeerStore) UpdatePeerInfo(addr string, fn func(*syncer.PeerIn
 
 // Ban temporarily bans one or more IPs. The addr should either be a single
 // IP with port (e.g. 1.2.3.4:5678) or a CIDR subnet (e.g. 1.2.3.4/16).
-func (ps *EphemeralPeerStore) Ban(_ string, _ time.Duration, _ string) error {
+func (ps *EphemeralPeerStore) Ban(addr string, duration time.Duration, _ string) error {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		addr = host
+	}
+	subnet, err := netip.ParsePrefix(addr)
+	if err != nil {
+		ip, err := netip.ParseAddr(addr)
+		if err != nil {
+			return fmt.Errorf("invalid ban address: %w", err)
+		}
+		ip = ip.Unmap()
+		subnet = netip.PrefixFrom(ip, ip.BitLen())
+	} else if subnet.Addr().Is4In6() {
+		const mappedBits = 96
+		if subnet.Bits() >= mappedBits {
+			subnet = netip.PrefixFrom(subnet.Addr().Unmap(), subnet.Bits()-mappedBits)
+		}
+	}
+
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	ps.bans[subnet.Masked()] = time.Now().Add(duration)
 	return nil
 }
 
-// Banned returns false
-func (ps *EphemeralPeerStore) Banned(_ string) (bool, error) { return false, nil }
+// Banned returns true if the IP address is banned.
+func (ps *EphemeralPeerStore) Banned(addr string) (bool, error) {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		addr = host
+	}
+	ip, err := netip.ParseAddr(addr)
+	if err != nil {
+		return false, fmt.Errorf("invalid peer address: %w", err)
+	}
+	ip = ip.WithZone("").Unmap()
+
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	now := time.Now()
+	for subnet, expiration := range ps.bans {
+		if !now.Before(expiration) {
+			delete(ps.bans, subnet)
+		} else if subnet.Contains(ip) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 var _ syncer.PeerStore = (*EphemeralPeerStore)(nil)
 
@@ -74,5 +120,6 @@ var _ syncer.PeerStore = (*EphemeralPeerStore)(nil)
 func NewEphemeralPeerStore() *EphemeralPeerStore {
 	return &EphemeralPeerStore{
 		peers: make(map[string]syncer.PeerInfo),
+		bans:  make(map[netip.Prefix]time.Time),
 	}
 }

@@ -146,14 +146,15 @@ func (es evilManager) BlocksForHistory(history []types.BlockID, maxBlocks uint64
 func TestSyncWithBadPeer(t *testing.T) {
 	log := zaptest.NewLogger(t)
 
-	s1, cm1 := newTestSyncer(t, syncer.WithLogger(log.Named("syncer1")))
-	defer s1.Close()
+	// s1 serves no blocks until released, so a faster good peer cannot finish
+	// the download before the bad peer has served a batch and been caught
+	s1, bm := newBlockingSyncer(t, log.Named("syncer1"))
+	cm1 := bm.Manager
 
 	s2, cm2 := newTestSyncer(t, syncer.WithLogger(log.Named("syncer2")))
 	defer s2.Close()
 
-	// mine enough blocks to cover both v1 and v2 regimes, and to split the
-	// download into enough requests that the bad peer is not starved of work
+	// mine enough blocks to cover both v1 and v2 regimes
 	testutil.MineBlocks(t, cm1, types.VoidAddress, int(cm1.TipState().Network.HardforkV2.RequireHeight+1000))
 
 	// simulate another peer, one that returns invalid blocks
@@ -178,7 +179,26 @@ func TestSyncWithBadPeer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// sync should (eventually) complete despite the bad peer
+	// Connect returns before s2 has registered the inbound peer, so wait for
+	// both peers to show up and then for the bad one to be dropped
+	for range 100 {
+		if len(s2.Peers()) == 2 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	for range 100 {
+		if len(s2.Peers()) == 1 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if peers := s2.Peers(); len(peers) != 1 {
+		t.Fatalf("expected the bad peer to be dropped, got %v", peers)
+	}
+
+	// sync should complete once the good peer is released
+	bm.unblock()
 	for range 100 {
 		if cm1.Tip() == cm2.Tip() {
 			break
@@ -187,13 +207,6 @@ func TestSyncWithBadPeer(t *testing.T) {
 	}
 	if cm1.Tip() != cm2.Tip() {
 		t.Fatalf("tips are not equal: %v != %v", cm1.Tip(), cm2.Tip())
-	}
-	// the ban propagates asynchronously, so wait for the peer to be dropped
-	for range 100 {
-		if len(s2.Peers()) == 1 {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
 	}
 	if peers := s2.Peers(); len(peers) != 1 {
 		t.Fatalf("expected 1 peer, got %v", peers)
