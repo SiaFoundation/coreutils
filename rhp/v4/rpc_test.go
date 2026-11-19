@@ -3699,3 +3699,161 @@ func TestGracefulShutdown(t *testing.T) {
 		t.Fatalf("expected ErrHostShuttingDown, got %v", err)
 	}
 }
+
+func TestRPCCurrencyOverflow(t *testing.T) {
+	n, genesis := testutil.V2Network()
+	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
+
+	cm, w := startTestNode(t, n, genesis)
+
+	// fund the wallet
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
+
+	sr := testutil.NewEphemeralSettingsReporter()
+	sr.Update(proto4.HostSettings{
+		Release:             "test",
+		AcceptingContracts:  true,
+		WalletAddress:       w.Address(),
+		MaxCollateral:       types.Siacoins(10000),
+		MaxContractDuration: 1000,
+		RemainingStorage:    100 * proto4.SectorSize,
+		TotalStorage:        100 * proto4.SectorSize,
+		Prices: proto4.HostPrices{
+			ContractPrice: types.Siacoins(1).Div64(5), // 0.2 SC
+			StoragePrice:  types.NewCurrency64(100),   // 100 H / byte / block
+			IngressPrice:  types.NewCurrency64(100),   // 100 H / byte
+			EgressPrice:   types.NewCurrency64(100),   // 100 H / byte
+			Collateral:    types.NewCurrency64(200),
+		},
+	})
+	ss := testutil.NewEphemeralSectorStore()
+	c := testutil.NewEphemeralContractor(cm)
+
+	transport := testRenterHostPairSiaMux(t, hostKey, cm, w, c, sr, ss, zaptest.NewLogger(t))
+
+	settings, err := rhp4.RPCSettings(context.Background(), transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fundAndSign := &fundAndSign{w, renterKey}
+	renterAllowance, hostCollateral := types.Siacoins(1000), types.Siacoins(2000)
+	formResult, err := rhp4.RPCFormContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, hostKey.PublicKey(), settings.WalletAddress, proto4.RPCFormContractParams{
+		RenterPublicKey: renterKey.PublicKey(),
+		RenterAddress:   w.Address(),
+		Allowance:       renterAllowance,
+		Collateral:      hostCollateral,
+		ProofHeight:     cm.Tip().Height + 50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := formResult.Contract
+
+	// mine to confirm the contract
+	mineAndSync(t, cm, types.VoidAddress, 1, w, c)
+
+	// each value is valid on its own, but the sum exceeds the maximum currency
+	overflowInputs := []types.SiacoinElement{
+		{SiacoinOutput: types.SiacoinOutput{Value: types.MaxCurrency}},
+		{SiacoinOutput: types.SiacoinOutput{Value: types.MaxCurrency}},
+	}
+	overflowDeposits := []proto4.AccountDeposit{
+		{Account: frand.Entropy256(), Amount: types.MaxCurrency},
+		{Account: frand.Entropy256(), Amount: types.MaxCurrency},
+	}
+
+	assertOverflowRejected := func(t *testing.T, id types.Specifier, req, resp proto4.Object) {
+		t.Helper()
+
+		s, err := transport.DialStream(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+
+		if err := s.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			t.Fatal(err)
+		} else if err := proto4.WriteRequest(s, id, req); err != nil {
+			t.Fatal(err)
+		}
+		err = proto4.ReadResponse(s, resp)
+		if proto4.ErrorCode(err) != proto4.ErrorCodeBadRequest || !strings.Contains(err.Error(), "overflow") {
+			t.Fatalf("expected overflow bad request error, got %v", err)
+		}
+	}
+
+	t.Run("FormContract", func(t *testing.T) {
+		req := proto4.RPCFormContractRequest{
+			Prices: settings.Prices,
+			Contract: proto4.RPCFormContractParams{
+				RenterPublicKey: renterKey.PublicKey(),
+				RenterAddress:   w.Address(),
+				Allowance:       renterAllowance,
+				Collateral:      hostCollateral,
+				ProofHeight:     cm.Tip().Height + 50,
+			},
+			MinerFee:     types.Siacoins(1),
+			Basis:        cm.Tip(),
+			RenterInputs: overflowInputs,
+		}
+		assertOverflowRejected(t, proto4.RPCFormContractID, &req, new(proto4.RPCFormContractResponse))
+	})
+
+	t.Run("RenewContract", func(t *testing.T) {
+		req := proto4.RPCRenewContractRequest{
+			Prices: settings.Prices,
+			Renewal: proto4.RPCRenewContractParams{
+				ContractID:  revision.ID,
+				Allowance:   renterAllowance,
+				Collateral:  hostCollateral,
+				ProofHeight: revision.Revision.ProofHeight + 10,
+			},
+			MinerFee:     types.Siacoins(1),
+			Basis:        cm.Tip(),
+			RenterInputs: overflowInputs,
+		}
+		req.ChallengeSignature = renterKey.SignHash(req.ChallengeSigHash(revision.Revision.RevisionNumber))
+		assertOverflowRejected(t, proto4.RPCRenewContractID, &req, new(proto4.RPCRenewContractResponse))
+	})
+
+	for _, id := range []types.Specifier{proto4.RPCRefreshContractID, proto4.RPCRefreshPartialID} {
+		t.Run(id.String(), func(t *testing.T) {
+			req := proto4.RPCRefreshContractRequest{
+				Prices: settings.Prices,
+				Refresh: proto4.RPCRefreshContractParams{
+					ContractID: revision.ID,
+					Allowance:  renterAllowance,
+					Collateral: hostCollateral,
+				},
+				MinerFee:     types.Siacoins(1),
+				Basis:        cm.Tip(),
+				RenterInputs: overflowInputs,
+			}
+			req.ChallengeSignature = renterKey.SignHash(req.ChallengeSigHash(revision.Revision.RevisionNumber))
+			assertOverflowRejected(t, id, &req, new(proto4.RPCRefreshContractResponse))
+		})
+	}
+
+	t.Run("FundAccounts", func(t *testing.T) {
+		// deposits are summed before the renter signature is checked
+		req := proto4.RPCFundAccountsRequest{
+			ContractID:      revision.ID,
+			Deposits:        overflowDeposits,
+			RenterSignature: renterKey.SignHash(types.Hash256{}),
+		}
+		assertOverflowRejected(t, proto4.RPCFundAccountsID, &req, new(proto4.RPCFundAccountsResponse))
+	})
+
+	for _, id := range []types.Specifier{proto4.RPCReplenishAccountsID, proto4.RPCReplenishPoolsID} {
+		t.Run(id.String(), func(t *testing.T) {
+			req := proto4.RPCReplenishAccountsRequest{
+				Accounts:   []proto4.Account{frand.Entropy256(), frand.Entropy256()},
+				Target:     types.MaxCurrency,
+				ContractID: revision.ID,
+			}
+			req.ChallengeSignature = renterKey.SignHash(req.ChallengeSigHash(revision.Revision.RevisionNumber))
+			assertOverflowRejected(t, id, &req, new(proto4.RPCReplenishAccountsResponse))
+		})
+	}
+}
