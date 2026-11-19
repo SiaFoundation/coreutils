@@ -172,29 +172,25 @@ func TestSyncWithBadPeer(t *testing.T) {
 	go s3.Run()
 	defer s3.Close()
 
-	if _, err := s1.Connect(context.Background(), s2.Addr()); err != nil {
+	// connect from s2 so that both peers are registered before Connect returns
+	if _, err := s2.Connect(context.Background(), s1.Addr()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s3.Connect(context.Background(), s2.Addr()); err != nil {
+	bad, err := s2.Connect(context.Background(), s3.Addr())
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Connect returns before s2 has registered the inbound peer, so wait for
-	// both peers to show up and then for the bad one to be dropped
+	// a peer only records its first error, so this also fails if the bad peer
+	// was dropped for any reason other than the ban
 	for range 100 {
-		if len(s2.Peers()) == 2 {
+		if errors.Is(bad.Err(), syncer.ErrPeerBanned) {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	for range 100 {
-		if len(s2.Peers()) == 1 {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if peers := s2.Peers(); len(peers) != 1 {
-		t.Fatalf("expected the bad peer to be dropped, got %v", peers)
+	if err := bad.Err(); !errors.Is(err, syncer.ErrPeerBanned) {
+		t.Fatalf("expected the bad peer to be banned, got err %v", err)
 	}
 
 	// sync should complete once the good peer is released
