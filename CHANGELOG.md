@@ -1,3 +1,9 @@
+## 0.25.4 (2026-11-19)
+
+### Fixes
+
+- Support bans in EphemeralPeerStore
+
 ## 0.25.3 (2026-10-30)
 
 ### Fixes
