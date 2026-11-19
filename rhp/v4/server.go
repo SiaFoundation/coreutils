@@ -426,7 +426,11 @@ func (s *Server) handleRPCFundAccounts(stream net.Conn) error {
 
 	var totalDeposits types.Currency
 	for _, deposit := range req.Deposits {
-		totalDeposits = totalDeposits.Add(deposit.Amount)
+		sum, overflow := totalDeposits.AddWithOverflow(deposit.Amount)
+		if overflow {
+			return errorBadRequest("total deposits overflow")
+		}
+		totalDeposits = sum
 	}
 
 	revision, usage, err := rhp4.ReviseForFundAccounts(state.Revision, totalDeposits)
@@ -489,7 +493,11 @@ func (s *Server) handleRPCReplenishAccounts(stream net.Conn) error {
 		if !underflows {
 			deposit.Amount = value
 		}
-		depositSum = depositSum.Add(deposit.Amount)
+		sum, overflow := depositSum.AddWithOverflow(deposit.Amount)
+		if overflow {
+			return errorBadRequest("total deposits overflow")
+		}
+		depositSum = sum
 		costResp.Deposits = append(costResp.Deposits, deposit)
 	}
 
@@ -560,7 +568,11 @@ func (s *Server) handleRPCReplenishPools(stream net.Conn) error {
 		if !underflows {
 			deposit.Amount = value
 		}
-		depositSum = depositSum.Add(deposit.Amount)
+		sum, overflow := depositSum.AddWithOverflow(deposit.Amount)
+		if overflow {
+			return errorBadRequest("total deposits overflow")
+		}
+		depositSum = sum
 		costResp.Deposits = append(costResp.Deposits, deposit)
 	}
 
@@ -754,7 +766,11 @@ func (s *Server) handleRPCFormContract(stream net.Conn) error {
 		formationTxn.SiacoinInputs = append(formationTxn.SiacoinInputs, types.V2SiacoinInput{
 			Parent: sce.Move(),
 		})
-		renterInputs = renterInputs.Add(sce.SiacoinOutput.Value)
+		sum, overflow := renterInputs.AddWithOverflow(sce.SiacoinOutput.Value)
+		if overflow {
+			return errorBadRequest("renter funding overflows")
+		}
+		renterInputs = sum
 	}
 
 	// calculate the required funding
@@ -920,7 +936,11 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn, partial bool) error {
 		renewalTxn.SiacoinInputs = append(renewalTxn.SiacoinInputs, types.V2SiacoinInput{
 			Parent: si.Move(),
 		})
-		renterInputSum = renterInputSum.Add(si.SiacoinOutput.Value)
+		sum, overflow := renterInputSum.AddWithOverflow(si.SiacoinOutput.Value)
+		if overflow {
+			return errorBadRequest("renter funding overflows")
+		}
+		renterInputSum = sum
 	}
 
 	if n := renterInputSum.Cmp(renterCost); n < 0 {
@@ -1101,7 +1121,11 @@ func (s *Server) handleRPCRenewContract(stream net.Conn) error {
 		renewalTxn.SiacoinInputs = append(renewalTxn.SiacoinInputs, types.V2SiacoinInput{
 			Parent: si.Move(),
 		})
-		renterInputSum = renterInputSum.Add(si.SiacoinOutput.Value)
+		sum, overflow := renterInputSum.AddWithOverflow(si.SiacoinOutput.Value)
+		if overflow {
+			return errorBadRequest("renter funding overflows")
+		}
+		renterInputSum = sum
 	}
 
 	if n := renterInputSum.Cmp(renterCost); n < 0 {
