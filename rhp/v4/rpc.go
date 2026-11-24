@@ -39,6 +39,10 @@ var (
 
 	// ProtocolVersion510 added RHP account pools.
 	ProtocolVersion510 = rhp4.ProtocolVersion{5, 1, 0}
+
+	// ProtocolVersion520 allows refreshing contracts when the host is not
+	// accepting contracts.
+	ProtocolVersion520 = rhp4.ProtocolVersion{5, 2, 0}
 )
 
 var (
