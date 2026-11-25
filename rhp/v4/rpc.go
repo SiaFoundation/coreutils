@@ -369,8 +369,13 @@ func rpcRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 	// add the host inputs to the transaction
 	var hostInputSum types.Currency
 	for _, si := range hostInputsResp.HostInputs {
-		hostInputSum = hostInputSum.Add(si.Parent.SiacoinOutput.Value)
 		renewalTxn.SiacoinInputs = append(renewalTxn.SiacoinInputs, si)
+		sum, overflow := hostInputSum.AddWithOverflow(si.Parent.SiacoinOutput.Value)
+		if overflow {
+			signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
+			return RPCRefreshContractResult{}, clientErrf("host inputs overflow")
+		}
+		hostInputSum = sum
 	}
 
 	// verify the host added enough inputs
@@ -1139,8 +1144,13 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 	// add the host inputs to the transaction
 	var hostInputSum types.Currency
 	for _, si := range hostInputsResp.HostInputs {
-		hostInputSum = hostInputSum.Add(si.Parent.SiacoinOutput.Value)
 		formationTxn.SiacoinInputs = append(formationTxn.SiacoinInputs, si)
+		sum, overflow := hostInputSum.AddWithOverflow(si.Parent.SiacoinOutput.Value)
+		if overflow {
+			signer.ReleaseInputs([]types.V2Transaction{formationTxn})
+			return RPCFormContractResult{}, clientErrf("host inputs overflow")
+		}
+		hostInputSum = sum
 	}
 
 	if n := hostInputSum.Cmp(fc.TotalCollateral); n < 0 {
@@ -1268,8 +1278,13 @@ func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer 
 	// add the host inputs to the transaction
 	var hostInputSum types.Currency
 	for _, si := range hostInputsResp.HostInputs {
-		hostInputSum = hostInputSum.Add(si.Parent.SiacoinOutput.Value)
 		renewalTxn.SiacoinInputs = append(renewalTxn.SiacoinInputs, si)
+		sum, overflow := hostInputSum.AddWithOverflow(si.Parent.SiacoinOutput.Value)
+		if overflow {
+			signer.ReleaseInputs([]types.V2Transaction{renewalTxn})
+			return RPCRenewContractResult{}, clientErrf("host inputs overflow")
+		}
+		hostInputSum = sum
 	}
 
 	// verify the host added enough inputs
