@@ -447,3 +447,22 @@ func TestRPCContractRejectsOverflowingHostInputs(t *testing.T) {
 		})
 	}
 }
+
+type panicTransport struct {
+	rhp4.TransportClient
+}
+
+func (panicTransport) DialStream(context.Context) (net.Conn, error) {
+	panic("boom")
+}
+
+func TestRPCRecoverPanic(t *testing.T) {
+	_, err := rhp4.RPCSettings(context.Background(), panicTransport{})
+	if err == nil || !strings.Contains(err.Error(), "panic in RPC: boom") {
+		t.Fatalf("expected recovered panic, got %v", err)
+	}
+	_, err = rhp4.RPCAccountBalance(context.Background(), panicTransport{}, proto4.Account{})
+	if err == nil || !strings.Contains(err.Error(), "panic in RPC: boom") {
+		t.Fatalf("expected recovered panic, got %v", err)
+	}
+}

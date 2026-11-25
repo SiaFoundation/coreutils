@@ -86,6 +86,14 @@ func clientErrf(format string, args ...any) error {
 
 // openStream dials a stream setting the default timeout if the context has no
 // deadline. The stream lifetime is tied to the context.
+// recoverPanic converts a panic, e.g. from a malicious host response, into an
+// error.
+func recoverPanic(err *error) {
+	if r := recover(); r != nil {
+		*err = fmt.Errorf("panic in RPC: %v", r)
+	}
+}
+
 func openStream(ctx context.Context, t TransportClient, defaultTimeout time.Duration) (net.Conn, error) {
 	if err := context.Cause(ctx); err != nil {
 		return nil, err
@@ -308,7 +316,9 @@ func callSingleRoundtripRPC(ctx context.Context, t TransportClient, rpcID types.
 	return nil
 }
 
-func rpcRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, hostAddress types.Address, existing types.V2FileContract, params rhp4.RPCRefreshContractParams, partialRollover bool) (RPCRefreshContractResult, error) {
+func rpcRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, hostAddress types.Address, existing types.V2FileContract, params rhp4.RPCRefreshContractParams, partialRollover bool) (_ RPCRefreshContractResult, err error) {
+	defer recoverPanic(&err)
+
 	var renewal types.V2FileContractRenewal
 	var usage rhp4.Usage
 	var id types.Specifier
@@ -470,7 +480,9 @@ func rpcRefreshContract(ctx context.Context, t TransportClient, tp TxPool, signe
 }
 
 // RPCSettings returns the current settings of the host.
-func RPCSettings(ctx context.Context, t TransportClient) (rhp4.HostSettings, error) {
+func RPCSettings(ctx context.Context, t TransportClient) (_ rhp4.HostSettings, err error) {
+	defer recoverPanic(&err)
+
 	var resp rhp4.RPCSettingsResponse
 	if err := callSingleRoundtripRPC(ctx, t, rhp4.RPCSettingsID, nil, &resp); err != nil {
 		return rhp4.HostSettings{}, err
@@ -481,7 +493,9 @@ func RPCSettings(ctx context.Context, t TransportClient) (rhp4.HostSettings, err
 }
 
 // RPCReadSector reads a sector from the host.
-func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, w io.Writer, root types.Hash256, offset, length uint64) (RPCReadSectorResult, error) {
+func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, w io.Writer, root types.Hash256, offset, length uint64) (_ RPCReadSectorResult, err error) {
+	defer recoverPanic(&err)
+
 	req := &rhp4.RPCReadSectorRequest{
 		Prices: prices,
 		Token:  token,
@@ -526,7 +540,9 @@ func RPCReadSector(ctx context.Context, t TransportClient, prices rhp4.HostPrice
 }
 
 // RPCWriteSector writes a sector to the host.
-func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, data io.Reader, length uint64) (RPCWriteSectorResult, error) {
+func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, data io.Reader, length uint64) (_ RPCWriteSectorResult, err error) {
+	defer recoverPanic(&err)
+
 	if length == 0 {
 		return RPCWriteSectorResult{}, clientErrf("cannot write zero-length sector")
 	} else if length > rhp4.SectorSize {
@@ -583,7 +599,9 @@ func RPCWriteSector(ctx context.Context, t TransportClient, prices rhp4.HostPric
 }
 
 // RPCVerifySector verifies that the host is properly storing a sector
-func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256) (RPCVerifySectorResult, error) {
+func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPrices, token rhp4.AccountToken, root types.Hash256) (_ RPCVerifySectorResult, err error) {
+	defer recoverPanic(&err)
+
 	req := rhp4.RPCVerifySectorRequest{
 		Prices:    prices,
 		Token:     token,
@@ -604,7 +622,9 @@ func RPCVerifySector(ctx context.Context, t TransportClient, prices rhp4.HostPri
 }
 
 // RPCFreeSectors removes sectors from a contract.
-func RPCFreeSectors(ctx context.Context, t TransportClient, signer ContractSigner, cs consensus.State, prices rhp4.HostPrices, contract ContractRevision, indices []uint64) (RPCFreeSectorsResult, error) {
+func RPCFreeSectors(ctx context.Context, t TransportClient, signer ContractSigner, cs consensus.State, prices rhp4.HostPrices, contract ContractRevision, indices []uint64) (_ RPCFreeSectorsResult, err error) {
+	defer recoverPanic(&err)
+
 	// sort indices descending and remove duplicates to avoid swapping a
 	// root with one that should be kept or is pending deletion.
 	//
@@ -673,7 +693,9 @@ func RPCFreeSectors(ctx context.Context, t TransportClient, signer ContractSigne
 }
 
 // RPCAppendSectors appends sectors a host is storing to a contract.
-func RPCAppendSectors(ctx context.Context, t TransportClient, signer ContractSigner, cs consensus.State, prices rhp4.HostPrices, contract ContractRevision, roots []types.Hash256) (RPCAppendSectorsResult, error) {
+func RPCAppendSectors(ctx context.Context, t TransportClient, signer ContractSigner, cs consensus.State, prices rhp4.HostPrices, contract ContractRevision, roots []types.Hash256) (_ RPCAppendSectorsResult, err error) {
+	defer recoverPanic(&err)
+
 	req := rhp4.RPCAppendSectorsRequest{
 		Prices:     prices,
 		Sectors:    roots,
@@ -737,7 +759,9 @@ func RPCAppendSectors(ctx context.Context, t TransportClient, signer ContractSig
 }
 
 // RPCFundAccounts funds accounts on the host.
-func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State, signer ContractSigner, contract ContractRevision, deposits []rhp4.AccountDeposit) (RPCFundAccountResult, error) {
+func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State, signer ContractSigner, contract ContractRevision, deposits []rhp4.AccountDeposit) (_ RPCFundAccountResult, err error) {
+	defer recoverPanic(&err)
+
 	var total types.Currency
 	for _, deposit := range deposits {
 		total = total.Add(deposit.Amount)
@@ -788,7 +812,9 @@ func RPCFundAccounts(ctx context.Context, t TransportClient, cs consensus.State,
 }
 
 // RPCReplenishAccounts replenishes accounts on the host.
-func RPCReplenishAccounts(ctx context.Context, t TransportClient, p RPCReplenishAccountsParams, cs consensus.State, signer ContractSigner) (RPCReplenishAccountsResult, error) {
+func RPCReplenishAccounts(ctx context.Context, t TransportClient, p RPCReplenishAccountsParams, cs consensus.State, signer ContractSigner) (_ RPCReplenishAccountsResult, err error) {
+	defer recoverPanic(&err)
+
 	req := rhp4.RPCReplenishAccountsRequest{
 		Accounts:   p.Accounts,
 		Target:     p.Target,
@@ -871,7 +897,9 @@ func RPCReplenishAccounts(ctx context.Context, t TransportClient, p RPCReplenish
 // RPCReplenishPools tops up pool balances to a target on the host. Reuses
 // RPCReplenishAccounts wire types — the host routes deposits to its pool
 // table based on the RPC ID.
-func RPCReplenishPools(ctx context.Context, t TransportClient, p RPCReplenishPoolsParams, cs consensus.State, signer ContractSigner) (RPCReplenishPoolsResult, error) {
+func RPCReplenishPools(ctx context.Context, t TransportClient, p RPCReplenishPoolsParams, cs consensus.State, signer ContractSigner) (_ RPCReplenishPoolsResult, err error) {
+	defer recoverPanic(&err)
+
 	req := rhp4.RPCReplenishAccountsRequest{
 		Accounts:   p.Pools,
 		Target:     p.Target,
@@ -969,7 +997,9 @@ type PoolDetachInput struct {
 // RPCAttachPools batches one or more attachments. Each entry is signed by
 // its pool's private key. validity bounds the replay window for the whole
 // batch.
-func RPCAttachPools(ctx context.Context, t TransportClient, inputs []PoolAttachInput, validity time.Duration) error {
+func RPCAttachPools(ctx context.Context, t TransportClient, inputs []PoolAttachInput, validity time.Duration) (err error) {
+	defer recoverPanic(&err)
+
 	hostKey := t.PeerKey()
 	deadline := time.Now().Add(validity)
 	attachments := make([]rhp4.PoolAttachment, 0, len(inputs))
@@ -992,7 +1022,9 @@ func RPCAttachPools(ctx context.Context, t TransportClient, inputs []PoolAttachI
 
 // RPCDetachPools batches one or more detachments. Each entry is signed by
 // either the account's or the pool's private key.
-func RPCDetachPools(ctx context.Context, t TransportClient, inputs []PoolDetachInput, validity time.Duration) error {
+func RPCDetachPools(ctx context.Context, t TransportClient, inputs []PoolDetachInput, validity time.Duration) (err error) {
+	defer recoverPanic(&err)
+
 	hostKey := t.PeerKey()
 	deadline := time.Now().Add(validity)
 	detachments := make([]rhp4.PoolDetachment, 0, len(inputs))
@@ -1016,7 +1048,9 @@ func RPCDetachPools(ctx context.Context, t TransportClient, inputs []PoolDetachI
 // RPCLatestRevision returns the latest revision of a contract. The returned
 // revision is verified against the caller's renter key and the host's peer
 // key, never the keys embedded in the response.
-func RPCLatestRevision(ctx context.Context, t TransportClient, cs consensus.State, renterKey types.PublicKey, contractID types.FileContractID) (rhp4.RPCLatestRevisionResponse, error) {
+func RPCLatestRevision(ctx context.Context, t TransportClient, cs consensus.State, renterKey types.PublicKey, contractID types.FileContractID) (_ rhp4.RPCLatestRevisionResponse, err error) {
+	defer recoverPanic(&err)
+
 	req := rhp4.RPCLatestRevisionRequest{ContractID: contractID}
 	var resp rhp4.RPCLatestRevisionResponse
 	if err := callSingleRoundtripRPC(ctx, t, rhp4.RPCLatestRevisionID, &req, &resp); err != nil {
@@ -1038,7 +1072,9 @@ func RPCLatestRevision(ctx context.Context, t TransportClient, cs consensus.Stat
 }
 
 // RPCSectorRoots returns the sector roots for a contract.
-func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, signer ContractSigner, contract ContractRevision, offset, length uint64) (RPCSectorRootsResult, error) {
+func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, prices rhp4.HostPrices, signer ContractSigner, contract ContractRevision, offset, length uint64) (_ RPCSectorRootsResult, err error) {
+	defer recoverPanic(&err)
+
 	revision, usage, err := rhp4.ReviseForSectorRoots(contract.Revision, prices, length)
 	if err != nil {
 		return RPCSectorRootsResult{}, clientErr("failed to revise contract", err)
@@ -1082,15 +1118,19 @@ func RPCSectorRoots(ctx context.Context, t TransportClient, cs consensus.State, 
 }
 
 // RPCAccountBalance returns the balance of an account.
-func RPCAccountBalance(ctx context.Context, t TransportClient, account rhp4.Account) (types.Currency, error) {
+func RPCAccountBalance(ctx context.Context, t TransportClient, account rhp4.Account) (_ types.Currency, err error) {
+	defer recoverPanic(&err)
+
 	req := &rhp4.RPCAccountBalanceRequest{Account: account}
 	var resp rhp4.RPCAccountBalanceResponse
-	err := callSingleRoundtripRPC(ctx, t, rhp4.RPCAccountBalanceID, req, &resp)
+	err = callSingleRoundtripRPC(ctx, t, rhp4.RPCAccountBalanceID, req, &resp)
 	return resp.Balance, err
 }
 
 // RPCFormContract forms a contract with a host
-func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, hostKey types.PublicKey, hostAddress types.Address, params rhp4.RPCFormContractParams) (RPCFormContractResult, error) {
+func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, hostKey types.PublicKey, hostAddress types.Address, params rhp4.RPCFormContractParams) (_ RPCFormContractResult, err error) {
+	defer recoverPanic(&err)
+
 	fc, usage := rhp4.NewContract(p, params, hostKey, hostAddress)
 	formationTxn := types.V2Transaction{
 		MinerFee:      signer.RecommendedFee().Mul64(1000),
@@ -1228,7 +1268,9 @@ func RPCFormContract(ctx context.Context, t TransportClient, tp TxPool, signer F
 }
 
 // RPCRenewContract renews a contract with a host.
-func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, hostAddress types.Address, existing types.V2FileContract, params rhp4.RPCRenewContractParams) (RPCRenewContractResult, error) {
+func RPCRenewContract(ctx context.Context, t TransportClient, tp TxPool, signer FormContractSigner, cs consensus.State, p rhp4.HostPrices, hostAddress types.Address, existing types.V2FileContract, params rhp4.RPCRenewContractParams) (_ RPCRenewContractResult, err error) {
+	defer recoverPanic(&err)
+
 	renewal, usage := rhp4.RenewContract(existing, p, hostAddress, params)
 	renewalTxn := types.V2Transaction{
 		MinerFee: signer.RecommendedFee().Mul64(1000),
