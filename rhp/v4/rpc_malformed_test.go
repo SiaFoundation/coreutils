@@ -360,3 +360,90 @@ func TestRPCRenewRefreshRejectsMalformedTransaction(t *testing.T) {
 		})
 	}
 }
+
+func TestRPCContractRejectsOverflowingHostInputs(t *testing.T) {
+	n, genesis := testutil.V2Network()
+	hostKey, renterKey := types.GeneratePrivateKey(), types.GeneratePrivateKey()
+	cm, w := startTestNode(t, n, genesis)
+	mineAndSync(t, cm, w.Address(), int(n.MaturityDelay+20), w)
+
+	cs := cm.TipState()
+	prices := signedPrices(hostKey, cs.Index.Height)
+	hostAddress := types.Address(frand.Entropy256())
+	existing := signedContract(cs, renterKey, hostKey, 0, cs.Index.Height+50)
+	contractID := types.FileContractID(frand.Entropy256())
+
+	// each input is valid on its own, but their sum overflows
+	input := types.V2SiacoinInput{
+		Parent:          types.SiacoinElement{SiacoinOutput: types.SiacoinOutput{Value: types.MaxCurrency}},
+		SatisfiedPolicy: types.SatisfiedPolicy{Policy: types.AnyoneCanSpend()},
+	}
+	inputs := []types.V2SiacoinInput{input, input}
+	host := &scriptedHost{hostKey: hostKey, handle: func(stream net.Conn) {
+		id, err := proto4.ReadID(stream)
+		if err != nil {
+			return
+		}
+		switch id {
+		case proto4.RPCFormContractID:
+			if proto4.ReadRequest(stream, new(proto4.RPCFormContractRequest)) == nil {
+				_ = proto4.WriteResponse(stream, &proto4.RPCFormContractResponse{HostInputs: inputs})
+			}
+		case proto4.RPCRenewContractID:
+			if proto4.ReadRequest(stream, new(proto4.RPCRenewContractRequest)) == nil {
+				_ = proto4.WriteResponse(stream, &proto4.RPCRenewContractResponse{HostInputs: inputs})
+			}
+		case proto4.RPCRefreshContractID, proto4.RPCRefreshPartialID:
+			if proto4.ReadRequest(stream, new(proto4.RPCRefreshContractRequest)) == nil {
+				_ = proto4.WriteResponse(stream, &proto4.RPCRefreshContractResponse{HostInputs: inputs})
+			}
+		}
+	}}
+
+	refreshParams := proto4.RPCRefreshContractParams{
+		ContractID: contractID,
+		Allowance:  types.Siacoins(10),
+		Collateral: types.Siacoins(10),
+	}
+	tests := []struct {
+		name string
+		call func(signer *releaseCountingSigner) error
+	}{
+		{"form", func(signer *releaseCountingSigner) error {
+			_, err := rhp4.RPCFormContract(context.Background(), host, cm, signer, cs, prices, hostKey.PublicKey(), hostAddress, proto4.RPCFormContractParams{
+				RenterPublicKey: renterKey.PublicKey(),
+				RenterAddress:   w.Address(),
+				Allowance:       types.Siacoins(10),
+				Collateral:      types.Siacoins(10),
+				ProofHeight:     cs.Index.Height + 50,
+			})
+			return err
+		}},
+		{"renew", func(signer *releaseCountingSigner) error {
+			_, err := rhp4.RPCRenewContract(context.Background(), host, cm, signer, cs, prices, hostAddress, existing, proto4.RPCRenewContractParams{
+				ContractID:  contractID,
+				Allowance:   types.Siacoins(10),
+				Collateral:  types.Siacoins(10),
+				ProofHeight: cs.Index.Height + 100,
+			})
+			return err
+		}},
+		{"refresh full", func(signer *releaseCountingSigner) error {
+			_, err := rhp4.RPCRefreshContractFullRollover(context.Background(), host, cm, signer, cs, prices, hostAddress, existing, refreshParams)
+			return err
+		}},
+		{"refresh partial", func(signer *releaseCountingSigner) error {
+			_, err := rhp4.RPCRefreshContractPartialRollover(context.Background(), host, cm, signer, cs, prices, hostAddress, existing, refreshParams)
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			signer := &releaseCountingSigner{fundAndSign: &fundAndSign{w, renterKey}}
+			assertClientError(t, tt.call(signer), "host inputs overflow")
+			if signer.released != 1 {
+				t.Fatalf("expected 1 transaction released, got %d", signer.released)
+			}
+		})
+	}
+}
