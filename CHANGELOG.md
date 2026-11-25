@@ -1,3 +1,10 @@
+## 0.25.4 (2026-11-25)
+
+### Fixes
+
+- Reject RHP4 requests whose renter inputs or account deposits overflow instead of panicking
+- Support bans in EphemeralPeerStore
+
 ## 0.25.3 (2026-10-30)
 
 ### Fixes
