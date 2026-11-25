@@ -19,7 +19,7 @@ import (
 	"lukechampine.com/frand"
 )
 
-var protocolVersion = ProtocolVersion510
+var protocolVersion = ProtocolVersion520
 
 type (
 	// A TransportMux is a generic multiplexer for incoming streams.
@@ -888,10 +888,9 @@ func (s *Server) handleRPCRefreshContract(stream net.Conn, partial bool) error {
 		return errorDecodingError("failed to read request: %v", err)
 	}
 
+	// refreshing doesn't extend the contract's duration, so allow it even when
+	// the host isn't accepting new contracts
 	settings := s.settings.RHP4Settings()
-	if !settings.AcceptingContracts {
-		return rhp4.ErrNotAcceptingContracts
-	}
 
 	// validate prices
 	prices := req.Prices

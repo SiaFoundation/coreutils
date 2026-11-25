@@ -1143,6 +1143,39 @@ func TestRPCRefreshFullRollover(t *testing.T) {
 			t.Fatal("expected contract to not be revisable")
 		}
 	})
+
+	t.Run("not accepting contracts", func(t *testing.T) {
+		revision := formContractUploadSector(t, types.Siacoins(100), types.Siacoins(200), types.Siacoins(25))
+
+		hs := sr.RHP4Settings()
+		hs.AcceptingContracts = false
+		sr.Update(hs)
+		defer func() {
+			hs.AcceptingContracts = true
+			sr.Update(hs)
+		}()
+
+		// renewing should fail
+		_, err := rhp4.RPCRenewContract(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, settings.WalletAddress, revision.Revision, proto4.RPCRenewContractParams{
+			ContractID:  revision.ID,
+			Allowance:   types.Siacoins(10),
+			Collateral:  types.Siacoins(20),
+			ProofHeight: revision.Revision.ProofHeight + 10,
+		})
+		if !errors.Is(err, proto4.ErrNotAcceptingContracts) {
+			t.Fatalf("expected ErrNotAcceptingContracts, got %v", err)
+		}
+
+		// refreshing should still work
+		_, err = rhp4.RPCRefreshContractFullRollover(context.Background(), transport, cm, fundAndSign, cm.TipState(), settings.Prices, settings.WalletAddress, revision.Revision, proto4.RPCRefreshContractParams{
+			ContractID: revision.ID,
+			Allowance:  types.Siacoins(10),
+			Collateral: types.Siacoins(20),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestRPCRenew(t *testing.T) {
